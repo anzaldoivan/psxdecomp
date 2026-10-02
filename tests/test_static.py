@@ -286,3 +286,10 @@ def test_ai_policy_and_install_hints():
     for recipe in (ROOT / "profiles/psx/hosts").glob("*.md"):
         assert "## Install" in recipe.read_text() and "brew install" in recipe.read_text(), recipe.name
     assert all(common.install_hint(t, "Darwin").startswith("install: brew ") for t in common.INSTALL)
+
+
+def test_readme_assets_exist():
+    """Every image the README shows (src / srcset) is a tracked file under docs/assets."""
+    readme = (ROOT / "README.md").read_text()
+    refs = re.findall(r'(?:src|srcset)="([^"]+)"', readme)
+    assert refs and all(r.startswith("docs/assets/") and (ROOT / r).is_file() for r in refs), refs

@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/psxdecomp-banner-dark.svg">
+    <img src="docs/assets/psxdecomp-banner.svg" alt="PSXDecomp" width="640">
+  </picture>
+</p>
+
 # psxdecomp
 
 **A Claude Code plugin that bootstraps PlayStation 1 matching decompilations.** Starting from an empty folder and a
@@ -138,4 +145,5 @@ psxdecomp builds on:
 
 ## Licence
 
-MIT ([LICENSE](LICENSE)). The fixture program is CC0. Nothing here is derived from any game.
+MIT ([LICENSE](LICENSE)). The fixture program and the banner are CC0; the banner's wordmark is drawn from Exo 2
+(SIL Open Font License 1.1, [docs/assets](docs/assets/README.md)). Nothing here is derived from any game.
