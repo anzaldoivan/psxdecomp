@@ -1,13 +1,13 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/psxdecomp-banner-dark.svg">
-    <img src="docs/assets/psxdecomp-banner.svg" alt="PSXDecomp" width="640">
+    <img src="docs/assets/psxdecomp-banner.svg" alt="PSXDecomp: PlayStation 1 matching decompilation toolkit" width="640">
   </picture>
 </p>
 
-# psxdecomp
+# PSXDecomp: PS1 decompilation bootstrapper for Claude Code
 
-**A Claude Code plugin that bootstraps PlayStation 1 matching decompilations.** Starting from an empty folder and a
+**A Claude Code plugin that bootstraps PlayStation 1 (PS1/PSX) matching decompilations.** Starting from an empty folder and a
 disc dump you own, it identifies the game, researches prior work, pins a library of SDK and tooling references, and
 installs [Project Architect](https://github.com/Druthulu/ProjectArchitect) with the decomp-architect kit. The result
 is a repository ready for its first planning phase, and it keeps working without the plugin.
