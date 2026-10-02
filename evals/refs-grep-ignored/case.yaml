@@ -1,0 +1,34 @@
+schema_version: "1.0"
+name: refs-grep-ignored
+description: refs-grep in the bootstrapped layout (git repo, /refs/ git-ignored, re-included by .ignore); a root Grep finds the answer within 4 turns.
+tags: [refs, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "Which PsyQ library holds SpuSetKey? Answer from this repository's reference library."
+  max_turns: 4
+  timeout_seconds: 240
+  allowed_tools: [Read, Glob, Grep, Bash, WebSearch, WebFetch]
+runs: 3
+graders:
+  - name: grepped-symbol
+    type: tool_used
+    tool: Grep
+    input_match: "SpuSetKey"
+    min: 1
+  - name: no-glob-fallback
+    type: tool_used
+    tool: Glob
+    min: 0
+    max: 0
+  - name: no-web
+    type: tool_used
+    tool: WebSearch
+    min: 0
+    max: 0
+  - name: answers-libspu
+    type: regex
+    target: last_message
+    pattern: "libspu"
+    flags: "i"
+expected_outcome: The agent's root Grep reaches refs/ through .ignore, finds libspu, and cites the file in 2 turns, as in the no-git control. Without the .ignore (2026-10-02) every run fell back to Glob **/* and Reads, 5-8 turns; no-glob-fallback fails all six.

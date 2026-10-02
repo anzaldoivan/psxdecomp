@@ -323,6 +323,12 @@ def s9_refs(c: Ctx) -> str:
     gi = common.read(c.p(".gitignore"))
     if "/refs/" not in gi.splitlines():
         c.write(".gitignore", gi + ("" if gi.endswith("\n") else "\n") + "%s ----\n/refs/\n" % PSX_MARK)
+    # Claude's content search (ripgrep) honours .gitignore inside a git repository, so a root search would skip refs/.
+    # ripgrep's .ignore outranks .gitignore: `!/refs/` re-includes it for search only; git still ignores it.
+    ig = common.read(c.p(".ignore")) if c.p(".ignore").is_file() else ""
+    if "!/refs/" not in ig.splitlines():
+        c.write(".ignore", ig + ("" if not ig or ig.endswith("\n") else "\n") + "%s: search refs/ though git ignores "
+                "it ----\n!/refs/\n" % PSX_MARK)
     fw = c.p("config/firewall.txt")
     if fw.is_file() and "purge: refs/" not in common.read(fw):
         c.write("config/firewall.txt", common.read(fw).rstrip("\n") +
@@ -352,9 +358,10 @@ def s9_refs(c: Ctx) -> str:
         r = common.run([py, "tools/audit_public.py"], cwd=c.target, check=False)
         if r.returncode != 0:
             raise common.Fail("the ROM audit fails after the refs change: %s" % r.stdout.strip()[-300:])
-    sha = c.commit(["config/refs.toml", ".gitignore", "config/firewall.txt", "HOW_WE_WORK.md", "docs/ops/INDEX.md",
-                    "docs/ops/refs.md"], "Reference library: config/refs.toml pinned, docs/ops/refs.md index, refs/ "
-                                         "ignored and purged")
+    sha = c.commit(["config/refs.toml", ".gitignore", ".ignore", "config/firewall.txt", "HOW_WE_WORK.md",
+                    "docs/ops/INDEX.md", "docs/ops/refs.md"],
+                   "Reference library: config/refs.toml pinned, docs/ops/refs.md index, refs/ ignored (searchable "
+                   "through .ignore) and purged")
     last = buf.getvalue().strip().splitlines()[-1]
     return "%s; commit %s" % (last, sha)
 

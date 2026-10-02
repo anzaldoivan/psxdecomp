@@ -4,7 +4,8 @@ import pytest
 from conftest import PY, ROOT, run
 
 
-@pytest.mark.parametrize("script", ["answers", "fetch_refs", "identify", "preflight", "doctor", "upgrade", "install"])
+@pytest.mark.parametrize("script", ["answers", "fetch_refs", "identify", "preflight", "doctor", "upgrade", "install",
+                                    "decompdev"])
 def test_self_test(script):
     r = run([PY, ROOT / "scripts" / ("%s.py" % script), "--self-test"], check=False)
     assert r.returncode == 0 and "SELF-TEST OK" in r.stdout, r.stdout + r.stderr
@@ -26,3 +27,9 @@ def test_answers_n64_refused_installs_nothing(tmp_path):
     r = run([PY, ROOT / "scripts/install.py", "answers", "--answers", "fixture:n64", "--target", tmp_path], check=False)
     assert r.returncode == 1 and "not yet supported" in r.stdout
     assert list(tmp_path.iterdir()) == []
+
+
+def test_ab_score_self_test():
+    """The AGENTS.md A/B scorer (tools/, not installed): good and bad canned answers, the +20% cost rule."""
+    r = run([PY, ROOT / "tools/ab_score.py", "--self-test"], check=False)
+    assert r.returncode == 0 and "SELF-TEST OK" in r.stdout, r.stdout + r.stderr

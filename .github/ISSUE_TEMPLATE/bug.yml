@@ -1,0 +1,31 @@
+name: Bug
+description: A stage, a script or a generated repository behaves wrongly.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never attach game files**: no disc images, executables, extracted data or SDK files. Name the medium by its
+        serial and the track 01 SHA-1 only. Leaked game data goes through the
+        [security policy](https://github.com/anzaldoivan/psxdecomp/security/policy), not here.
+  - type: input
+    id: stage
+    attributes:
+      label: Stage or command
+      description: "e.g. S8 kit, /psxdecomp:doctor, fetch_refs.py --check"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what you got, as text (the stage's line in .run/bootstrap/state.json helps).
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Versions
+      description: psxdecomp version, `claude --version`, host OS, Python version.
+    validations:
+      required: true

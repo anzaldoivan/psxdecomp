@@ -1,0 +1,5 @@
+# Search-only ignore (ripgrep and Claude's Grep/Glob read it; git does not). These trees hold deliberately stale or
+# poisoned text: eval fixtures and backtest answers. A root search skips them; an explicit path, `rg -uu`, Read and
+# Edit still reach them. Every entry must exist (tier 0: test_search_ignore).
+evals/
+fixtures/backtest/

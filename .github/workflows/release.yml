@@ -1,0 +1,49 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: the tag names the manifest's version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: plugin.json version == tag, and the marketplace lists this plugin
+        run: |
+          python - <<'EOF'
+          import json, os, sys
+          tag = os.environ["GITHUB_REF_NAME"]
+          p = json.load(open(".claude-plugin/plugin.json"))
+          m = json.load(open(".claude-plugin/marketplace.json"))
+          errs = []
+          if tag != "v" + p["version"]:
+              errs.append("tag %s but plugin.json version %s" % (tag, p["version"]))
+          if [x["name"] for x in m["plugins"]] != [p["name"]]:
+              errs.append("marketplace.json does not list exactly %s" % p["name"])
+          for e in errs:
+              print("::error::" + e)
+          sys.exit(1 if errs else 0)
+          EOF
+
+  tiers:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  draft:
+    name: draft the GitHub release
+    needs: [version, tiers]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write                 # the only job that writes: it creates the draft release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Draft release (tier 2 and tier 3 results go into its notes by hand, per docs/RELEASING.md)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

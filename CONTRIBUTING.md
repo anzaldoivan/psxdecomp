@@ -3,7 +3,10 @@
 ## Before a change
 
 - Tier 0: `pytest -q tests/test_static.py tests/test_scripts.py` (free, no network beyond `claude plugin validate`).
-- Tier 1: `pytest -q tests/test_pipeline.py` with `PSXDECOMP_KIT` pointing at a local copy of the kit.
+- Tier 1: `pytest -q tests/test_pipeline.py` with `PSXDECOMP_KIT` pointing at a local copy of the kit. Once
+  `compat.toml [kit]` names a published `repo` and `sha`, the tests fetch the kit themselves, and so does CI.
+- CI (`.github/workflows/ci.yml`) runs tier 0 on Linux and macOS with Python 3.12 and 3.14, tier 1 on Linux, and
+  tier 1b weekly. Actions are pinned to commit SHAs; Dependabot bumps them monthly.
 - Every script has a `--self-test`; tier 0 runs them all.
 
 The tiers, and what each one proves, are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#testing-tiers).

@@ -55,8 +55,7 @@ def test_second_run_changes_nothing(toolchain, game):
     assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
 
 
-def test_firewall_control_in_generated_repo(game):
-    kit = os.environ["PSXDECOMP_KIT"]
+def test_firewall_control_in_generated_repo(game, kit):
     planted = game / ".run/firewall-control/planted.bin"
     planted.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(os.path.join(kit, "templates/firewall-fixture/blob.bin"), planted)
@@ -75,6 +74,13 @@ def test_doctor_and_record(game):
     rec = (game / "config/psxdecomp.toml").read_text()
     assert 'tag = "v3.14.2"' in rec and "--intake-fixture" in rec
     assert run(["git", "-C", game, "check-ignore", "-q", "refs/x"], check=False).returncode == 0
+    assert "!/refs/" in (game / ".ignore").read_text().splitlines()       # searchable though git-ignored
+    (game / "refs" / "probe").mkdir(parents=True, exist_ok=True)
+    (game / "refs" / "probe" / "libspu.h").write_text("void SpuSetKey(long on_off, unsigned long voice_bit);\n")
+    if shutil.which("rg"):                                                  # a root search reaches refs/ (gap 1)
+        hits = run(["rg", "-l", "SpuSetKey"], cwd=game, check=False).stdout
+        assert "refs/probe/libspu.h" in hits, hits
+    shutil.rmtree(game / "refs" / "probe")
     assert "purge: refs/" in (game / "config/firewall.txt").read_text()
     assert "docs/ops/refs.md" in (game / "HOW_WE_WORK.md").read_text()
 
@@ -148,13 +154,13 @@ def test_wrong_pa3_refused(toolchain, tmp_path, monkeypatch):
     assert devs and "force-untested" in devs[0]
 
 
-def test_wrong_kit_refused(tmp_path, monkeypatch):
+def test_wrong_kit_refused(tmp_path, kit):
     import common
-    kit = tmp_path / "kit"
-    shutil.copytree(os.environ["PSXDECOMP_KIT"], kit)
-    (kit / "README.md").write_text("changed\n")
+    copy = tmp_path / "kit"
+    shutil.copytree(kit, copy)
+    (copy / "README.md").write_text("changed\n")
     with pytest.raises(common.Fail, match="digest"):
-        common.resolve_kit(path=str(kit))
+        common.resolve_kit(path=str(copy))
 
 
 @pytest.mark.parametrize("until", ["S5", "S6", "S7", "S8", "S9"])

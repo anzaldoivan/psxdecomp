@@ -29,6 +29,7 @@
 .claude/skills/project-architect/SKILL.md
 .github/workflows/no-rom.yml
 .gitignore
+.ignore
 .run/README.md
 CLAUDE.md
 CONTRIBUTING.md

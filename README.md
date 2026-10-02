@@ -36,14 +36,15 @@ of the game as a Redump CUE/BIN kept **outside** the folder, and a local copy of
 Then, in an **empty folder**, run `/psxdecomp:new`. It walks you through:
 
 1. **Interview and identification.** You give the title, region and dump path. The disc is read in place, facts only.
-2. **Research and your go-ahead.** psxdecomp looks for existing decomps, toolchains and maps, then shows you a
-   report. Nothing is installed until you confirm it.
+2. **Research and your go-ahead.** psxdecomp looks for existing decomps (decomp.dev's listing first), toolchains
+   and maps, then shows you a report. Nothing is installed until you confirm it.
 3. **Install.** It creates the repository with its ROM firewall as the first commit, then installs Project Architect
    and the kit. You restart Claude Code once, midway, when it asks you to.
 4. **Handoff.** It fetches the reference library, runs a health check, and leaves you at a bare `claude`.
 
-Two more commands: `/psxdecomp:doctor` checks a game repo's health (read-only), and `/psxdecomp:upgrade` adopts a
-repo you set up by hand.
+Two more commands: `/psxdecomp:doctor` checks a game repo's health (read-only; it also lints a decomp.dev progress
+workflow and the GitHub security settings, and names the fix for each), and `/psxdecomp:upgrade` adopts a repo you
+set up by hand.
 
 ## What you get
 
@@ -52,6 +53,7 @@ your-game/
   config/psxdecomp.toml   what this repo was bootstrapped with
   docs/prior-art.md       the research report you confirmed
   docs/ops/refs.md        the reference-library index (the sources themselves sit in the ignored refs/)
+  .ignore                 keeps refs/ searchable for agents although git ignores it
   HOW_WE_WORK.md          Project Architect's working card for agents
   tools/audit_public.py   the ROM firewall, enforced from the first commit
 ```

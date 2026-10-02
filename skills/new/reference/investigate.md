@@ -5,7 +5,10 @@ Inputs: the title, region/version and serial (from `.run/bootstrap/interview.jso
 
 ## The six questions — one `scout-web` agent each, launched in parallel in ONE message
 
-1. **existing** — an existing decompilation or disassembly of this game (GitHub, decomp.dev, forums).
+1. **existing** — an existing decompilation or disassembly of this game (GitHub, decomp.dev, forums). Before the
+   scouts, run `"$PSXD" decompdev lookup --title "<title>" --serial <serial>` (then without `--serial`) and hand the
+   result to this agent: decomp.dev's listing with its measures and last commit is a dated fact, not a lead to
+   re-find.
 2. **siblings** — same developer or engine: sibling decomps and the toolchain they pin (compiler, aspsx, PsyQ
    version). The toolchain of a sibling is the first rung of this game's compiler ladder (e.g. mmx4 for X6; scope: mmx6, 2026-10-01).
 3. **maps** — symbol or RAM maps, modding notes, practice hacks, randomizers, Archipelago worlds, cheat code sets.

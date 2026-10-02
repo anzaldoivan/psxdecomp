@@ -111,8 +111,8 @@ def test_eval_cases():
         sc = d.get("context", {}).get("scaffold_script")
         if sc:
             assert (case.parent / sc).is_file()
-    assert {"no-autofire", "interview-first", "answers-path", "refs-grep", "refuse-nonpsx", "backtest-x6",
-            "backtest-dc2", "backtest-bfm", "poisoned-grep", "poisoned-grep-raw", "unpinned-candidate",
+    assert {"no-autofire", "interview-first", "answers-path", "refs-grep", "refs-grep-ignored", "refuse-nonpsx",
+            "backtest-x6", "backtest-dc2", "backtest-bfm", "poisoned-grep", "poisoned-grep-raw", "unpinned-candidate",
             "kit-calibration-scope", "id-collision"} <= names
 
 
@@ -238,3 +238,37 @@ def test_no_copied_prose():
     """One home per fact: no prose sentence of 60+ characters appears in two of psxdecomp's docs (lint_dupes)."""
     dupes = fetch_refs.lint_dupes(list(_docs()), ROOT)
     assert not dupes, ["%s: %s" % (", ".join(w), t[:80]) for t, w in dupes]
+
+
+def test_search_ignore():
+    """.ignore keeps the deliberately stale eval and fixture text out of a root search (rg, Claude's Grep): every entry
+    exists, and a root search for a stale compiler lead finds only the self-test strings that plant it."""
+    entries = [l.strip() for l in (ROOT / ".ignore").read_text().splitlines() if l.strip() and not l.startswith("#")]
+    assert entries and all((ROOT / e.lstrip("/")).exists() for e in entries), entries
+    if not shutil.which("rg"):
+        pytest.skip("ripgrep not installed")
+    r = run(["rg", "-l", r"aspsx 2\.63", "."], cwd=ROOT, check=False)
+    got = sorted(pathlib.Path(l).as_posix().removeprefix("./") for l in r.stdout.split())
+    assert got == ["scripts/doctor.py", "tests/test_static.py"], got
+
+
+def test_agents_md_size():
+    """AGENTS.md is the agent entry point and stays small (just-in-time retrieval: it links, it does not hold the
+    docs); CLAUDE.md only imports it."""
+    text = (ROOT / "AGENTS.md").read_text()
+    assert len(text.splitlines()) <= 50 and len(text.encode()) <= 4096, (len(text.splitlines()), len(text.encode()))
+    assert (ROOT / "CLAUDE.md").read_text().strip() == "@AGENTS.md"
+
+
+def test_upstream_proposals():
+    """ECOSYSTEM.md "Proposed to upstreams": every row names an owner and a known state (the tracked home of what
+    psxdecomp asks of repos it does not patch)."""
+    text = (ROOT / "docs/ECOSYSTEM.md").read_text().split("## Proposed to upstreams", 1)[1].split("\n## ", 1)[0]
+    rows = [[c.strip() for c in l.strip("|").split("|")] for l in text.splitlines() if re.match(r"^\| [A-Z]\d+ \|", l)]
+    assert len(rows) >= 10
+    states = ("proposed", "sent", "accepted", "declined", "deferred")
+    for r in rows:
+        assert len(r) == 5 and r[1] and r[2], r[0]
+        assert r[3] in {"kit", "mmx6", "PA3", "DC2", "BFM"}, (r[0], r[3])
+        assert r[4].split(" (")[0] in states, (r[0], r[4])
+    assert len({r[0] for r in rows}) == len(rows)

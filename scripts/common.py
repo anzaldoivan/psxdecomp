@@ -205,10 +205,22 @@ def resolve_kit(force_untested=False, path=None) -> tuple[pathlib.Path, list[str
     cand = path or os.environ.get("PSXDECOMP_KIT") or c.get("default_path", "")
     if c.get("repo") and not cand:
         clone = cache_dir() / ("kit-" + c["sha"][:12])
-        if not clone.is_dir():
-            run(["git", "clone", "--quiet", c["repo"], str(clone)], timeout=600)
-            git(clone, "checkout", "--quiet", c["sha"])
-        cand = str(clone / c.get("subdir", "."))
+        sub = c.get("subdir", ".")
+        if not (clone / sub / "install.py").is_file():          # shallow and sparse: the kit folder at the pin only
+            if clone.exists():
+                shutil.rmtree(clone)
+            clone.mkdir(parents=True)
+            git(clone, "init", "--quiet")
+            git(clone, "remote", "add", "origin", c["repo"])
+            if sub != ".":
+                git(clone, "sparse-checkout", "set", "--no-cone", "/%s/" % sub.strip("/"))
+            r = run(["git", "-C", str(clone), "fetch", "--quiet", "--depth", "1", "--filter=blob:none", "origin",
+                     c["sha"]], check=False, timeout=900)
+            if r.returncode != 0:
+                shutil.rmtree(clone, ignore_errors=True)
+                raise Fail("kit fetch of %s at %s failed: %s" % (c["repo"], c["sha"], (r.stdout + r.stderr)[-300:]))
+            git(clone, "checkout", "--quiet", "FETCH_HEAD")
+        cand = str(clone / sub)
     kit = pathlib.Path(os.path.expanduser(cand)) if cand else None
     if not kit or not (kit / "install.py").is_file():
         raise Fail("decomp-architect kit not found (looked at %r); pass --kit <folder> or set PSXDECOMP_KIT" % cand)

@@ -16,7 +16,7 @@ two pinned installers. After S10 the repository needs nothing from the plugin.
   ├─ restart → claude --agent plain → /psxdecomp:new --resume
   ├─ S7 PA3's intake handed the kit's intake.decomp.md                 (PA3's tested path, unchanged)
   ├─ S8 install.py → the kit's install.py --answers (dry run, then run; digest-checked)
-  ├─ S9 fetch_refs.py → refs/ (ignored) + docs/ops/refs.md (committed)
+  ├─ S9 fetch_refs.py → refs/ (git-ignored, searchable via .ignore) + docs/ops/refs.md (committed)
   └─ S10 doctor.py + config/psxdecomp.toml
 ```
 

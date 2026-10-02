@@ -1,5 +1,6 @@
-"""Shared fixtures. Tier 1 needs the pinned PA3 (cloned from GitHub, or $PSXDECOMP_PA3_SOURCE) and the kit
-($PSXDECOMP_KIT, until the kit is published); without the kit the pipeline tests skip with that reason."""
+"""Shared fixtures. Tier 1 needs the pinned PA3 (cloned from GitHub, or $PSXDECOMP_PA3_SOURCE) and the kit:
+$PSXDECOMP_KIT, else compat.toml [kit].repo + sha cloned by common.resolve_kit (digest-checked). Without either, the
+pipeline tests skip with that reason."""
 import os
 import pathlib
 import subprocess
@@ -28,11 +29,26 @@ def run(cmd, cwd=None, env=None, check=True):
 
 
 @pytest.fixture(scope="session")
-def toolchain(tmp_path_factory):
+def kit():
+    """The kit folder: $PSXDECOMP_KIT, else the published pin (compat.toml [kit].repo + sha); else tier 1 skips."""
+    path = os.environ.get("PSXDECOMP_KIT")
+    if path and os.path.isfile(os.path.join(path, "install.py")):
+        return path
+    import common
+    if not common.compat()["kit"].get("repo"):
+        pytest.skip("no kit: PSXDECOMP_KIT is not set and compat.toml [kit].repo is empty (the kit is not yet "
+                    "published; tier 1 needs a local copy)")
+    try:
+        found, _ = common.resolve_kit()
+    except common.Fail as e:
+        pytest.skip("pinned kit unavailable: %s" % e)
+    os.environ["PSXDECOMP_KIT"] = str(found)
+    return str(found)
+
+
+@pytest.fixture(scope="session")
+def toolchain(tmp_path_factory, kit):
     """A PA3 per-machine install in a throwaway config dir, the pinned PA3 clone, the kit, the fixture disc."""
-    kit = os.environ.get("PSXDECOMP_KIT")
-    if not kit or not os.path.isfile(os.path.join(kit, "install.py")):
-        pytest.skip("PSXDECOMP_KIT is not set (the decomp-architect kit is not yet published; tier 1 needs a local copy)")
     base = tmp_path_factory.mktemp("toolchain")
     env = {"PSXDECOMP_CACHE": str(base / "cache"), "PSXDECOMP_KIT": kit}
     if os.environ.get("PSXDECOMP_PA3_SOURCE"):

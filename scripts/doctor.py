@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """doctor.py — is this game repository healthy against the current psxdecomp pins? Read-only.
 
-    doctor.py [--repo DIR] [--json]        one row per check: OK / WARN / FAIL; exit 1 on any FAIL
+    doctor.py [--repo DIR] [--json] [--only ROW[,ROW]] [--offline]
+                                           one row per check: OK / WARN / FAIL; exit 1 on any FAIL
     doctor.py --self-test
 
 Checks: the bootstrap record (config/psxdecomp.toml); PA3's version against compat.toml; the kit's install record;
 the interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
 PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
-hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs).
+hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs); progress (WARN
+only, when a workflow builds a decomp.dev report: its safety lint, and whether decomp.dev lists the repo); github (WARN
+only, through `gh api`, skipped offline or logged out: the repository's security settings, each with the `gh api`
+command that fixes it; doctor never applies one). `--only github` runs just that row, e.g. on psxdecomp itself.
 """
 from __future__ import annotations
 
@@ -24,13 +28,29 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common  # noqa: E402
+import decompdev  # noqa: E402
 import fetch_refs  # noqa: E402
 
+NETWORK_ROWS = ("progress", "github")
 
-def check(repo) -> list[tuple[str, str, str]]:
+
+def check(repo, only=None, offline=False) -> list[tuple[str, str, str]]:
     repo = pathlib.Path(repo).resolve()
     rows = []
     add = lambda n, s, d: rows.append((n, s, d))  # noqa: E731
+    if not only or not set(only) <= set(NETWORK_ROWS):
+        base_rows(repo, add)
+    if not only or "progress" in only:
+        prog = progress_row(repo, None if offline else decompdev.projects)
+        if prog:
+            add("progress", *prog)
+    if not only or "github" in only:
+        for st, detail in github_rows(github_slug(repo), None if offline else gh_api):
+            add("github", st, detail)
+    return [r for r in rows if not only or r[0] in only]
+
+
+def base_rows(repo: pathlib.Path, add):
     comp = common.compat()
     rec = repo / "config" / "psxdecomp.toml"
     if rec.is_file():
@@ -92,7 +112,6 @@ def check(repo) -> list[tuple[str, str, str]]:
     else:
         add("refs", "WARN", "no config/refs.toml (no reference library)")
     add("hygiene", *hygiene_row(repo))
-    return rows
 
 
 # Not the repo's own current text: fetched sources, research, phase records (scoped by their phase), and the harness
@@ -149,15 +168,215 @@ def sdk_row(psyq: dict | None, repo: pathlib.Path, byo: str | None) -> tuple[str
     return "OK", what + "; byo path given"
 
 
+# ---- progress: a decomp.dev report workflow --------------------------------------------------------------------
+# decomp.dev reads an objdiff report.json from an artifact named <version>_report. The safety lint is text-level (the
+# scripts are stdlib only): a report job needs no ROM and no secret; a byte-match job that pulls a private ROM image
+# (container.credentials) runs only for this repository's own branches and never uploads build output.
+REPORT_HINT = re.compile(r"_report\b|objdiff-cli\s+report|report\.json")
+FORK_GATE = re.compile(r"github\.event\.pull_request\.head\.repo\.full_name\s*==\s*github\.repository")
+SHA256 = re.compile(r"\b[0-9a-f]{64}\b")
+
+
+def _blocks(lines: list[str], start: int, indent: int) -> int:
+    """The end (exclusive) of the block opened at `start`: the next non-blank line indented <= indent."""
+    for j in range(start + 1, len(lines)):
+        if lines[j].strip() and not lines[j].lstrip().startswith("#") and \
+                len(lines[j]) - len(lines[j].lstrip()) <= indent:
+            return j
+    return len(lines)
+
+
+def _jobs(text: str) -> dict[str, str]:
+    lines = text.splitlines()
+    top = next((i for i, l in enumerate(lines) if re.match(r"^jobs:\s*$", l)), None)
+    if top is None:
+        return {}
+    end = _blocks(lines, top, 0)
+    keys = [i for i in range(top + 1, end) if re.match(r"^  [\w-]+:\s*(#.*)?$", lines[i])]
+    return {lines[i].strip().rstrip(":").split(":")[0]: "\n".join(lines[i:_blocks(lines, i, 2)]) for i in keys}
+
+
+def _uploads(job: str) -> list[tuple[str, str]]:
+    """(artifact name, path) of each actions/upload-artifact step in a job, from the step's `with:` block."""
+    lines, out = job.splitlines(), []
+    for i, l in enumerate(lines):
+        if "actions/upload-artifact" not in l:
+            continue
+        a = i
+        while a > 0 and not re.match(r"^\s*- ", lines[a]):
+            a -= 1
+        step = lines[a:_blocks(lines, a, len(lines[a]) - len(lines[a].lstrip()))]
+        w = next((j for j, x in enumerate(step) if re.match(r"^\s+with:\s*$", x)), None)
+        args = step[w + 1:_blocks(step, w, len(step[w]) - len(step[w].lstrip()))] if w is not None else []
+        name, path = "", ""
+        for k, x in enumerate(args):
+            m = re.match(r"^\s+(name|path):\s*(.*)$", x)
+            if not m:
+                continue
+            v = m[2].strip()
+            if v in ("|", ">", "|-", ">-"):
+                v = " ".join(y.strip() for y in args[k + 1:_blocks(args, k, len(x) - len(x.lstrip()))] if y.strip())
+            if m[1] == "name":
+                name = v.strip("'\"")
+            else:
+                path = v.strip("'\"")
+        out.append((name, path))
+    return out
+
+
+def lint_workflows(texts: dict[str, str]) -> list[str]:
+    """Safety findings over the workflows that build a decomp.dev report (empty when none does)."""
+    found = []
+    reporting = {n: t for n, t in texts.items() if REPORT_HINT.search(t)}
+    for name, text in sorted(reporting.items()):
+        if re.search(r"^\s*pull_request_target\s*:|\bpull_request_target\b", text, re.M):
+            found.append("%s: pull_request_target runs fork code with secrets: use pull_request" % name)
+        if re.search(r"write-all|:\s*write\b", text):
+            found.append("%s: a write permission: the report needs `permissions: contents: read`" % name)
+        elif not re.search(r"^permissions:", text, re.M):
+            found.append("%s: no top-level `permissions:` (set `contents: read`)" % name)
+        prs = re.search(r"^\s*pull_request\s*:|^on:.*\bpull_request\b|^\s*-\s*pull_request\s*$", text, re.M)
+        for job, body in _jobs(text).items():
+            rom = re.search(r"^\s+container:", body, re.M) and re.search(r"^\s+credentials:", body, re.M)
+            ups = _uploads(body)
+            for art, path in ups:
+                if rom and re.search(r"(^|[\s/])build(/|\b)", path):
+                    found.append("%s/%s: uploads %s from the ROM job (build output holds game bytes)"
+                                 % (name, job, path))
+                if art.endswith("_report") or "report" in path:
+                    if not re.search(r"_report$", art):
+                        found.append("%s/%s: artifact %r: decomp.dev reads <version>_report" % (name, job, art))
+                    if not path or any(not x.endswith("report.json") for x in path.split()):
+                        found.append("%s/%s: the report artifact uploads %r: upload only report.json"
+                                     % (name, job, path))
+            if rom:
+                if prs and not FORK_GATE.search(body):
+                    found.append("%s/%s: the ROM image job runs on fork PRs: gate it with `if: "
+                                 "github.event.pull_request.head.repo.full_name == github.repository`" % (name, job))
+            elif re.search(r"secrets\.(?!GITHUB_TOKEN\b)\w+", body):
+                found.append("%s/%s: a ROM-free job reads a secret (it needs none)" % (name, job))
+        if "objdiff-cli" in text and not (re.search(r"objdiff[^\n]*v?\d+\.\d+\.\d+|OBJDIFF[\w]*:\s*['\"]?v?\d+\.\d+",
+                                                    text) and SHA256.search(text)):
+            found.append("%s: objdiff-cli is not pinned by version and sha256" % name)
+    return found
+
+
+def github_slug(repo: pathlib.Path) -> str | None:
+    r = common.git(repo, "remote", "get-url", "origin", check=False)
+    m = re.search(r"github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", r.stdout.strip()) if r.returncode == 0 else None
+    return "%s/%s" % (m[1], m[2]) if m else None
+
+
+def progress_row(repo: pathlib.Path, fetch) -> tuple[str, str] | None:
+    """None without a report workflow; else WARN on any lint finding or when decomp.dev does not list the repo."""
+    wf = repo / ".github" / "workflows"
+    texts = {p.name: common.read(p) for p in sorted(wf.glob("*.y*ml"))} if wf.is_dir() else {}
+    if not any(REPORT_HINT.search(t) for t in texts.values()):
+        return None
+    found = lint_workflows(texts)
+    slug = github_slug(repo)
+    if not slug:
+        listed, note = None, "no GitHub remote: decomp.dev status not checked"
+    elif fetch is None:
+        listed, note = None, "offline: decomp.dev status not checked"
+    else:
+        try:
+            listed, note = decompdev.status(fetch(), slug)
+        except Exception as e:                                          # noqa: BLE001 — a WARN row, never a crash
+            listed, note = None, "decomp.dev unreachable (%s)" % str(e)[:80]
+    detail = "; ".join(found + [note])
+    return ("WARN" if found or listed is False else "OK"), detail
+
+
+# ---- github: the repository's security settings (read through gh api; doctor never writes) -----------------------
+NO_ROM_CHECK = re.compile(r"audit|no[- ]?rom|no game bytes|public-clean|firewall", re.I)
+
+
+def gh_api(path: str):
+    r = common.run(["gh", "api", path], check=False, timeout=30)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip()[:120])
+    return json.loads(r.stdout)
+
+
+def github_rows(slug: str | None, api) -> list[tuple[str, str]]:
+    """[(status, detail)]: one OK row, or one WARN per setting with the exact `gh api` fix; [] when skipped."""
+    if not slug:
+        return []
+    if api is None:
+        return [("OK", "offline: %s settings not checked" % slug)]
+    try:
+        info = api("repos/%s" % slug)
+    except Exception as e:                                              # noqa: BLE001 — logged out, no gh, no network
+        return [("OK", "skipped: gh api unavailable (%s)" % str(e)[:80])]
+    R = "repos/" + slug
+    warns = []
+
+    def get(path, default=None):
+        try:
+            return api("%s/%s" % (R, path))
+        except Exception:                                               # noqa: BLE001
+            return default
+    if not (get("private-vulnerability-reporting") or {}).get("enabled"):
+        warns.append("private vulnerability reporting is off — fix: gh api -X PUT "
+                     "%s/private-vulnerability-reporting" % R)
+    if (get("actions/permissions/workflow") or {}).get("default_workflow_permissions") != "read":
+        warns.append("the default GITHUB_TOKEN can write — fix: gh api -X PUT %s/actions/permissions/workflow -f "
+                     "default_workflow_permissions=read" % R)
+    perms = get("actions/permissions") or {}
+    if perms.get("sha_pinning_required") is not True:
+        warns.append("actions are not required to be pinned to a full commit SHA — fix: gh api -X PUT "
+                     "%s/actions/permissions -F enabled=true -f allowed_actions=%s -F sha_pinning_required=true"
+                     % (R, perms.get("allowed_actions") or "all"))
+    if (get("actions/permissions/fork-pr-contributor-approval") or {}).get("approval_policy") in (None, "none"):
+        warns.append("fork PRs run workflows without approval — fix: gh api -X PUT "
+                     "%s/actions/permissions/fork-pr-contributor-approval "
+                     "-f approval_policy=first_time_contributors" % R)
+    sa = info.get("security_and_analysis") or {}
+    off = [k for k in ("secret_scanning", "secret_scanning_push_protection")
+           if (sa.get(k) or {}).get("status") != "enabled"]
+    if off:
+        warns.append("%s off — fix: gh api -X PATCH %s %s" % (" and ".join(off), R, " ".join(
+            "-f 'security_and_analysis[%s][status]=enabled'" % k for k in off)))
+    good = False
+    for rs in get("rulesets", []) or []:
+        full = get("rulesets/%s" % rs.get("id")) or {}
+        inc = ((full.get("conditions") or {}).get("ref_name") or {}).get("include") or []
+        if full.get("target") != "branch" or full.get("enforcement") != "active" or not (
+                "~DEFAULT_BRANCH" in inc or "refs/heads/%s" % info.get("default_branch") in inc or "~ALL" in inc):
+            continue
+        types = {r.get("type"): r for r in full.get("rules") or []}
+        params = (types.get("required_status_checks") or {}).get("parameters") or {}
+        checks = params.get("required_status_checks") or []
+        if "deletion" in types and "non_fast_forward" in types and any(NO_ROM_CHECK.search(c.get("context", ""))
+                                                                       for c in checks):
+            good = True
+    if not good:
+        body = json.dumps({"name": "main", "target": "branch", "enforcement": "active",
+                           "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+                           "rules": [{"type": "deletion"}, {"type": "non_fast_forward"},
+                                     {"type": "required_status_checks", "parameters": {
+                                         "strict_required_status_checks_policy": True,
+                                         "required_status_checks": [{"context": "<your no-rom audit check>"}]}}]},
+                          separators=(",", ":"))
+        warns.append("no active default-branch ruleset blocks deletion and force-push and requires the no-rom "
+                     "check — "
+                     "fix: gh api -X POST %s/rulesets --input - <<< '%s'" % (R, body))
+    return [("WARN", w) for w in warns] or [("OK", "%s: vulnerability reporting, read-only token, SHA-pinned actions, "
+                                                  "fork approval, secret scanning + push protection, ruleset" % slug)]
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", default=".")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--only", help="comma-separated row names (e.g. github, progress)")
+    ap.add_argument("--offline", action="store_true", help="no network: the progress and github rows say skipped")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args(argv)
     if a.self_test:
         return self_test()
-    rows = check(a.repo)
+    rows = check(a.repo, only=a.only.split(",") if a.only else None, offline=a.offline)
     if a.json:
         print(json.dumps([dict(zip(("check", "status", "detail"), r)) for r in rows], indent=2))
     else:
@@ -196,7 +415,127 @@ def self_test() -> int:
         planted = hygiene_row(repo)
         print("  hygiene: clean %s; planted %s" % (clean[0], planted[1]))
         ok &= clean[0] == "OK" and planted[0] == "WARN" and "PROJECT_CONTEXT.md (1)" in planted[1]
+    ok &= self_test_progress()
+    ok &= self_test_github()
     return common.self_test_banner("doctor", ok)
+
+
+GOOD_WORKFLOW = """name: progress
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@0000000000000000000000000000000000000000
+      - name: objdiff-cli
+        env:
+          OBJDIFF_VERSION: v3.0.0
+          OBJDIFF_SHA256: %s
+          OBJDIFF_URL: https://github.com/encounter/objdiff/releases/download
+        run: |
+          curl -sL -o objdiff-cli "$OBJDIFF_URL/$OBJDIFF_VERSION/objdiff-cli-linux-x86_64"
+          echo "$OBJDIFF_SHA256  objdiff-cli" | sha256sum -c
+      - run: ./objdiff-cli report generate -o report.json
+      - uses: actions/upload-artifact@0000000000000000000000000000000000000000
+        with:
+          name: us_report
+          path: report.json
+  match:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/example/game-rom:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.ROM_IMAGE_TOKEN }}
+    steps:
+      - run: make check
+""" % ("ab" * 32)
+
+
+def self_test_progress() -> bool:
+    good = GOOD_WORKFLOW
+    upload_build = good + """      - uses: actions/upload-artifact@0000000000000000000000000000000000000000
+        with:
+          name: build
+          path: build/
+"""
+    planted = {
+        "good": (good, []),
+        "pull_request_target": (good.replace("  pull_request:\n", "  pull_request_target:\n"), ["pull_request_target"]),
+        "uploads build/": (upload_build, ["uploads build/"]),
+        "ungated ROM image": (good.replace("    if: github.event_name == 'push' || github.event.pull_request.head.repo"
+                                           ".full_name == github.repository\n", ""), ["runs on fork PRs"]),
+        "secret in report job": (good.replace("      - run: ./objdiff-cli", "      - run: echo ${{ secrets.X }}\n"
+                                              "      - run: ./objdiff-cli"), ["reads a secret"]),
+        "artifact name": (good.replace("name: us_report", "name: progress"), ["decomp.dev reads <version>_report"]),
+        "unpinned objdiff": (good.replace("ab" * 32, "TODO"), ["not pinned"]),
+    }
+    ok = True
+    for name, (text, want) in planted.items():
+        got = lint_workflows({"progress.yml": text})
+        hit = all(any(w in f for f in got) for w in want) and (want or not got)
+        print("  progress %-22s %s%s" % (name, "OK" if not got else "WARN: " + got[0][:70],
+                                         "" if hit else "  <- WRONG"))
+        ok &= bool(hit)
+    with tempfile.TemporaryDirectory() as td:                         # the row: lint + the canned decomp.dev listing
+        repo = pathlib.Path(td).resolve()
+        common.git(repo, "init", "--quiet")
+        common.git(repo, "remote", "add", "origin", "https://github.com/example/game-a-decomp.git")
+        ok &= progress_row(repo, lambda: []) is None                  # no report workflow: no row
+        (repo / ".github" / "workflows").mkdir(parents=True)
+        (repo / ".github" / "workflows" / "progress.yml").write_text(good)
+        listed = [{"owner": "example", "repo": "game-a-decomp", "commit": {"sha": "1234567abc"}, "measures": {}}]
+        a, b = progress_row(repo, lambda: listed), progress_row(repo, lambda: [])
+        c = progress_row(repo, None)
+        print("  progress row: listed %s; unlisted %s; offline %s" % (a[0], b[0], c[0]))
+        ok &= a[0] == "OK" and "commit 1234567" in a[1] and b[0] == "WARN" and "/manage/new" in b[1] and c[0] == "OK"
+    return ok
+
+
+def _dc2_like(sha_pinning: bool):
+    """Canned gh api responses shaped like DC2's real ones (read 2026-10-02)."""
+    R = "repos/example/game"
+    d = {R: {"default_branch": "main", "security_and_analysis": {
+            "secret_scanning": {"status": "enabled"}, "secret_scanning_push_protection": {"status": "enabled"}}},
+         R + "/private-vulnerability-reporting": {"enabled": True},
+         R + "/actions/permissions": {"enabled": True, "allowed_actions": "all", "sha_pinning_required": sha_pinning},
+         R + "/actions/permissions/workflow": {"default_workflow_permissions": "read",
+                                               "can_approve_pull_request_reviews": False},
+         R + "/actions/permissions/fork-pr-contributor-approval": {"approval_policy": "first_time_contributors"},
+         R + "/rulesets": [{"id": 1, "name": "main", "target": "branch"}, {"id": 2, "name": "tags", "target": "tag"}],
+         R + "/rulesets/1": {"id": 1, "target": "branch", "enforcement": "active",
+                             "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+                             "rules": [{"type": "deletion"}, {"type": "non_fast_forward"},
+                                       {"type": "pull_request", "parameters": {"required_approving_review_count": 1}},
+                                       {"type": "required_status_checks", "parameters": {"required_status_checks": [
+                                           {"context": "public-clean audit (no game bytes)"}]}}]},
+         R + "/rulesets/2": {"id": 2, "target": "tag", "enforcement": "active", "rules": []}}
+
+    def api(path):
+        if path not in d:
+            raise RuntimeError("404 %s" % path)
+        return d[path]
+    return api
+
+
+def self_test_github() -> bool:
+    warn = github_rows("example/game", _dc2_like(False))
+    clean = github_rows("example/game", _dc2_like(True))
+
+    def down(path):
+        raise RuntimeError("gh: not logged in")
+    skipped = github_rows("example/game", down)
+    print("  github (DC2-shaped, sha pinning off): %s" % "; ".join("%s %s" % (s, d[:60]) for s, d in warn))
+    return (len(warn) == 1 and warn[0][0] == "WARN" and "sha_pinning_required=true" in warn[0][1]
+            and "gh api -X PUT repos/example/game/actions/permissions" in warn[0][1]
+            and [s for s, _ in clean] == ["OK"] and skipped[0][0] == "OK" and "skipped" in skipped[0][1]
+            and github_rows(None, down) == [] and github_rows("example/game", None)[0][1].startswith("offline"))
 
 
 if __name__ == "__main__":

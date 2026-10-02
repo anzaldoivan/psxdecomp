@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # GitHub Actions only: the workflows pin each action to a full commit SHA, and Dependabot bumps the SHA with its
+  # `# vN` comment. The plugin has no pip or npm dependencies of its own (tests install pytest and pyyaml).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
