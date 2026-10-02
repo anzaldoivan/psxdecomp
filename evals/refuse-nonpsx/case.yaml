@@ -1,0 +1,25 @@
+schema_version: "1.0"
+name: refuse-nonpsx
+description: A non-PS1 console gets "not yet supported" and nothing is installed.
+tags: [refusal, tier2]
+execution:
+  prompt: "/psxdecomp:new --answers fixture:n64"
+  max_turns: 6
+  timeout_seconds: 240
+  allowed_tools: [Skill, Bash, Read, Glob, Grep, AskUserQuestion]
+runs: 1
+graders:
+  - name: says-not-supported
+    type: regex
+    target: last_message
+    pattern: "not (yet )?supported"
+    flags: "i"
+  - name: no-git
+    type: file_exists
+    path: .git
+    exists: false
+  - name: no-pa3
+    type: file_exists
+    path: .claude/pa.json
+    exists: false
+expected_outcome: The answers check refuses the N64 console; the reply says it is not yet supported; no repo is created.

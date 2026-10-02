@@ -1,0 +1,36 @@
+schema_version: "1.1"
+name: id-collision
+description: "Capability: a bare G6 in the kit's provenance lines collides with the repo's own rules/G6.md."
+tags: [hygiene, capability, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "What does rule G6 say in this repo?"
+  max_turns: 10
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Grep, WebSearch, WebFetch]
+  append_system_prompt: |
+      Project instructions (HOW_WE_WORK.md, injected by Project Architect):
+      - Plan: phase-ends/current/PHASE_PLAN.md. Constitution: PROJECT_CONTEXT.md (never edited).
+      - Environment: docs/ops/decomp-environment.md. Compiler pin: docs/ops/compiler-pin.md (phase 1.4).
+      - Kit calibration: docs/kit/. Rules: rules/INDEX.md.
+      - **This repo:** demo6 (SLUS-99999), PsyQ 4.7 (lead: config/psxdecomp.toml [psyq]); compiler: docs/ops/compiler-pin.md once phase 1.4 pins it (unpinned at bootstrap, 2026-06-02). Kit text under "provenance: BFM …" is calibration from gcc 2.7.2; its G/R/P ids are BFM's, not this repo's rules.
+runs: 5
+graders:
+  - name: local-g6
+    type: regex
+    target: last_message
+    pattern: "include_asm|bank before match|planted"
+    flags: "i"
+  - name: no-unscoped-bfm-g6
+    type: regex
+    target: last_message
+    pattern: "^(?:(?!BFM|kit|calibrat)[^\\n])*whole-binary hash(?:(?!BFM|kit|calibrat)[^\\n])*$"
+    flags: "im"
+    match: not_contains
+  - name: no-web
+    type: tool_used
+    tool: WebSearch
+    min: 0
+    max: 0
+expected_outcome: "rules/G6.md (bank before match: include_asm siblings planted first); BFM's G6 only as foreign, if at all. Not gated until the kit namespaces BFM:G6."

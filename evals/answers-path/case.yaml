@@ -1,0 +1,31 @@
+schema_version: "1.0"
+name: answers-path
+description: --answers skips the interview (S1) and the run reaches the gate (S4) without installing.
+tags: [flow, tier2]
+execution:
+  prompt: "/psxdecomp:new --answers fixture:psx --until S4"
+  max_turns: 30
+  timeout_seconds: 900
+  allowed_tools: [Skill, Bash, Read, Write, Glob, Grep, Agent, WebSearch, WebFetch, AskUserQuestion]
+runs: 1
+graders:
+  - name: answers-accepted
+    type: regex
+    target: trace
+    pattern: "ANSWERS OK answers\\.psx\\.txt"
+  - name: no-console-question
+    type: tool_used
+    tool: AskUserQuestion
+    input_match: "[Ww]hich console"
+    min: 0
+    max: 0
+  - name: reached-gate
+    type: regex
+    target: last_message
+    pattern: "S4|gate|confirm"
+    flags: "i"
+  - name: nothing-installed
+    type: file_exists
+    path: .claude/pa.json
+    exists: false
+expected_outcome: S1 is the answers check; S3 drafts the report; S4 presents the drafted answers for confirmation.

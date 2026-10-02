@@ -1,0 +1,51 @@
+# profiles/psx/profile.toml — the PlayStation (PS1) profile. Every key is documented in profiles/SCHEMA.md; a new
+# console's profile fills the same keys (the kit's TODO(platform) markers name where answers differ).
+
+[console]
+id        = "psx"
+name      = "Sony PlayStation"
+cpu       = "MIPS R3000A (little-endian, MIPS I)"
+platform  = "Sony PlayStation (MIPS R3000A)"          # the kit's PLATFORM answer
+supported = true
+
+[medium]
+kinds        = ["cue", "bin", "iso"]                  # what identify accepts; .chd is not supported in v1
+dump_hint    = "a Redump-verified CUE/BIN set (one file per track)"
+redump_dat   = "https://redump.org/datfile/psx/"       # optional; the user downloads it (Redump's terms apply)
+probe        = "probes/psx.py"                         # identify.py loads this module's identify() and match_dat()
+boot_record  = "SYSTEM.CNF"
+exe_magic    = "PS-X EXE"
+
+[sdk]
+family    = "PsyQ"
+detector  = "Ps library stamps (masked pattern) + the 'Library Programs (c) 19xx-19xx Sony' string"
+authority = "ghidra_psx_ldr's PsyQ detection at import (phase 1.2) is the final word; stamps date the libraries, not the game's compiler"
+
+# SDK -> toolchain leads per PsyQ release: psxdecomp's profiles/psx/psyq.toml (one home). S10 writes the game's row
+# into config/psxdecomp.toml [psyq]: a lead for phase 1.4, never the pin.
+
+[tools]
+splitter  = "splat64[mips] (PyPI), MIPS config, per-function asm"
+assembler = "binutils-mipsel-linux-gnu (as/ld/objcopy)"
+compilers = "decompals/old-gcc release assets (cc1 only), sha256-asserted"
+aspsx     = "mkst/maspsx"
+loader    = "lab313ru/ghidra_psx_ldr (Ghidra loader + PsyQ signatures)"
+oracle    = "PCSX-Redux with Lua (runtime); Ghidra + an MCP server (static)"
+decompiler = "m2c (GPL-3.0; output is a draft, never committed as-is)"
+
+[hosts]
+# Host recipes: hosts/<id>.md. The build runs in an amd64 container on either host.
+recipes = ["macos-arm64", "linux-amd64"]
+container_platform = "linux/amd64"
+
+[research]
+# Seeds for S3's scout-web runs; {title} and {serial} are filled from the interview.
+search_seeds = [
+  "\"{title}\" decompilation github",
+  "\"{title}\" disassembly OR symbols OR \"ram map\"",
+  "\"{serial}\" decomp OR recomp",
+  "\"{title}\" tcrf prototype",
+  "\"{title}\" randomizer OR archipelago OR practice hack",
+  "site:decomp.dev \"{title}\"",
+]
+sibling_hint = "same developer, publisher or engine: sibling decomps pin the toolchain lead (mmx4 for X6; Xenogears, FF7, Vagrant Story for BFM; scope: mmx6 and BFM-decomp, 2026-10-01)"

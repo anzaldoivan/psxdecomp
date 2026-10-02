@@ -1,0 +1,27 @@
+# compat.toml — the one record of what psxdecomp was tested against (psxrecomp's single-manifest rule, our own text).
+# The installer refuses anything else unless --force-untested, which is written into the game repo as a deviation.
+# Bumps follow docs/RELEASING.md: tiers 0-2 green on the new pin, then this file and docs/ECOSYSTEM.md change together.
+
+[pa3]
+repo    = "https://github.com/Druthulu/ProjectArchitect.git"
+tag     = "v3.14.2"
+sha     = "0ccf0dfaf95e36435ec1b7e58f3be3f863acb19b"   # the commit the tag points at (refs/tags/v3.14.2^{})
+version = "3.14.2"                                      # the package's VERSION line
+subdir  = "project-architect-3.0"
+
+[kit]
+# decomp-architect is not yet published as its own repository (it ships inside Druthulu/BFM-decomp until its split).
+# Until then it is pinned by a content digest (scripts/common.py tree_digest) and located by --kit or $PSXDECOMP_KIT.
+# When it is published, set repo + sha and keep the digest as a second check.
+repo         = ""
+sha          = ""
+subdir       = "."
+digest       = "sha256:581f5ec0553b8c9119fca08ebb3b863caeb3bb2c1e5039402aa67f403ce6e748"
+tested_pa3   = "3.14.2"                                 # the kit's own TESTED_PA3
+default_path = ""
+
+[tested_on]
+date    = "2026-10-01"
+hosts   = ["macOS 27 arm64 + Docker Desktop (amd64 emulation)"]
+claude  = "2.1.287"
+python  = ["3.14"]

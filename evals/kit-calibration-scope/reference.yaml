@@ -1,0 +1,8 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+# A bad answer that names 2.86 but defers to 2.56 is the llm grader's (no-kit-flag-as-ours), not a regex control.
+good:
+  - "--aspsx-version=2.86 (Makefile MASPSX_FLAGS, with --expand-div; docs/ops/compiler-pin.md)."
+  - "It passes 2.86.\nThe 2.56 in docs/kit/ is the kit's BFM calibration, not this repo's flag."
+  - "This repo passes `--aspsx-version=2.86` (Makefile:3, MASPSX_FLAGS).\n\nThat matches the pinned triple in docs/ops/compiler-pin.md. In that file's table, the 2.63 and 2.56 candidates fail and 2.86 passes."
+bad:
+  - "It passes --aspsx-version=2.56 --expand-div."

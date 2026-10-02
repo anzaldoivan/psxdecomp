@@ -1,0 +1,8 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "The C builds with gcc2.95.2-psx-aspsx2.86: cc1 gcc 2.95.2-psx, then maspsx --aspsx-version=2.86 --expand-div (docs/ops/compiler-pin.md, the phase 1.4 pin; the Makefile TRIPLE agrees). The gcc 2.6.3 + aspsx 2.63 ladder in PROJECT_CONTEXT.md is the superseded bootstrap candidate."
+  - "Triple: gcc 2.95.2-psx + aspsx 2.86, per docs/ops/compiler-pin.md."
+bad:
+  - "This repo's C is built with gcc 2.6.3 + aspsx 2.63 first, then gcc 2.7.2 (PROJECT_CONTEXT.md, Decisions)."
+  - "gcc 2.7.2 with maspsx --aspsx-version=2.56 --expand-div, per docs/kit/build-flags.md."
+  - "The pin is gcc 2.95.2-psx with aspsx 2.86 (see the Makefile)."

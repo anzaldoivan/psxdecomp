@@ -1,0 +1,34 @@
+# decomp-architect answers — one `KEY: value` line each; `#` starts a comment. INSTALL_DATE is optional.
+# Canned answers for psxdecomp's deterministic and eval runs: the synthetic homebrew target (fixtures/homebrew-psx). No game.
+# GAME_TITLE — the game's title
+GAME_TITLE: PSXDECOMP Homebrew Fixture
+# PLATFORM — the console or platform
+PLATFORM: Sony PlayStation (MIPS R3000A)
+# GAME_SERIAL — region and serial printed on the medium
+GAME_SERIAL: none (homebrew fixture, HELLO.EXE)
+# TARGET_BINARY — the main executable's file name on the medium
+TARGET_BINARY: HELLO.EXE
+# DUMP_PATH — ABSOLUTE path of your own dump, outside the repository (machine-local; never copied)
+DUMP_PATH: 
+# CONTAINER_LAYOUT — one line: how code is packaged on the medium (archives, overlays, compression)
+CONTAINER_LAYOUT: One MODE2/2352 ISO9660 data track and one audio track; SYSTEM.CNF boots HELLO.EXE; no overlays
+# SDK_EVIDENCE — the SDK/compiler-era evidence found (version stamps, strings, a loader's detection)
+SDK_EVIDENCE: Two synthetic Ps library stamps, version 4.7 (fixture); no SDK string
+# COMPILER_FAMILY — the candidate compiler family — a candidate set, not the pin
+COMPILER_FAMILY: Hand-written assembly (fixture); the psyq.toml 4.7 row is the profile's first lead for real games
+# COMMUNITY_WORK — prior public work found, or 'none found on <date>'
+COMMUNITY_WORK: none found on 2026-10-01 (synthetic target)
+# PROJECT_GOALS — your goals, one paragraph
+PROJECT_GOALS: Prove the bootstrap: the fixture executable rebuilt byte-identical from assembly, with the hash check inside the build.
+# LICENSE_CHOICE — the license for tools and docs, and the statement made over the decompiled source
+LICENSE_CHOICE: MIT for the project's own tools and documents; the fixture is CC0
+# AI_DISCLOSURE — one project-level sentence disclosing how AI is used
+AI_DISCLOSURE: This project is developed with substantial AI assistance; a person reviews each phase gate.
+# PUBLIC_OR_PRIVATE — the day-one visibility (the firewall applies either way)
+PUBLIC_OR_PRIVATE: private
+# PSXDECOMP_CONSOLE — the console profile (v1: psx)
+PSXDECOMP_CONSOLE: psx
+# PSXDECOMP_PROJECT_NAME — the repository / PA3 project name (a slug)
+PSXDECOMP_PROJECT_NAME: homebrew-fixture
+# PSXDECOMP_REGION_VERSION — region and version to target, e.g. 'USA v1.1'
+PSXDECOMP_REGION_VERSION: none (fixture)

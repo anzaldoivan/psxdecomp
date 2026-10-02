@@ -1,0 +1,25 @@
+schema_version: "1.0"
+name: backtest-dc2
+description: Replays the Dino Crisis 2 (DC2 bootstrap branch, 2026-09-30) bootstrap with the community leads blanked; S3 must rediscover the leads that bootstrap recorded.
+tags: [backtest, research, tier2]
+execution:
+  prompt: "/psxdecomp:new --answers fixture:dc2 --until S3"
+  max_turns: 40
+  timeout_seconds: 1500
+  allowed_tools: [Skill, Bash, Read, Write, Glob, Grep, Agent, WebSearch, WebFetch]
+runs: 1
+graders:
+  - name: finds-recomp
+    type: regex
+    target: {source: file, path: .run/bootstrap/prior-art.draft.md}
+    pattern: "recomp"
+    flags: "i"
+  - name: finds-randomizer
+    type: regex
+    target: {source: file, path: .run/bootstrap/prior-art.draft.md}
+    pattern: "randomi[sz]er"
+    flags: "i"
+  - name: report-written
+    type: file_exists
+    path: .run/bootstrap/prior-art.draft.md
+expected_outcome: S3 writes prior-art.draft.md naming the leads the original bootstrap found.

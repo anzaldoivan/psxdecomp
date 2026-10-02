@@ -1,0 +1,34 @@
+# decomp-architect answers — one `KEY: value` line each; `#` starts a comment. INSTALL_DATE is optional.
+# Backtest: replays a past real bootstrap with the community leads blanked; graded by regex over .run/bootstrap/.
+# GAME_TITLE — the game's title
+GAME_TITLE: Brave Fencer Musashi
+# PLATFORM — the console or platform
+PLATFORM: Sony PlayStation (MIPS R3000A)
+# GAME_SERIAL — region and serial printed on the medium
+GAME_SERIAL: USA SLUS-00726
+# TARGET_BINARY — the main executable's file name on the medium
+TARGET_BINARY: SLUS_007.26
+# DUMP_PATH — ABSOLUTE path of your own dump, outside the repository (machine-local; never copied)
+DUMP_PATH: 
+# CONTAINER_LAYOUT — one line: how code is packaged on the medium (archives, overlays, compression)
+CONTAINER_LAYOUT: to be probed
+# SDK_EVIDENCE — the SDK/compiler-era evidence found (version stamps, strings, a loader's detection)
+SDK_EVIDENCE: to be probed
+# COMPILER_FAMILY — the candidate compiler family — a candidate set, not the pin
+COMPILER_FAMILY: to be researched
+# COMMUNITY_WORK — prior public work found, or 'none found on <date>'
+COMMUNITY_WORK: to be researched (backtest: this key is what S3 must rediscover)
+# PROJECT_GOALS — your goals, one paragraph
+PROJECT_GOALS: A matching decompilation of Brave Fencer Musashi (USA).
+# LICENSE_CHOICE — the license for tools and docs, and the statement made over the decompiled source
+LICENSE_CHOICE: MIT for the project's own tools and documents
+# AI_DISCLOSURE — one project-level sentence disclosing how AI is used
+AI_DISCLOSURE: This project is developed with substantial AI assistance; a person reviews each phase gate.
+# PUBLIC_OR_PRIVATE — the day-one visibility (the firewall applies either way)
+PUBLIC_OR_PRIVATE: private
+# PSXDECOMP_CONSOLE — the console profile (v1: psx)
+PSXDECOMP_CONSOLE: psx
+# PSXDECOMP_PROJECT_NAME — the repository / PA3 project name (a slug)
+PSXDECOMP_PROJECT_NAME: bfm-decomp
+# PSXDECOMP_REGION_VERSION — region and version to target, e.g. 'USA v1.1'
+PSXDECOMP_REGION_VERSION: USA

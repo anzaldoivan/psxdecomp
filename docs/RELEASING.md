@@ -1,0 +1,28 @@
+# Releasing
+
+## A release
+
+1. Tiers 0 and 1 green locally (`pytest -q`, with `PSXDECOMP_KIT` set) and in CI.
+2. Tier 1b green (`bash fixtures/homebrew-psx/smoke/run.sh` → `SMOKE OK`).
+3. Tier 2: `claude plugin eval . --ablation none --runs 1 --no-publish` (Bash, Write and WebFetch need
+   `--allow-tools Bash Write WebFetch` for the flow cases; `refs-grep` needs `--scaffold`). Every case at 1.0, or a
+   recorded reason in the release notes (a backtest miss is a flaky case, never silently passed).
+   At each model release, PA3 bump and kit bump, re-run `--tag hygiene --scaffold --runs 5` on both current models.
+4. Tier 3: `/psxdecomp:new` on one real game with your own dump, in an empty folder, stopped at PA3's first planner
+   draft. Check `tools/audit_public.py` exits 0 on the tree and 1 on the planted fixture, `config/psxdecomp.toml` holds
+   the pins, and `docs/ops/refs.md` lists every fetched source with its class.
+5. Bump `.claude-plugin/plugin.json` `version`; tag `vX.Y.Z`. Never push from an agent session.
+
+## Bumping a pin (PA3 or the kit)
+
+1. Read the upstream's changes; record the evaluated commit in [ECOSYSTEM.md](ECOSYSTEM.md) (state `watch`).
+2. Change `compat.toml` (PA3: `tag`, `sha`, `version`; kit: `digest`, or `repo` + `sha` once published) and
+   `tested_on`.
+3. Run tier 1; when the tree changed on purpose, regenerate the golden list (`PSXDECOMP_UPDATE_GOLDEN=1 pytest -q
+   tests/test_pipeline.py`) and review its diff line by line.
+4. Tiers 1b and 2; then ECOSYSTEM.md's row becomes `pinned`. Game repos move with `/psxdecomp:upgrade`.
+
+## Publishing the kit
+
+When decomp-architect is split into its own repository: set `[kit] repo` and `sha` in `compat.toml` (keep `digest`
+as the second check), and CI runs tier 1 instead of skipping it.

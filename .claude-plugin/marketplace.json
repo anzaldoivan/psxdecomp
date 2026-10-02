@@ -1,0 +1,16 @@
+{
+  "name": "psxdecomp",
+  "owner": {
+    "name": "anzaldoivan"
+  },
+  "metadata": {
+    "description": "psxdecomp: one plugin that bootstraps PS1 matching-decompilation repositories on Project Architect."
+  },
+  "plugins": [
+    {
+      "name": "psxdecomp",
+      "source": "./",
+      "description": "Bootstrap a PS1 matching-decompilation repository on Project Architect 3.14.2."
+    }
+  ]
+}

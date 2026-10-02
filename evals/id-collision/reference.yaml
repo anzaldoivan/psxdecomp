@@ -1,0 +1,6 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "rules/G6.md, bank before match: every C unit is split into its bank file with its include_asm siblings planted before the first function is decompiled. (The G6 cited in docs/kit/ provenance lines is BFM's rule, not this repo's.)"
+bad:
+  - "G6 says a function is never marked matched until the whole-binary hash is green from a clean rebuild."
+  - "G6: whole-binary hash must be green; also bank before match."

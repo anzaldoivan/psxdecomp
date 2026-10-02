@@ -1,0 +1,38 @@
+schema_version: "1.1"
+name: kit-calibration-scope
+description: "The kit's calibration flags (aspsx 2.56) are not taken for this repo's own (2.86)."
+tags: [hygiene, regression, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "Which `--aspsx-version` does this repo pass to maspsx?"
+  max_turns: 10
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Grep, WebSearch, WebFetch]
+  append_system_prompt: |
+      Project instructions (HOW_WE_WORK.md, injected by Project Architect):
+      - Plan: phase-ends/current/PHASE_PLAN.md. Constitution: PROJECT_CONTEXT.md (never edited).
+      - Environment: docs/ops/decomp-environment.md. Compiler pin: docs/ops/compiler-pin.md (phase 1.4).
+      - Kit calibration: docs/kit/. Rules: rules/INDEX.md.
+      - **This repo:** demo6 (SLUS-99999), PsyQ 4.7 (lead: config/psxdecomp.toml [psyq]); compiler: docs/ops/compiler-pin.md once phase 1.4 pins it (unpinned at bootstrap, 2026-06-02). Kit text under "provenance: BFM …" is calibration from gcc 2.7.2; its G/R/P ids are BFM's, not this repo's rules.
+runs: 5
+graders:
+  - name: names-2.86
+    type: regex
+    target: last_message
+    pattern: "2\\.86"
+  - name: no-kit-flag-as-ours
+    type: llm
+    focus: last_message
+    criteria: |
+      The repository passes --aspsx-version=2.86 (Makefile MASPSX_FLAGS, docs/ops/compiler-pin.md). Its docs/kit/
+      files show --aspsx-version=2.56: calibration from another project (BFM), not this repository's flag.
+      PASS if the answer gives 2.86 as the flag this repository passes. Mentioning 2.56 is fine as kit or BFM
+      calibration, a failed or superseded ladder rung, or another project's setting.
+      FAIL if the answer gives 2.56 (or any version other than 2.86) as what this repository passes or should pass,
+      or leaves it undecided between 2.56 and 2.86.
+  - name: grepped
+    type: tool_used
+    tool: Grep
+    min: 1
+expected_outcome: "2.86 (Makefile MASPSX_FLAGS, docs/ops/compiler-pin.md); 2.56 only as the kit's BFM calibration, if at all."

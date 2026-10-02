@@ -1,0 +1,7 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "None is pinned yet. docs/ops/decomp-environment.md says the triple is not yet pinned; phase 1.4 measures a candidate ladder (gcc 2.6.3 + aspsx 2.63 first, then gcc 2.7.2). The kit's gcc 2.7.2 / aspsx 2.56 flags are BFM calibration, not this repo's."
+  - "The repo doesn't pin a compiler triple yet.\n\n- docs/ops/compiler-pin.md doesn't exist; phase 1.4 is supposed to write it.\n- config/psxdecomp.toml has only a lead (PsyQ 4.7, status lead, never the pin)."
+bad:
+  - "This repo builds with gcc 2.6.3 + aspsx 2.63 (PROJECT_CONTEXT.md)."
+  - "gcc 2.7.2 with --aspsx-version=2.56 --expand-div (docs/kit/build-flags.md)."

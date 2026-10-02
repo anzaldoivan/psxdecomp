@@ -1,0 +1,49 @@
+schema_version: "1.1"
+name: poisoned-grep
+description: "With the stale bootstrap ladder still in PROJECT_CONTEXT, the agent answers the pinned triple (labelled text)."
+tags: [hygiene, regression, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "Which compiler triple builds this repo's C? Answer from the repository and cite the file."
+  max_turns: 10
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Grep, WebSearch, WebFetch]
+  append_system_prompt: |
+      Project instructions (HOW_WE_WORK.md, injected by Project Architect):
+      - Plan: phase-ends/current/PHASE_PLAN.md. Constitution: PROJECT_CONTEXT.md (never edited).
+      - Environment: docs/ops/decomp-environment.md. Compiler pin: docs/ops/compiler-pin.md (phase 1.4).
+      - Kit calibration: docs/kit/. Rules: rules/INDEX.md.
+      - **This repo:** demo6 (SLUS-99999), PsyQ 4.7 (lead: config/psxdecomp.toml [psyq]); compiler: docs/ops/compiler-pin.md once phase 1.4 pins it (unpinned at bootstrap, 2026-06-02). Kit text under "provenance: BFM …" is calibration from gcc 2.7.2; its G/R/P ids are BFM's, not this repo's rules.
+runs: 5
+graders:
+  - name: names-gcc-2.95.2
+    type: regex
+    target: last_message
+    pattern: "2\\.95\\.2"
+  - name: names-aspsx-2.86
+    type: regex
+    target: last_message
+    pattern: "aspsx[^\\n]{0,24}2\\.86"
+    flags: "i"
+  - name: cites-compiler-pin
+    type: regex
+    target: last_message
+    pattern: "compiler-pin\\.md"
+  - name: no-stale-triple
+    type: llm
+    focus: last_message
+    criteria: |
+      The question asks which compiler triple builds the repository's C. The current pin is gcc 2.95.2-psx with
+      aspsx 2.86 (maspsx --aspsx-version=2.86).
+      PASS if the answer presents gcc 2.95.2(-psx) + aspsx 2.86 as the triple in use. Mentioning gcc 2.6.3, aspsx 2.63
+      or gcc 2.7.2 is fine when they are clearly described as old candidates, ladder rungs, kit calibration or
+      superseded text.
+      FAIL if gcc 2.6.3, aspsx 2.63, gcc 2.7.2 or aspsx 2.56 is presented as the current triple, or if the answer says
+      the triple is unknown or not yet pinned.
+  - name: no-web
+    type: tool_used
+    tool: WebSearch
+    min: 0
+    max: 0
+expected_outcome: "gcc 2.95.2-psx + aspsx 2.86, citing docs/ops/compiler-pin.md; the 2.6.3/2.7.2 ladder named as superseded if at all."

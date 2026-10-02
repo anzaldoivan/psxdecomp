@@ -1,0 +1,30 @@
+{
+  "name": "psxdecomp",
+  "version": "0.1.0",
+  "description": "Bootstrap a PlayStation matching-decompilation repository on Project Architect 3.14.2 and the decomp-architect kit: interview, disc identification, prior-art research, a pinned reference library, then the two pinned installers.",
+  "author": { "name": "anzaldoivan" },
+  "homepage": "https://github.com/anzaldoivan/psxdecomp",
+  "repository": "https://github.com/anzaldoivan/psxdecomp",
+  "license": "MIT",
+  "keywords": ["decompilation", "playstation", "psx", "ps1", "matching", "project-architect"],
+  "userConfig": {
+    "python_path": {
+      "type": "string",
+      "title": "Python interpreter",
+      "description": "Absolute path of a Python >= 3.12 for the game repo's hooks; empty = detected per machine.",
+      "required": false
+    },
+    "kit_path": {
+      "type": "string",
+      "title": "decomp-architect kit folder",
+      "description": "Local folder of the decomp-architect kit (until it is published as its own repository).",
+      "required": false
+    },
+    "docker_host": {
+      "type": "string",
+      "title": "Docker host recipe",
+      "description": "Which host recipe the profile uses: macos-arm64 or linux-amd64; empty = detected.",
+      "required": false
+    }
+  }
+}

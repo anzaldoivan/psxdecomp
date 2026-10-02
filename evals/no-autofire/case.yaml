@@ -1,0 +1,23 @@
+schema_version: "1.0"
+name: no-autofire
+description: Natural phrasing about starting a PS1 decomp must not run /psxdecomp:new (it is invocation-only).
+tags: [trigger, tier2]
+execution:
+  prompt: "I'd like to start a matching decompilation of a PlayStation game, Mega Man X6. How should I set up the repository?"
+  max_turns: 4
+  timeout_seconds: 240
+  allowed_tools: [Read, Glob, Grep, Skill]
+runs: 1
+graders:
+  - name: skill-not-fired
+    type: tool_used
+    tool: Skill
+    input_match: "psxdecomp"
+    min: 0
+    max: 0
+  - name: no-preflight-ran
+    type: regex
+    target: trace
+    pattern: "PREFLIGHT (OK|FAIL)"
+    match: not_contains
+expected_outcome: An answer in prose; no psxdecomp skill or script runs.

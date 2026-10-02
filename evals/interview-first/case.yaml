@@ -1,0 +1,28 @@
+schema_version: "1.0"
+name: interview-first
+description: /psxdecomp:new in an empty folder asks about the console before any research or install.
+tags: [flow, tier2]
+execution:
+  prompt: "/psxdecomp:new"
+  max_turns: 8
+  timeout_seconds: 300
+  allowed_tools: [Skill, Bash, Read, Glob, Grep, AskUserQuestion, Agent]
+runs: 1
+graders:
+  # AskUserQuestion is not offered to a headless eval child, so the skill asks the round in its reply instead
+  # (interview.md); in an interactive session the same round is an AskUserQuestion call.
+  - name: asks-console
+    type: regex
+    target: last_message
+    pattern: "console|PlayStation"
+    flags: "i"
+  - name: no-research-before-interview
+    type: tool_used
+    tool: Agent
+    min: 0
+    max: 0
+  - name: nothing-installed
+    type: file_exists
+    path: .claude/pa.json
+    exists: false
+expected_outcome: The preflight runs, then the first question asks which console; nothing is researched or installed.

@@ -1,0 +1,366 @@
+# profiles/psx/psyq.toml — the one home for PsyQ SDK -> toolchain LEADS (psxdecomp research B2, 2026-10-01).
+# A row says what a release shipped and what matched elsewhere; it is never a game's pin (that is phase 1.4's finding).
+# S10 copies the ONE row matching the game's stamps into config/psxdecomp.toml [psyq]; this file is not installed.
+#
+# [[version]] fields: id (identify.py's psyq_version output) · stamp (the Ps halfword as DetectPsyQ names it; "" for
+# releases <=3.5, which carry no stamp and are found by signature only) · dtl (Sony part number) · dated (the earliest
+# dated anchor) · ships_compiler (yes|no|unknown) · cc1_banner (the shipped cc1's banner) · aspsx (shipped ASPSX) ·
+# old_gcc (the decompals/old-gcc build that matches the shipped cc1: a matching equivalent, not provenance; maspsx's
+# flag follows from aspsx) · decompme_id · gdt (ghidra_psx_ldr data/ type archive) · confidence
+# (measured|secondary|conflict|unknown) · sources [{src, seen}].
+# [[seen_in]]: matching repos that state their triple (game_triple for the game's code, lib_triple when the libraries
+# were matched separately). A triple proven at a gate lands here (docs/HARVEST.md).
+
+[meta]
+seen      = "2026-10-01"
+authority = "ghidra_psx_ldr DetectPsyQ (the final word on which libraries the game links; refs.toml [[authority]])"
+libraries = "per-version library sets and signatures: github.com/lab313ru/ghidra_psx_ldr data/ and lab313ru/psx_psyq_signatures (linked, not copied)"
+
+[[version]]
+id = "2.6"
+stamp = ""
+dtl = ""
+dated = ""
+ships_compiler = "unknown"
+cc1_banner = ""
+aspsx = ""
+old_gcc = ""
+decompme_id = ""
+gdt = "psyq260.gdt"
+confidence = "unknown"
+sources = [{ src = "lab313ru/psx_psyq_signatures 260/", seen = "2026-10-01" }]
+
+[[version]]
+id = "3.0"
+stamp = ""
+dtl = "DTL-S2180"
+dated = ""
+ships_compiler = "unknown"
+cc1_banner = ""
+aspsx = ""
+old_gcc = ""
+decompme_id = ""
+gdt = "psyq300.gdt"
+confidence = "unknown"
+sources = [{ src = "lab313ru/psx_psyq_signatures 300/", seen = "2026-10-01" },
+           { src = "uyjulian dtl_list gist", seen = "2026-10-01" }]
+
+[[version]]
+id = "3.3"
+stamp = ""
+dtl = "DTL-S2190"
+dated = ""
+ships_compiler = "yes"
+cc1_banner = "GNU C 2.6.0 [AL 1.1, MM 40]"
+aspsx = "2.21"
+old_gcc = "gcc-2.6.0-psx"
+decompme_id = "psyq3.3"
+gdt = "psyq330.gdt"
+confidence = "measured"
+sources = [{ src = "BFM-decomp docs/SETUP.md 5.2 (banners read from the binaries)", seen = "2026-06" },
+           { src = "decompme/decomp.me backend/coreapp/compilers.py", seen = "2026-10-01" }]
+
+[[version]]
+id = "3.4"
+stamp = ""
+dtl = ""
+dated = ""
+ships_compiler = "unknown"
+cc1_banner = ""
+aspsx = ""
+old_gcc = ""
+decompme_id = ""
+gdt = "psyq340.gdt"
+confidence = "unknown"
+sources = [{ src = "lab313ru/psx_psyq_signatures 340/", seen = "2026-10-01" }]
+
+[[version]]
+id = "3.5"
+stamp = ""
+dtl = "DTL-S2300"
+dated = ""
+ships_compiler = "yes"
+cc1_banner = "GNU C 2.6.0 (the 3.3 binary)"
+aspsx = "2.34"
+old_gcc = "gcc-2.6.0-psx"
+decompme_id = "psyq3.5"
+gdt = "psyq350.gdt"
+confidence = "measured"
+sources = [{ src = "BFM-decomp docs/SETUP.md 5.2", seen = "2026-06" },
+           { src = "sozud/psy-q-decomp prep_35.sh", seen = "2026-10-01" }]
+
+[[version]]
+id = "3.6.10"
+stamp = "3610"
+dtl = "DTL-S2310"
+dated = ""
+ships_compiler = "yes"
+cc1_banner = "GNU C 2.7.2.SN.1 (measured for '3.6'; patch level not stated)"
+aspsx = "2.34"
+old_gcc = "gcc-2.7.2 (close to vanilla)"
+decompme_id = "psyq3.6"
+gdt = "psyq3610.gdt"
+confidence = "secondary"
+sources = [{ src = "BFM-decomp docs/SETUP.md 5.2", seen = "2026-06" },
+           { src = "lab313ru/psx_psyq_signatures 3610/", seen = "2026-10-01" }]
+
+[[version]]
+id = "3.6.11"
+stamp = "3611"
+dtl = "DTL-S2310"
+dated = ""
+ships_compiler = "yes"
+cc1_banner = "GNU C 2.7.2.SN.1 (measured for '3.6'; patch level not stated)"
+aspsx = "2.34"
+old_gcc = "gcc-2.7.2 (close to vanilla)"
+decompme_id = "psyq3.6"
+gdt = "psyq3611.gdt"
+confidence = "secondary"
+sources = [{ src = "BFM-decomp docs/SETUP.md 5.2", seen = "2026-06" },
+           { src = "lab313ru/psx_psyq_signatures 3611/", seen = "2026-10-01" }]
+
+[[version]]
+id = "3.7"
+stamp = "370"
+dtl = ""
+dated = ""
+ships_compiler = "unknown"
+cc1_banner = ""
+aspsx = ""
+old_gcc = ""
+decompme_id = ""
+gdt = "psyq370.gdt"
+confidence = "unknown"
+sources = [{ src = "lab313ru/psx_psyq_signatures 370/", seen = "2026-10-01" }]
+
+[[version]]
+id = "4.0"
+stamp = "400"
+dtl = "DTL-S2320"
+dated = "<= 1997-12 (Programmer Tools Release 2.1, DTL-S2002)"
+ships_compiler = "yes"
+cc1_banner = "GNU C 2.7.2.SN32.3.7.0002"
+aspsx = "2.56"
+old_gcc = "gcc-2.7.2-psx or gcc-2.7.2-cdk"
+decompme_id = "psyq4.0"
+gdt = "psyq400.gdt"
+confidence = "measured"
+sources = [{ src = "BFM-decomp docs/SETUP.md 5.2", seen = "2026-06" },
+           { src = "diabpsx/psx_decomp README", seen = "2026-10-01" }]
+
+[[version]]
+id = "4.1"
+stamp = "410"
+dtl = "DTL-S2330"
+dated = ""
+ships_compiler = "yes"
+cc1_banner = "cygnus-2.7.2-970404 SN32.3.7.0004"
+aspsx = "2.67"
+old_gcc = "gcc-2.7.2-cdk"
+decompme_id = "psyq4.1"
+gdt = "psyq410.gdt"
+confidence = "measured"
+sources = [{ src = "BFM-decomp docs/SETUP.md 5.2", seen = "2026-06" }]
+
+[[version]]
+id = "4.2"
+stamp = "420"
+dtl = ""
+dated = "before 1998-10 (a 1998 release on BFM)"
+ships_compiler = "no"
+cc1_banner = ""
+aspsx = ""
+old_gcc = ""
+decompme_id = ""
+gdt = "psyq420.gdt"
+confidence = "measured"
+sources = [{ src = "BFM-decomp docs/SETUP.md 5.1-5.2 (library-only release; 4210 stamps also seen)", seen = "2026-06" }]
+
+[[version]]
+id = "4.3"
+stamp = "430"
+dtl = "DTL-S2340"
+dated = "1998-08 (OS manual for library 4.3, archive.org SCE-OperatingSystem-Aug1998)"
+ships_compiler = "yes"
+cc1_banner = "GNU C 2.8.0 SN32 Build 4.0.0007"
+aspsx = "2.77"
+old_gcc = "gcc-2.8.0-psx"
+decompme_id = "psyq4.3"
+gdt = "psyq430.gdt"
+confidence = "measured"
+sources = [{ src = "BFM-decomp docs/SETUP.md 5.2", seen = "2026-06" },
+           { src = "Caesar0007/NFSHS-PSX-decomp README", seen = "2026-10-01" }]
+
+[[version]]
+id = "4.4"
+stamp = "440"
+dtl = "DTL-S2350"
+dated = "1999-01 (Run-Time Library Reference 4.4)"
+ships_compiler = "yes"
+cc1_banner = "GNU C 2.8.1 SN32 BUILD 4.0.0010"
+aspsx = "2.79"
+old_gcc = "gcc-2.8.1-psx"
+decompme_id = "psyq4.4"
+gdt = "psyq440.gdt"
+confidence = "measured"
+sources = [{ src = "BFM-decomp docs/SETUP.md 5.2", seen = "2026-06" },
+           { src = "FoxdieTeam/mgs_reversing build.py", seen = "2026-10-01" }]
+
+[[version]]
+id = "4.5"
+stamp = "450"
+dtl = ""
+dated = ""
+ships_compiler = "yes"
+cc1_banner = "conflict: egcs-2.91.66 (BFM) vs GNU C 2.8.1 SN32 BUILD 4.0.0010 in a '4.5 bundle' (ygofm)"
+aspsx = "2.81"
+old_gcc = "gcc-2.91.66-psx or gcc-2.8.1-psx"
+decompme_id = "psyq4.5"
+gdt = "psyq450.gdt"
+confidence = "conflict"
+sources = [{ src = "BFM-decomp docs/SETUP.md 5.2", seen = "2026-06" },
+           { src = "MaChInEgUn3/ygofm-decomp docs/DECISIONS.md", seen = "2026-08-31" }]
+
+[[version]]
+id = "4.6"
+stamp = "460"
+dtl = "DTL-S2360"
+dated = "1999-09 (Run-Time Library Reference 4.6, archive.org SCE-RunTimeLibRef-Sep1999)"
+ships_compiler = "yes"
+cc1_banner = "GNU C 2.95.2 19991024 BUILD 4.0.0030"
+aspsx = "2.86"
+old_gcc = "gcc-2.95.2-psx"
+decompme_id = "psyq4.6"
+gdt = "psyq460.gdt"
+confidence = "measured"
+sources = [{ src = "BFM-decomp docs/SETUP.md 5.2", seen = "2026-06" },
+           { src = "MaChInEgUn3/ygofm-decomp docs/DECISIONS.md", seen = "2026-10-01" }]
+
+[[version]]
+id = "4.7"
+stamp = "470"
+dtl = ""
+dated = "2000-03 (Run-Time Library Reference/Overview 4.7, archive.org SCE-RunTimeLibRef-Mar2000)"
+ships_compiler = "no"
+cc1_banner = ""
+aspsx = ""
+old_gcc = ""
+decompme_id = ""
+gdt = "psyq470.gdt"
+confidence = "measured"
+sources = [{ src = "MaChInEgUn3/ygofm-decomp docs/DECISIONS.md (psyq47.zip holds DOCS/ INCLUDE/ LIB/ only)", seen = "2026-08-31" },
+           { src = "juandav/dcb_decomp and juandav/dw3_decomp READMEs", seen = "2026-10-01" }]
+
+# ---- where a triple matched (game code; libraries when matched separately) ----------------------------------------
+
+[[seen_in]]
+game = "Mega Man X6"
+repo = "mmx6 (ours)"
+pct = "gate-verified, in progress"
+pct_seen = "2026-10-01"
+libs = ["4.7"]
+game_triple = "gcc 2.95.2-psx -O2 -G0 + aspsx 2.86 via maspsx (2.56-2.86 tie under -G0)"
+source = "mmx6 docs/ops/compiler-pin.md"
+
+[[seen_in]]
+game = "Brave Fencer Musashi"
+repo = "BFM-decomp (ours)"
+pct = "gate-verified, in progress"
+pct_seen = "2026-10-01"
+libs = ["4.0", "4.2"]
+game_triple = "gcc 2.7.2-psx -O2 -G0 + aspsx 2.56 --expand-div"
+source = "BFM-decomp docs/SETUP.md 5.1"
+
+[[seen_in]]
+game = "Digimon Digital Card Battle"
+repo = "juandav/dcb_decomp"
+pct = "100"
+pct_seen = "2026-10-01"
+libs = ["4.7"]
+game_triple = "gcc 2.95.2 -O1 -G0 + aspsx 2.86"
+lib_triple = "patched gcc 2.7.2 -O2, some objects SN gcc 2.8.1"
+source = "decomp.dev projects.json; repo README"
+
+[[seen_in]]
+game = "Digimon World 3"
+repo = "juandav/dw3_decomp"
+pct = "14.59"
+pct_seen = "2026-10-01"
+libs = ["4.7"]
+game_triple = "gcc 2.8.1 -O2 -G0 + aspsx 2.56-2.86 (all equal)"
+lib_triple = "patched gcc 2.7.2, some objects SN gcc 2.8.1"
+source = "decomp.dev projects.json; repo README"
+
+[[seen_in]]
+game = "Yu-Gi-Oh! Forbidden Memories"
+repo = "MaChInEgUn3/ygofm-decomp"
+pct = "100 (game functions, README 2026-09-21)"
+pct_seen = "2026-10-01"
+libs = ["4.6"]
+game_triple = "CC1PSX 2.8.1 SN32 (the '4.5 bundle') + aspsx 2.79"
+source = "repo docs/DECISIONS.md"
+
+[[seen_in]]
+game = "Need for Speed: High Stakes"
+repo = "Caesar0007/NFSHS-PSX-decomp"
+pct = "100"
+pct_seen = "2026-10-01"
+libs = ["4.3"]
+game_triple = "CC1PSX 2.8.0 (4.3) + aspsx 2.77 (maspsx, patched)"
+lib_triple = "4.0's cc1 2.7.2.SN32"
+source = "decomp.dev projects.json; repo build.py"
+
+[[seen_in]]
+game = "Parasite Eve II"
+repo = "GabeRealB/parasite-eve-2-decomp"
+pct = "100"
+pct_seen = "2026-10-01"
+libs = ["4.5"]
+game_triple = "gcc 2.8.1-psx + maspsx (2.7.2-cdk also present)"
+source = "decomp.dev projects.json; repo build files"
+
+[[seen_in]]
+game = "Soul Reaver"
+repo = "fmil95/soul-re"
+pct = "85.05"
+pct_seen = "2026-10-01"
+libs = ["4.4"]
+game_triple = "gcc 2.8.1-psx + aspsx 2.81, -G4096 (per-file -G0)"
+source = "decomp.dev projects.json; decomp.me preset"
+
+[[seen_in]]
+game = "Castlevania: Symphony of the Night"
+repo = "Xeeynamo/sotn-decomp"
+pct = "69.28"
+pct_seen = "2026-10-01"
+libs = ["3.3", "3.5"]
+game_triple = "cc1-psx-26 (gcc 2.6.x) + aspsx 2.34 (2.21 for PSYQ=3.3)"
+source = "decomp.dev projects.json; repo Makefile"
+
+[[seen_in]]
+game = "Final Fantasy VIII"
+repo = "roengstrom/ff8-decomp"
+pct = "61.88"
+pct_seen = "2026-10-01"
+libs = ["4.1", "4.3"]
+game_triple = "gcc 2.7.2-cdk + aspsx 2.67; gcc 2.8.0-psx + aspsx 2.77 for snd; aspsx 2.56 for -O0"
+source = "decomp.dev projects.json; repo build files"
+
+[[seen_in]]
+game = "Mega Man X4"
+repo = "sozud/mmx4"
+pct = "50.66"
+pct_seen = "2026-10-01"
+libs = ["4.0"]
+game_triple = "US: gcc 2.7.2 (old-gcc 0.9) + aspsx 2.56 --expand-div (rules mislabelled cc1_263); EU: gcc 2.8.1-psx"
+source = "decomp.dev projects.json; repo Makefile"
+
+[[seen_in]]
+game = "Tomba!"
+repo = "hansbonini/psx_tomba"
+pct = "23.97"
+pct_seen = "2026-10-01"
+libs = ["4.0", "4.2"]
+game_triple = "gcc 2.7.2-psx + aspsx 2.56"
+lib_triple = "gcc 2.6.0 (library archive)"
+source = "decomp.dev projects.json; repo README"

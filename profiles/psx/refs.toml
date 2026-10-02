@@ -1,0 +1,339 @@
+# profiles/psx/refs.toml — the PS1 profile's reference library, CURATED from use: a source is here because a real
+# project went to it (mmx6 2026-10-01, BFM-decomp 2026-06..09). The evidence for each row is its `used_by` line.
+#
+# `tier = "core"`: fetched at bootstrap (S9). `tier = "optional"`: in the index, fetched on demand
+# (`fetch_refs.py --with <name>`) when its `when` condition holds. Licences were read from each source on `checked`.
+# `covers` says exactly which version or scope the source speaks for: a grep hit is only an answer within it.
+# [[authority]] names which source wins per topic; [[trap]] records contradictions a project already paid for.
+
+# ---- core: fetched at bootstrap -----------------------------------------------------------------------------------
+
+[[ref]]
+name     = "splat"
+url      = "https://github.com/ethteck/splat"
+ref      = "1d09139b886f0bece632bd8f367ccc1d3318ca2a"
+licence  = "MIT"
+class    = "adapt"
+tier     = "core"
+covers   = "splat at this commit (pin the PyPI splat64 release separately; mmx6: 0.50.0)"
+topics   = ["splitter", "yaml-config", "segments", "symbol-addrs", "psx-exe", "overlays"]
+paths    = ["LICENSE", "README.md", "src/splat/segtypes/psx", "src/splat/segtypes/common"]
+used_by  = "mmx6 R1.3-002 (pins, overlay configs; 216 files cite splat); BFM (2 docs cite it)"
+checked  = "2026-10-01"
+
+[[ref]]
+name     = "maspsx"
+url      = "https://github.com/mkst/maspsx"
+ref      = "423ffc6bca05e53f9b7ab06159d0cbe71111bc90"
+licence  = "MIT"
+class    = "adapt"
+tier     = "core"
+covers   = "maspsx at this commit (no releases; pin by commit); the aspsx versions it emulates are listed in its source"
+topics   = ["aspsx", "assembler-shim", "expand-div", "aspsx-version", "gp-relative"]
+used_by  = "mmx6 R1.3-002 + R1.4-001 (43 files); BFM (3 docs)"
+checked  = "2026-10-01"
+
+[[ref]]
+name     = "old-gcc"
+url      = "https://github.com/decompals/old-gcc"
+ref      = "b74211c9d959e9724802f3177c8229cd67202c87"
+licence  = "unstated in the repository (GCC itself is GPL)"
+class    = "facts"
+tier     = "core"
+covers   = "which cc1 builds exist and exactly how each is built: <version>.Dockerfile + patches/ (the -psx builds are the vanilla GNU tarball plus these patches)"
+topics   = ["compilers", "cc1", "gcc-2.6.3", "gcc-2.7.2", "gcc-2.95.2", "psx-patches", "release-assets", "compiler-ladder"]
+used_by  = "mmx6 R1.4-001 (the ladder; 20 files); BFM (4 docs)"
+checked  = "2026-10-01"
+
+[[ref]]
+name     = "ghidra-psx-ldr"
+url      = "https://github.com/lab313ru/ghidra_psx_ldr"
+ref      = "6f6be18615d9b42b1ce07740780623c3cf6cbd2c"
+licence  = "unstated in the repository"
+class    = "facts"
+tier     = "core"
+covers   = "the loader's PsyQ detection and per-version library signatures (data/)"
+topics   = ["ghidra-loader", "psyq-detection", "psyq-signatures", "library-identification", "overlays"]
+paths    = ["README.md", "data"]
+used_by  = "mmx6 R1.2-001; its signatures were the 1.2 authority for library identity (psyq_version 4.7.0, 811 sig functions); BFM (4 docs)"
+checked  = "2026-10-01"
+
+# ---- optional: fetched on demand ----------------------------------------------------------------------------------
+
+[[ref]]
+name     = "gcc-2.7.2-src"
+url      = "https://ftp.gnu.org/old-gnu/gcc/gcc-2.7.2.tar.gz"
+sha256   = "7cd8bce5c3aeec59a72ecc2d3d5123864a817b14cdbd0680b1a969c3bccc5da5"
+licence  = "GPL-2.0-or-later"
+class    = "copyleft"
+tier     = "optional"
+when     = "the compiler pin is a gcc 2.7.2 build (2.7.2, -psx, -cdk)"
+covers   = "vanilla gcc 2.7.2 exactly (old-gcc's source tarball); add old-gcc's patches/ for a -psx build"
+topics   = ["compiler-source", "codegen", "scheduling", "register-allocation", "gcc-2.7.2"]
+used_by  = "BFM: the codegen map's authority (292 citations of tools/reference/gcc-2.7.2)"
+checked  = "2026-10-01"
+
+[[ref]]
+name     = "gcc-2.95.2-src"
+url      = "https://ftp.gnu.org/gnu/gcc/gcc-2.95.2.tar.gz"
+sha256   = "064e1cb06ea5d2f4a07ec46c1c64d771f74d04f404b6a6766bca2477f7d72482"
+licence  = "GPL-2.0-or-later"
+class    = "copyleft"
+tier     = "optional"
+when     = "the compiler pin is a gcc 2.95.2 build (mmx6's pin: 2.95.2-psx)"
+covers   = "vanilla gcc 2.95.2 exactly (old-gcc's source tarball); add old-gcc's patches/ (psx-2.91.patch) for -psx"
+topics   = ["compiler-source", "codegen", "scheduling", "register-allocation", "gcc-2.95.2"]
+used_by  = "the BFM practice (the pinned compiler's own source) applied to mmx6's pin"
+checked  = "2026-10-01"
+
+[[ref]]
+name     = "pcsx-redux-psyq-obj-parser"
+url      = "https://github.com/grumpycoders/pcsx-redux"
+ref      = "2bcbea9dc79a4cac81892c5979fee97458905985"
+licence  = "GPL-2.0"
+class    = "copyleft"
+tier     = "optional"
+when     = "you supplied PsyQ libraries (byo) and need to convert their objects"
+covers   = "the PsyQ .OBJ/.LIB format as this parser reads it"
+topics   = ["psyq-obj", "lnk-format", "relocations", "library-conversion"]
+paths    = ["LICENSE", "tools/psyq-obj-parser"]
+used_by  = "BFM: vendor library conversion (20 files)"
+checked  = "2026-10-01"
+
+[[ref]]
+name     = "sotn-decomp"
+url      = "https://github.com/Xeeynamo/sotn-decomp"
+ref      = "9faca7c81c736a037949022237051cdd170e84e5"
+licence  = "AGPL-3.0"
+class    = "copyleft"
+tier     = "optional"
+when     = "laying out multi-overlay splat configs, or looking for a matched-C precedent"
+covers   = "one large PS1 decomp's layout and style; its include/psxsdk is NOT Sony's headers (see the traps)"
+topics   = ["overlays", "splat-config-per-overlay", "style", "fakes", "gte-macros", "matched-sdk-c"]
+paths    = ["LICENSE", "config", "include/psxsdk", "src/main/psxsdk"]
+used_by  = "mmx6 R1.3-002 (overlay config layout); BFM P36 (style precedent, GTE header)"
+checked  = "2026-10-01"
+
+[[ref]]
+name     = "psy-q-decomp"
+url      = "https://github.com/sozud/psy-q-decomp"
+ref      = "6edf9b24721ba02a53eb423b8a7497b82ba0768c"
+licence  = "MIT"
+class    = "adapt"
+tier     = "optional"
+when     = "you have no byo PsyQ SDK and need a library's matched C or build flags at a given version"
+covers   = "PsyQ libraries rebuilt per SDK version: read only the version matching the game's stamp"
+topics   = ["psyq", "sdk-versions", "libraries", "compiler-flags", "aspsx"]
+used_by  = "not yet used by mmx6 or BFM (kept: the only open per-version source when no SDK is supplied)"
+checked  = "2026-10-01"
+
+[[ref]]
+name     = "psx-spx"
+url      = "https://github.com/psx-spx/psx-spx.github.io"
+ref      = "00d5dcba9aa8ff9e23be7b6a2ebf3ac0407c42f3"
+licence  = "unstated in the repository (CC0 claimed by a third-party plugin's README; unverified)"
+class    = "facts"
+tier     = "optional"
+when     = "a question about the hardware (GPU, SPU, CD-ROM, GTE, DMA, timers, BIOS)"
+covers   = "the hardware, as documented by the psx-spx project"
+topics   = ["hardware", "gpu", "spu", "cdrom", "mdec", "gte", "bios", "exe-format", "memory-map"]
+paths    = ["docs"]
+used_by  = "BFM (named as the hardware reference in its starting point); mmx6: no use so far"
+checked  = "2026-10-01"
+
+[[ref]]
+name     = "spimdisasm"
+url      = "https://github.com/Decompollaborate/spimdisasm"
+ref      = "4b5d4c68eeb9f9eae14b3bb713971433ae2c3c43"
+licence  = "MIT"
+class    = "adapt"
+tier     = "optional"
+when     = "splat's output has wrong function boundaries (0 glabels, over-merged functions, data decoded as code) or a symbol's size is ignored"
+covers   = "spimdisasm 1.42.4 (= this commit; what mmx6's splat64 0.50.0 resolved); a repo on another pip pin reads its own tag (BFM: 1.41.0)"
+topics   = ["disassembler", "function-boundaries", "data-vs-code", "symbol-sizes", "splat-backend"]
+paths    = ["LICENSE", "README.md", "CHANGELOG.md", "spimdisasm/mips", "spimdisasm/common"]
+used_by  = "mmx6 phase 1.5 T1 (MipsSectionText farthestBranch: fix via sized symbols, not segment.py; cookbook C0042, C0048, C0053); BFM (pinned, 8 docs)"
+checked  = "2026-10-01"
+
+[[ref]]
+name     = "decompme-compilers"
+url      = "https://github.com/decompme/compilers"
+ref      = "bf4f879ea19fabdd97598bb6c9956eb8bc618aaa"
+licence  = "unstated in the repository"
+class    = "facts"
+tier     = "optional"
+when     = "you will publish or replicate a decomp.me PS1 preset, or need the toolchain a decomp.me PS1 compiler id runs"
+covers   = "what each decomp.me PS1 compiler id is built from at this commit (old-gcc release, maspsx commit, the as wrapper); read only: its build downloads PsyQ, never run it"
+topics   = ["decomp.me", "presets", "compiler-ids", "maspsx-pin", "old-gcc-release"]
+paths    = ["README.md", "values.yaml", "platforms/ps1", "templates/ps1"]
+used_by  = "BFM P33 E1 (tools/decompme_replica.sh, docs/decompme-preset.md: the preset proven locally before it was saved); the kit manifest's decompme_replica.sh row"
+checked  = "2026-10-01"
+
+# ---- byo: never fetched -------------------------------------------------------------------------------------------
+
+[[ref]]
+name     = "psyq-sdk"
+url      = ""
+ref      = ""
+licence  = "proprietary (Sony Computer Entertainment)"
+class    = "byo"
+topics   = ["psyq", "libraries", "headers", "libref", "libover", "sample-source"]
+covers   = "the release matching the game's stamp (config/psxdecomp.toml [psyq]); instructions only, never a URL (psxdecomp docs/REFS.md)"
+used_by  = "BFM: runtime library 4.2, the 4.6 libraries and the 4.0 sample C source (linked build, drafting shapes)"
+note     = "Never fetched. The user gives a local path; only that a path was given is recorded. Purged by the firewall (tools/psyq/)."
+
+# ---- links --------------------------------------------------------------------------------------------------------
+
+[[ref]]
+name     = "pcsx-redux-docs"
+url      = "https://pcsx-redux.consoledev.net/"
+class    = "link"
+licence  = "n/a"
+topics   = ["runtime-oracle", "lua", "cli-flags", "web-server", "breakpoints"]
+used_by  = "mmx6 R1.2-001 (4 pages: CLI flags, Lua basics, breakpoints, web server)"
+
+[[ref]]
+name     = "decomp.me"
+url      = "https://decomp.me"
+class    = "link"
+licence  = "n/a"
+topics   = ["scratches", "presets", "matching"]
+used_by  = "BFM (7 citations; a person uses it, never automated against)"
+
+[[ref]]
+name     = "decomp.dev"
+url      = "https://decomp.dev"
+class    = "link"
+licence  = "n/a"
+topics   = ["progress-tracking", "project-directory", "existing-decomps"]
+used_by  = "BFM (3 citations: greenfield check)"
+
+[[ref]]
+name     = "tcrf"
+url      = "https://tcrf.net"
+class    = "link"
+licence  = "CC BY 3.0 (site text)"
+topics   = ["prototypes", "versions", "unused-content", "debug-menus"]
+used_by  = "BFM (3), mmx6 (prior-art L8)"
+
+[[ref]]
+name     = "redump"
+url      = "http://redump.org/"
+class    = "link"
+licence  = "n/a"
+topics   = ["dump-verification", "dat-files", "track-hashes"]
+used_by  = "mmx6 (the dump's SHA-1 verified against Redump), BFM (1); identify.py --dat"
+
+[[ref]]
+name     = "decomp-wiki"
+url      = "https://decomp.wiki"
+class    = "link"
+licence  = "unstated (source: github.com/decompals/decompedia)"
+topics   = ["gcc-patterns", "codegen-idioms", "platform-notes"]
+covers   = "technique leads; its PSX gcc 'generally 2.6-2.8' is contradicted by PsyQ 4.6 shipping gcc 2.95.2 (psyq.toml, seen 2026-10-01)"
+used_by  = "BFM docs/matching-cookbook.md 28a (GCC patterns, PS1-applicable subset; 7 citations)"
+
+# ---- which source wins, per topic ---------------------------------------------------------------------------------
+
+[[authority]]
+topic = "compiler behaviour (why cc1 emitted this)"
+order = ["gcc-2.7.2-src", "gcc-2.95.2-src", "old-gcc"]
+scope = "per topic, refs audit 2026-10-01"
+rule  = "only the source of the PINNED version, plus old-gcc's patches for a -psx build; never another gcc's source"
+
+[[authority]]
+topic = "which compiler builds exist, how they are built"
+order = ["old-gcc"]
+rule  = "read the Dockerfile as it runs, not the build's name"
+
+[[authority]]
+topic = "assembler-shim flags (aspsx version, expand-div)"
+order = ["maspsx"]
+rule  = "a sibling project's flags are a lead for the ladder, never the pin"
+
+[[authority]]
+topic = "which PsyQ library function sits at an address"
+order = ["ghidra-psx-ldr", "psyq-sdk"]
+rule  = "signatures of the version matching the game's stamps; byte-verify against byo libraries when supplied"
+
+[[authority]]
+topic = "which PsyQ version the game links"
+order = ["ghidra-psx-ldr"]
+rule  = "its DetectPsyQ decides; identify.py's Ps-stamp probe agrees on stamped games; PsyQ <=3.5 has no stamp and is signature-only"
+
+[[authority]]
+topic = "PsyQ API: signatures, headers, struct layouts"
+order = ["psyq-sdk", "psy-q-decomp", "sotn-decomp"]
+rule  = "the byo SDK of the stamped version wins; psy-q-decomp only at that version; sotn's psxsdk is a fallback with non-Sony extensions"
+
+[[authority]]
+topic = "hardware"
+order = ["psx-spx"]
+rule  = "psx-spx over any SDK header comment"
+
+[[authority]]
+topic = "splitter configuration"
+order = ["splat", "sotn-decomp"]
+rule  = "splat's own segment types first; sotn for a multi-overlay layout precedent"
+
+# ---- contradictions already paid for ------------------------------------------------------------------------------
+
+[[trap]]
+what     = "pmret/gcc-papermario is gcc 2.8.1, not 2.7.2: some optimisation paths differ (2.8.1 disables biv-elim paths 2.7.2 runs)"
+evidence = "BFM Phase 23 (docs/SETUP.md reference table)"
+do       = "cite only the vanilla source of the pinned version (gcc-2.7.2-src)"
+
+[[trap]]
+what     = "ftp.gnu.org/gnu/gcc has only gcc-2.7.2.3; the gcc-2.7.2 tarball the -psx builds use is under /old-gnu/"
+evidence = "psxdecomp refs audit 2026-10-01; decompals/old-gcc gcc-2.7.2*.Dockerfile"
+do       = "gcc-2.7.2-src pins the /old-gnu/ tarball by sha256"
+
+[[trap]]
+what     = "sotn-decomp's include/psxsdk/libgte.h adds 7 gte_* macros Sony's inline_c.h does not have"
+evidence = "BFM Phase 36 log"
+do       = "treat sotn's psxsdk headers as a project's, not Sony's; check the byo SDK"
+
+[[trap]]
+what     = "a build rule's name is not its toolchain: mmx4's cc1_263/aspsx_263 rules run gcc 2.7.2 and maspsx 2.56"
+evidence = "mmx6 docs/prior-art.md Corrections (P4, 2026-10-01)"
+do       = "read what a sibling's build actually runs before recording its pin"
+
+[[trap]]
+what     = "PSn00bSDK is an open SDK with its own API; same-named functions do not share PsyQ's semantics"
+evidence = "psxdecomp refs audit 2026-10-01 (dropped from the library)"
+do       = "never answer a PsyQ question from PSn00bSDK"
+
+[[trap]]
+what     = "Ps stamps date the linked PsyQ libraries, not the compiler the game's own code was built with"
+evidence = "mmx6 (4.7 libraries, game gcc 2.95.2); ygofm-decomp (4.6 libraries, game gcc 2.8.1); BFM (4.0 libraries, mixed cc1s); psxdecomp research B2 C1, 2026-10-01"
+do       = "treat config/psxdecomp.toml [psyq] as a lead for the compiler phase; pin the compiler from matched bytes"
+
+[[trap]]
+what     = "a PsyQ release need not ship a compiler: 4.2 is library-only and psyq47.zip holds no .EXE (decomp.me has no psyq4.2/4.7 id)"
+evidence = "BFM docs/SETUP.md 5.2; ygofm-decomp docs/DECISIONS.md (2026-08-31); decomp.me compilers.py (seen 2026-10-01)"
+do       = "for a 4.2 or 4.7 game, take compiler candidates from other releases and from sibling repos, never from 'the SDK's cc1'"
+
+[[trap]]
+what     = "archive folder labels are unreliable: the '4.5 bundle' cc1 reports the 2.8.1 SN32 banner BFM measured for 4.4"
+evidence = "ygofm-decomp docs/DECISIONS.md vs BFM docs/SETUP.md 5.2 (psxdecomp research B2 C3, 2026-10-01)"
+do       = "identify a cc1 by its banner (strings CC1PSX.EXE), never by the folder or archive it came in"
+
+[[trap]]
+what     = "Sony built the libraries with an older cc1 than the SDK shipped (4.7 libs: patched gcc 2.7.2 plus some SN 2.8.1 objects), and stock old-gcc does not match those 4.7 library objects"
+evidence = "dw3_decomp PR 4 (2026-09-26) and README; dcb_decomp README; NFSHS build.py (psxdecomp research B2 C4/C5, 2026-10-01)"
+do       = "keep library code as asm or link the user's own objects; do not pin the game's compiler from a library match"
+
+[[trap]]
+what     = "a one-triple compiler pin is a finding, not a default: per-module compiler mixing is common (Xenogears 3 cc1s, FF8 lanes, Legend of Mana 4 compilers)"
+evidence = "decomp.dev projects and their build files (psxdecomp research B2 C9, seen 2026-10-01)"
+do       = "pin per module when bytes demand it; record one triple only after every module class matched under it"
+
+[[trap]]
+what     = "not every PS1 game is PsyQ gcc: Digimon World uses Metrowerks CodeWarrior PS R4 (mw_lib41); the THPS2 demo uses unmodified egcs 1.1.2"
+evidence = "jype0/dw_decomp README; thps2-demo-decomp README (psxdecomp research B2 C13, seen 2026-10-01)"
+do       = "let the bytes (prologue idioms, library signatures) pick the compiler family before assuming a PsyQ cc1"
+
+[[trap]]
+what     = "decomp.me's gcc2.7.2-psx is not a repo's toolchain: old-gcc release 0.13 vs BFM's 0.17, another maspsx commit, and gas pads .text to 16 bytes"
+evidence = "BFM tools/decompme_replica.sh header (P33 E1, 2026-09-07)"
+do       = "prove a preset through the kit's decompme_replica before saving it; read the verdict, not the .text size"

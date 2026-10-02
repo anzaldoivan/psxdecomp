@@ -1,0 +1,32 @@
+name: ci
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"          # weekly: tier 1b (the pipeline smoke in the profile container)
+  workflow_dispatch:
+
+jobs:
+  tier0-tier1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pytest pyyaml
+      - name: Tier 0 — the repo's own firewall
+        run: python tools/audit_public.py --self-test && python tools/audit_public.py
+      - name: Tier 0 — static checks and every script's self-test
+        run: pytest -q tests/test_static.py tests/test_scripts.py
+      - name: Tier 1 — the deterministic installer on the homebrew fixture
+        # PA3 is cloned at the pin from GitHub. The kit is not yet published: until compat.toml [kit].repo is set,
+        # these tests skip with that reason (run them locally with PSXDECOMP_KIT=<kit folder>).
+        run: pytest -q -rs tests/test_pipeline.py
+
+  tier1b-smoke:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tier 1b — extract, split, all-asm build, hash, in the profile container
+        run: bash fixtures/homebrew-psx/smoke/run.sh

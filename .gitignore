@@ -1,0 +1,9 @@
+# psxdecomp: nothing generated is tracked. The fixtures are built at test time into temp dirs.
+__pycache__/
+*.pyc
+/.pytest_cache/
+/.run/
+/refs/
+/evals/results/
+/build/
+.DS_Store
