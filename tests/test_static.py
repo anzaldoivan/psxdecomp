@@ -204,10 +204,10 @@ def test_psyq_catalogue():
 
 
 def test_stage_names_match():
-    """README, SKILL.md and stages.md tables and the ARCHITECTURE flow all name common.STAGES (one home)."""
+    """SKILL.md and stages.md tables and the ARCHITECTURE flow all name common.STAGES (one home; the README links)."""
     import common
     want = [(s[0], s[1]) for s in common.STAGES]
-    for rel in ("README.md", "skills/new/SKILL.md", "skills/new/reference/stages.md"):
+    for rel in ("skills/new/SKILL.md", "skills/new/reference/stages.md"):
         got = [(i, n.lower()) for i, n in re.findall(r"^\| (S\d+) (\w+) \|", (ROOT / rel).read_text(), re.M)]
         assert got == want, rel
     arch = (ROOT / "docs/ARCHITECTURE.md").read_text().split("```")[1]
