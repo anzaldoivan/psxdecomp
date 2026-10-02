@@ -21,7 +21,7 @@ Every stage of `/psxdecomp:new`:
 | S7 intake | `PROJECT_CONTEXT.md` and what PA3's intake writes | the intake |
 | S8 kit | the kit's files (its installer); `.run/decomp-architect/` | the kit's close commit |
 | S9 refs | `config/refs.toml`, `docs/ops/refs.md`, `.gitignore` `/refs/`, `.ignore` `!/refs/` (search still reaches refs/), `config/firewall.txt` purge line, one `HOW_WE_WORK.md` line, `docs/ops/INDEX.md` row; ignored `refs/` | the refs commit |
-| S10 handoff | `config/psxdecomp.toml`, `config/psxdecomp.profile.toml`, `docs/ops/host-recipe.md`, `docs/prior-art.md` | the handoff commit |
+| S10 handoff | `config/psxdecomp.toml`, `config/psxdecomp.profile.toml`, `docs/ops/host-recipe.md` (with install commands), `docs/prior-art.md`, the AI policy block in `README.md` | the handoff commit |
 
 Deviations (`--force-untested`, `--intake-fixture`, PA3 leaving uncommitted paths, a kit dry-run mismatch) are kept
 in the state file and written into `config/psxdecomp.toml [deviations]`.

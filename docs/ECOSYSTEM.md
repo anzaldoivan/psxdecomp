@@ -11,7 +11,7 @@ activity) · **watch** (re-check on the next release).
 |---|---|---|---|---|---|
 | [Druthulu/ProjectArchitect](https://github.com/Druthulu/ProjectArchitect) | `v3.14.2` = `0ccf0df` | 2026-10-01 | pinned | see repo | the governance framework, installed unchanged; `pa_install.py --project --yes` is the unattended path (S6) |
 | ProjectArchitect | `v3.15.2` = `7f01318` | 2026-10-01 | watch | — | newer than the pin; bump only through RELEASING |
-| decomp-architect kit (ships in Druthulu/BFM-decomp until its split) | digest `sha256:581f5ec0…` | 2026-10-01 | pinned | — | the decomp overlay, installed by its own `install.py --answers` (S8); its firewall templates (S5) |
+| decomp-architect kit ([anzaldoivan/BFM-decomp](https://github.com/anzaldoivan/BFM-decomp) branch `kit-pa3`, `decomp-architect/`) | `898aeb3`, digest `sha256:581f5ec0…` | 2026-10-02 | pinned | — | the decomp overlay, installed by its own `install.py --answers` (S8); its firewall templates (S5) |
 | [RetroPortingToolKit/psxrecomp](https://github.com/RetroPortingToolKit/psxrecomp) | `3505f2a` | 2026-10-01 | metadata only | PolyForm Noncommercial 1.0.0 | ideas only: the CLI scaffold shape, the disc probe's outputs, the single pin manifest, audit→plan→apply migration, this ledger's shape |
 | [sozud/psy-q-decomp](https://github.com/sozud/psy-q-decomp) | `6edf9b2` | 2026-10-01 | metadata only | MIT | a `refs` row (no use yet in mmx6 or BFM) |
 | [Xeeynamo/psyz](https://github.com/Xeeynamo/psyz) | `6bd06da` | 2026-10-01 | metadata only | MIT / MPL-2.0 / unlicensed by path | not a `refs` row (no use in mmx6 or BFM) |
@@ -59,6 +59,7 @@ repo owns its own text. Each row goes to its owner as its own change. States: **
 | K8 | GitHub firewall settings and files from DC2 T0 (vulnerability reporting, rulesets, push protection, pinned actions) | DC2's settings read through `gh api` (2026-10-02); doctor's `github` row lints them | kit | proposed |
 | K9 | `.gitattributes` and `.editorconfig` | shared by the PS1 projects at 100% on decomp.dev (2026-10-02) | kit | proposed |
 | K10 | An optional `decomp.yaml` (ethteck/decomp_settings) | lom-decomp ships one; tools read one settings file (2026-10-02) | kit | proposed |
+| K11 | Carry the AI policy block in the README skeleton itself, above `{{AI_DISCLOSURE}}` | psxdecomp's S10 inserts it into every generated README meanwhile (`common.AI_POLICY`, 2026-10-02) | kit | proposed |
 | M1 | Mark the bootstrap-era compiler candidate as superseded: one `HOW_WE_WORK.md` line for `PROJECT_CONTEXT.md:149,498` (never edited), a prefix on `docs/ops/decomp-environment.md:11` and the install record's line 14 | the candidate text still reads as current while `docs/ops/compiler-pin.md` holds the pin; the mislabelled mmx4 rules are already a `refs.toml` trap (2026-10-01) | mmx6 | proposed (after its router session) |
 
 ## Rules for reuse

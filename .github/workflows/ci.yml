@@ -56,8 +56,7 @@ jobs:
           key: psxdecomp-pins-${{ hashFiles('compat.toml') }}
       - run: pip install pytest pyyaml
       - name: Tier 1 — PA3 cloned at its pin; the kit from compat.toml [kit].repo + sha, digest-checked
-        # Until the kit is published ([kit].repo empty), these tests skip with that reason; run them locally with
-        # PSXDECOMP_KIT=<kit folder>.
+        # The kit is fetched shallow and sparse at compat.toml [kit].sha and digest-checked; the cache above keeps it.
         run: pytest -q -rs tests/test_pipeline.py
 
   tier1b-smoke:

@@ -60,4 +60,4 @@ anything else; `--force-untested` proceeds and records a deviation in the game r
 | 2 | manual / pre-release | `claude plugin eval . --ablation none --runs 1` — regex, `tool_used`, `tool_order`, `file_exists` graders only; tag `hygiene` (5 runs, pass^5) proves an agent grepping a poisoned game repo answers the current pin, not stale or kit text, with one `llm` grader on the short answer |
 | 3 | per release | `/psxdecomp:new` on a real game with your own dump, stopped at PA3's first planner draft |
 
-Tier 1 needs the kit; until it is published CI skips it with that reason and it runs locally with `$PSXDECOMP_KIT`.
+Tier 1 fetches the kit at its `compat.toml` pin (cached by the pins in CI); `$PSXDECOMP_KIT` substitutes a local copy.

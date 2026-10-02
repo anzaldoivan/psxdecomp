@@ -36,8 +36,7 @@ def kit():
         return path
     import common
     if not common.compat()["kit"].get("repo"):
-        pytest.skip("no kit: PSXDECOMP_KIT is not set and compat.toml [kit].repo is empty (the kit is not yet "
-                    "published; tier 1 needs a local copy)")
+        pytest.skip("no kit: PSXDECOMP_KIT is not set and compat.toml [kit].repo is empty")
     try:
         found, _ = common.resolve_kit()
     except common.Fail as e:

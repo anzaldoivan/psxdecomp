@@ -10,12 +10,12 @@ version = "3.14.2"                                      # the package's VERSION 
 subdir  = "project-architect-3.0"
 
 [kit]
-# decomp-architect is not yet published as its own repository (it ships inside Druthulu/BFM-decomp until its split).
-# Until then it is pinned by a content digest (scripts/common.py tree_digest) and located by --kit or $PSXDECOMP_KIT.
-# When it is published, set repo + sha and keep the digest as a second check.
-repo         = ""
-sha          = ""
-subdir       = "."
+# decomp-architect ships inside BFM-decomp (no repository of its own yet). The tested kit is the `kit-pa3` branch of
+# anzaldoivan/BFM-decomp, fetched shallow and sparse at `sha` (scripts/common.py resolve_kit); the content digest
+# (tree_digest) is the second check. --kit or $PSXDECOMP_KIT overrides the fetch with a local folder (digest-checked).
+repo         = "https://github.com/anzaldoivan/BFM-decomp.git"
+sha          = "898aeb324d557ae3c5c672ef08bdbbc3db080962"     # branch anzaldoivan/kit-pa3, 2026-09-30
+subdir       = "decomp-architect"
 digest       = "sha256:581f5ec0553b8c9119fca08ebb3b863caeb3bb2c1e5039402aa67f403ce6e748"
 tested_pa3   = "3.14.2"                                 # the kit's own TESTED_PA3
 default_path = ""

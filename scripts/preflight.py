@@ -55,16 +55,18 @@ def check_all(target: pathlib.Path, resume=False, python=None, min_disk_gb=30, d
     st, d = folder_state(target, resume)
     add("folder", st, d)
     g = shutil.which("git")
-    add("git", "OK" if g else "FAIL", common.run(["git", "--version"]).stdout.strip() if g else "git not on PATH")
+    add("git", "OK" if g else "FAIL", common.run(["git", "--version"]).stdout.strip() if g else "git not on PATH; " + common.install_hint("git"))
     gh = shutil.which("gh")
     if gh:
         auth = common.run(["gh", "auth", "status"], check=False)
         add("gh", "OK" if auth.returncode == 0 else "WARN",
             "authenticated" if auth.returncode == 0 else "installed, not logged in (research uses it for repo facts)")
     else:
-        add("gh", "WARN", "gh not on PATH (optional: repo facts and licences come from the GitHub API)")
+        add("gh", "WARN", "gh not on PATH (optional: repo facts and licences come from the GitHub "
+            "API); " + common.install_hint("gh"))
     py = common.find_python((3, 12), python or os.environ.get("CLAUDE_PLUGIN_OPTION_PYTHON_PATH"))
-    add("python", "OK" if py else "FAIL", py or "no Python >= 3.12 found (PA3 needs it for its hooks)", path=py)
+    add("python", "OK" if py else "FAIL", py or "no Python >= 3.12 found (PA3 needs it for its hooks); " +
+        common.install_hint("python"), path=py)
     dk = shutil.which("docker")
     if dk:
         info = common.run(["docker", "info", "--format", "{{.Architecture}} {{.OSType}}"], check=False)
@@ -83,7 +85,8 @@ def check_all(target: pathlib.Path, resume=False, python=None, min_disk_gb=30, d
                 detail += "; amd64 via emulation (check with --deep)"
             add("docker", status, detail)
     else:
-        add("docker", "WARN", "not installed (the build container is phase 1.0's; install Docker before then)")
+        add("docker", "WARN", "not installed (the build container is phase 1.0's); " +
+            common.install_hint("docker"))
     probe = target if target.exists() else target.parent
     free = shutil.disk_usage(probe).free / 1e9
     add("disk", "OK" if free >= min_disk_gb else "WARN", "%.0f GB free (want >= %d for builds and scratch)"
@@ -102,7 +105,24 @@ def check_all(target: pathlib.Path, resume=False, python=None, min_disk_gb=30, d
             "~/.claude/settings.json, so you run it yourself)")
     add("host", "OK", "%s %s" % (platform.system(), platform.machine()),
         recipe="macos-arm64" if platform.system() == "Darwin" else "linux-amd64")
+    wsl = wsl_row(platform.release(), target)
+    if wsl:
+        add("wsl", *wsl)
     return rows
+
+
+def wsl_row(release: str, target: pathlib.Path) -> tuple[str, str] | None:
+    """On WSL: version 1 cannot run the toolchain (no 32-bit ELF, no Docker Desktop), and a project under /mnt/<drive>
+    sits on the slow Windows filesystem. None off WSL (docs/ops/host-recipe.md, WSL section)."""
+    rel = release.lower()
+    if "microsoft" not in rel:
+        return None
+    if "wsl2" not in rel and "microsoft-standard" not in rel:
+        return "WARN", ("WSL 1: the old cc1 (32-bit) and Docker need WSL 2; in PowerShell: wsl --set-version "
+                        "<distro> 2")
+    if str(target).startswith("/mnt/"):
+        return "WARN", "WSL 2, but %s is on the Windows filesystem: use a folder under ~ (much faster)" % target
+    return "OK", "WSL 2, Linux filesystem"
 
 
 def main(argv=None) -> int:
@@ -151,6 +171,12 @@ def self_test() -> int:
         ok &= folder_state(t, False)[0] == "FAIL"           # an earlier bootstrap: needs --resume
         ok &= folder_state(t, True)[0] == "OK"
     ok &= common.find_python((3, 12)) is not None
+    home = pathlib.Path("/home/me/game")                    # kernel release strings as WSL reports them
+    ok &= wsl_row("6.8.0-45-generic", home) is None
+    ok &= wsl_row("4.4.0-19041-Microsoft", home)[0] == "WARN"
+    ok &= wsl_row("5.15.153.1-microsoft-standard-WSL2", home) == ("OK", "WSL 2, Linux filesystem")
+    ok &= wsl_row("5.15.153.1-microsoft-standard-WSL2", pathlib.Path("/mnt/c/game"))[0] == "WARN"
+    ok &= common.install_hint("gh", "Linux").startswith("install: GitHub's apt repository")
     return common.self_test_banner("preflight", ok)
 
 

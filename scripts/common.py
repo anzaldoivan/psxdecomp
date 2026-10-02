@@ -198,8 +198,8 @@ def resolve_pa3(force_untested=False, source=None, dry=False) -> tuple[pathlib.P
 
 
 def resolve_kit(force_untested=False, path=None) -> tuple[pathlib.Path, list[str]]:
-    """Return (the decomp-architect kit folder, deviations). The kit is not yet published as a git repository, so it is
-    pinned by a content digest (compat.toml kit.digest) and located by --kit, $PSXDECOMP_KIT, or kit.default_path."""
+    """Return (the decomp-architect kit folder, deviations): --kit, $PSXDECOMP_KIT or kit.default_path when given, else
+    compat.toml kit.repo fetched at kit.sha into the cache; either way checked against kit.digest."""
     c = compat()["kit"]
     devs = []
     cand = path or os.environ.get("PSXDECOMP_KIT") or c.get("default_path", "")
@@ -268,3 +268,53 @@ def self_test_banner(name: str, ok: bool):
 
 def load_toml_str(text: str) -> dict:
     return tomllib.loads(text)
+
+
+# ---- the AI policy (one home: psxdecomp's README carries it verbatim, tier 0 checks; S10 puts it in every game
+# README) --------------------------------------------------------------------------------------------------------
+AI_POLICY = ("LLMs produce negligible decompilation results without good guidance. Investigate and familiarize "
+             "yourself with the console's architecture and the game you are decompiling, and always use your own "
+             "judgment. Humans drive the decisions; AI reads and writes the code.")
+AI_POLICY_MARK = "<!-- psxdecomp: ai-policy -->"
+
+
+def ai_policy_block() -> str:
+    return "%s\n> [!IMPORTANT]\n> **AI policy:** %s\n" % (AI_POLICY_MARK, AI_POLICY)
+
+
+def with_ai_policy(readme: str) -> str:
+    """The README with the AI policy block after its title and lead paragraph (before the first `## `); unchanged when
+    the block is already there."""
+    if AI_POLICY_MARK in readme:
+        return readme
+    lines = readme.splitlines(keepends=True)
+    at = next((i for i, l in enumerate(lines) if l.startswith("## ")), len(lines))
+    head = "".join(lines[:at]).rstrip("\n")
+    return (head + "\n\n" if head else "") + ai_policy_block() + "\n" + "".join(lines[at:])
+
+
+# ---- install hints: what to run when a tool is missing (macOS: Homebrew; Linux: apt, and the Homebrew formula when
+# one exists; casks are macOS-only) -------------------------------------------------------------------------------
+# Linux values checked 2026-10-02 (apt-cache in Ubuntu 22.04-26.04 and Debian 12-13 images; the Homebrew API);
+# profiles/psx/hosts/linux-amd64.md holds the table and the WSL notes.
+INSTALL = {   # tool: (macOS, Debian/Ubuntu, Homebrew on Linux or None)
+    "git": ("brew install git", "sudo apt install git", "brew install git"),
+    "gh": ("brew install gh", "GitHub's apt repository, https://github.com/cli/cli/blob/trunk/docs/install_linux.md "
+           "(the distro gh 2.45/2.46 is broken)", "brew install gh"),
+    "python": ("brew install python@3.14", "sudo apt install python3 python3-venv (3.12+ on Ubuntu 24.04+ and Debian "
+               "13+ only)", "brew install python@3.14"),
+    "docker": ("brew install --cask docker-desktop", "sudo apt install docker.io (WSL 2: Docker Desktop's WSL "
+               "integration, or docker.io with systemd on)", None),
+    "claude": ("brew install --cask claude-code", "curl -fsSL https://claude.ai/install.sh | bash",
+               "brew install --cask claude-code"),
+    "ripgrep": ("brew install ripgrep", "sudo apt install ripgrep", "brew install ripgrep"),
+}
+
+
+def install_hint(tool: str, system: str | None = None) -> str:
+    """`install: brew install X` on macOS; `install: sudo apt install Y (or brew install X)` on Linux."""
+    import platform
+    mac, apt, linuxbrew = INSTALL[tool]
+    if (system or platform.system()) == "Darwin":
+        return "install: %s" % mac
+    return "install: %s%s" % (apt, " (or %s)" % linuxbrew if linuxbrew else "")

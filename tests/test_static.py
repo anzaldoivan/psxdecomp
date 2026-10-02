@@ -272,3 +272,17 @@ def test_upstream_proposals():
         assert r[3] in {"kit", "mmx6", "PA3", "DC2", "BFM"}, (r[0], r[3])
         assert r[4].split(" (")[0] in states, (r[0], r[4])
     assert len({r[0] for r in rows}) == len(rows)
+
+
+def test_ai_policy_and_install_hints():
+    """The AI policy has one home (common.AI_POLICY): the README carries its block verbatim, and S10 puts the same
+    block in every game README. Every host recipe a game repo receives carries install commands."""
+    import common
+    readme = (ROOT / "README.md").read_text()
+    assert common.ai_policy_block() in readme and readme.index(common.AI_POLICY_MARK) < readme.index("\n## ")
+    assert not readme.split("\n", 1)[1].lstrip().startswith(">"), "no status banner above the lead paragraph"
+    t = "# T\n\nLead.\n\n## A\n"
+    assert common.with_ai_policy(common.with_ai_policy(t)) == common.with_ai_policy(t)
+    for recipe in (ROOT / "profiles/psx/hosts").glob("*.md"):
+        assert "## Install" in recipe.read_text() and "brew install" in recipe.read_text(), recipe.name
+    assert all(common.install_hint(t, "Darwin").startswith("install: brew ") for t in common.INSTALL)

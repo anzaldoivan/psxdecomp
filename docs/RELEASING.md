@@ -2,7 +2,7 @@
 
 ## A release
 
-1. Tiers 0 and 1 green locally (`pytest -q`, with `PSXDECOMP_KIT` set) and in CI.
+1. Tiers 0 and 1 green locally (`pytest -q`) and in CI.
 2. Tier 1b green (`bash fixtures/homebrew-psx/smoke/run.sh` → `SMOKE OK`).
 3. Tier 2: `claude plugin eval . --ablation none --runs 1 --no-publish` (Bash, Write and WebFetch need
    `--allow-tools Bash Write WebFetch` for the flow cases; `refs-grep` needs `--scaffold`). Every case at 1.0, or a
@@ -29,7 +29,8 @@
    tests/test_pipeline.py`) and review its diff line by line.
 4. Tiers 1b and 2; then ECOSYSTEM.md's row becomes `pinned`. Game repos move with `/psxdecomp:upgrade`.
 
-## Publishing the kit
+## When the kit moves
 
-When decomp-architect is split into its own repository: set `[kit] repo` and `sha` in `compat.toml` (keep `digest`
-as the second check), and CI runs tier 1 instead of skipping it.
+The kit is pinned to a commit on a branch of a fork (`compat.toml [kit]`). Keep that branch: a commit no branch
+reaches can stop being fetchable. When decomp-architect gets its own repository, or the branch moves, change `repo`,
+`sha` and `subdir` (keep `digest` as the second check) and run tier 1 before the bump lands.

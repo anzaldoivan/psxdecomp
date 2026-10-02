@@ -450,6 +450,10 @@ def s10_handoff(c: Ctx) -> str:
     if pa_src.is_file() and not c.p("docs/prior-art.md").exists():
         c.write("docs/prior-art.md", common.read(pa_src))
         paths.append("docs/prior-art.md")
+    readme = c.p("README.md")                     # the kit's README skeleton: the AI policy block under its lead
+    if readme.is_file() and common.AI_POLICY_MARK not in common.read(readme):
+        c.write("README.md", common.with_ai_policy(common.read(readme)))
+        paths.append("README.md")
     how = c.p("HOW_WE_WORK.md")
     if how.is_file() and SCOPE_MARK not in common.read(how):
         c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Docs map", scope_line(ans, psyq_v)))
@@ -465,8 +469,8 @@ def s10_handoff(c: Ctx) -> str:
     if bad:
         raise common.Fail("doctor: %s" % "; ".join("%s: %s" % (r[0], r[2]) for r in bad))
     card_check(c)
-    sha = c.commit(paths, "psxdecomp handoff: the bootstrap record (pins, profile, host recipe) and the prior-art "
-                          "table")
+    sha = c.commit(paths, "psxdecomp handoff: the bootstrap record (pins, profile, host recipe), the prior-art "
+                          "table and the README's AI policy")
     nxt = ("Next: a bare `claude` in this repository; PA3's planner drafts GENERATION_PLAN.md from the ladder."
            + (" Phase 1.2 leads: %s." % (BOOT + "/seeds.txt") if seeds.is_file() else ""))
     return "record %s, commit %s. %s" % (RECORD, sha, nxt)

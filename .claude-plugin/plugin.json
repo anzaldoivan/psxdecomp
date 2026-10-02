@@ -17,7 +17,7 @@
     "kit_path": {
       "type": "string",
       "title": "decomp-architect kit folder",
-      "description": "Local folder of the decomp-architect kit (until it is published as its own repository).",
+      "description": "Optional: a local decomp-architect kit folder to use instead of the pinned one psxdecomp fetches (digest-checked).",
       "required": false
     },
     "docker_host": {

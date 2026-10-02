@@ -12,3 +12,16 @@ container with the source in a named volume.
   the container. (mmx6's `tools/docker/mx.sh build|sync|pull|disc|run` is the reference shape as of 2026-10-01; phase 1.0 builds it.)
 - **The dump** is loaded once into its own read-only volume (`disc`), top-level `*.cue`/`*.bin` only.
 - **Oracles on the host:** Ghidra + ghidra_psx_ldr + an MCP server (static); PCSX-Redux with Lua (runtime).
+
+## Install
+
+```sh
+xcode-select --install                     # git and the command-line tools
+brew install git python@3.14 gh ripgrep
+brew install --cask claude-code docker-desktop
+brew install ghidra openjdk@21             # the static oracle (Ghidra needs a JDK)
+```
+
+Start Docker Desktop once; amd64 images then run under emulation (Settings → General → "Use Rosetta" makes them
+faster). PCSX-Redux has no Homebrew package: take its macOS build from the project's releases page. The PsyQ SDK is
+never installed this way; see `docs/ops/refs.md` (psyq-sdk row).

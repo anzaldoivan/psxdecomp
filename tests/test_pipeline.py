@@ -7,6 +7,8 @@ import pytest
 
 from conftest import PY, ROOT, bootstrap, run, tree
 
+import common
+
 GOLDEN = ROOT / "tests" / "golden" / "fixture-tree.txt"
 
 
@@ -83,6 +85,10 @@ def test_doctor_and_record(game):
     shutil.rmtree(game / "refs" / "probe")
     assert "purge: refs/" in (game / "config/firewall.txt").read_text()
     assert "docs/ops/refs.md" in (game / "HOW_WE_WORK.md").read_text()
+    readme = (game / "README.md").read_text()                               # the AI policy, once, under the lead
+    assert readme.count(common.AI_POLICY) == 1 and readme.index(common.AI_POLICY_MARK) < readme.index("\n## ")
+    recipe = (game / "docs/ops/host-recipe.md").read_text()
+    assert "brew install" in recipe
 
 
 def test_scoped_outputs(game):
