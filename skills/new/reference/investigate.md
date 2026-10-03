@@ -20,8 +20,9 @@ Inputs: the title, region/version and serial (from `.run/bootstrap/interview.jso
    another platform or region, speaks only for that release. Addresses read from a patched disc or its RAM
    (randomizer, Archipelago, practice build) are leads only where the source marks them vanilla. A mod's own build
    settings (its compiler, PsyQ version, linker flags) never enter the 1.4 ladder. Practice, randomizer and
-   Archipelago features are never scope: take addresses, names and layout facts only. When romhacking.net refuses
-   (403), search archive.org: WebFetch
+   Archipelago features are never scope: take addresses, names and layout facts only. ROM-hack documents are a
+   `--deep` probe only (no replayed project has yet used community RAM addresses for a matching decision): with
+   `--deep`, when romhacking.net refuses (403), search archive.org: WebFetch
    `https://archive.org/advancedsearch.php?q="<title>"+AND+(hack+OR+patch+OR+project+OR+addendum+OR+tweaks+OR+documentation+OR+notes)+AND+NOT+mediatype:(movies+OR+audio+OR+etree)&fl[]=identifier&fl[]=title&fl[]=mediatype&rows=50&output=json`,
    then `https://archive.org/metadata/<identifier>` for items whose title names a hack, patch, project or
    documentation; read only text and workbook files, never a disc image, ROM set or patch archive.
