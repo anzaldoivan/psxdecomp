@@ -24,19 +24,16 @@ cannot answer. Write the result to `.run/bootstrap/interview.json` (keys below),
    `MIT` (recommended for a new project), `AGPL-3.0` (needed to adapt AGPL sources such as sotn-decomp or mmx4),
    `GPL-3.0`, `Other`. Name the licence-compatibility consequence for any `copyleft` lead S3 may find.
 3. **Visibility** on day one — `private` / `public` (the firewall applies either way).
-4. **AI disclosure** — default sentence: "This project is developed with substantial AI assistance; every change is
-   justifiable from recorded evidence, a person reviews each phase gate, and contributors disclose AI-generated
-   submissions."
+4. **AI disclosure** — default: psxdecomp's AI policy, verbatim (`"$PSXD" answers policy` prints it). S8 puts it in
+   the game README as the AI policy block, in place of the kit's disclosure paragraph; a sentence of the developer's
+   own stays as written, below the block.
 
-## Round 3 — optional
-
-1. **Your own PsyQ SDK** (`byo`) — a local folder path, or `none`. Never fetched, never committed; the repository's
-   firewall purges `tools/psyq/`. Record only that a path was given (the path stays in `.run/`).
+No PsyQ question here: S4 asks it, once S2 has read the version the game links (`reference/gate.md`).
 
 ## interview.json
 
 ```json
 {"console": "psx", "title": "...", "region_version": "USA v1.1", "dump_path": "/abs/path.cue or empty",
- "goals": "...", "licence": "MIT ...", "visibility": "private", "ai_disclosure": "...", "byo_psyq_path": "",
+ "goals": "...", "licence": "MIT ...", "visibility": "private", "ai_disclosure": "...",
  "project_name": "<slug of the title>-decomp"}
 ```

@@ -113,7 +113,7 @@ def test_eval_cases():
             assert (case.parent / sc).is_file()
     assert {"no-autofire", "interview-first", "answers-path", "refs-grep", "refs-grep-ignored", "refuse-nonpsx",
             "backtest-x6", "backtest-dc2", "backtest-bfm", "poisoned-grep", "poisoned-grep-raw", "unpinned-candidate",
-            "kit-calibration-scope", "id-collision"} <= names
+            "kit-calibration-scope", "id-collision", "restart-handoff", "psyq-question"} <= names
 
 
 def _passes(g, text):

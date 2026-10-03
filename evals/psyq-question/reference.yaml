@@ -1,0 +1,6 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "5. Game links PsyQ 4.7. The build doesn't need the SDK: the matching compilers come from old-gcc. Give a local PsyQ 4.7 path only for reference headers and libs, or `none` (recommended)."
+bad:
+  - "4. Your own PsyQ SDK: a local folder path, or none."
+  - "Game links PsyQ 4.7. Give the path of your PsyQ 4.7 SDK so the build can use it."

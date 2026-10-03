@@ -3,6 +3,7 @@
 few PSXDECOMP_ keys).
 
     answers.py template                              the kit's empty template (equal to the kit's --answers-template)
+    answers.py policy                                the AI policy sentence (the interview's AI_DISCLOSURE default)
     answers.py check FILE [--allow-no-dump]          every key present; DUMP_PATH absolute (or empty with the flag)
     answers.py split FILE --kit-out K [--extra-out E.json]
                                                      write the kit's 13-key file and psxdecomp's extras
@@ -132,7 +133,7 @@ def split(values: dict) -> tuple[dict, dict]:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", nargs="?", choices=["template", "check", "split", "render"])
+    ap.add_argument("cmd", nargs="?", choices=["template", "policy", "check", "split", "render"])
     ap.add_argument("file", nargs="?")
     ap.add_argument("--allow-no-dump", action="store_true")
     ap.add_argument("--kit-out")
@@ -145,6 +146,9 @@ def main(argv=None) -> int:
     try:
         if a.cmd == "template":
             sys.stdout.write(template())
+            return 0
+        if a.cmd == "policy":
+            print(common.AI_POLICY)
             return 0
         if a.cmd == "render":
             data = json.loads(common.read(a.file))

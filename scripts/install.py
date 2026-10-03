@@ -184,13 +184,15 @@ def s6_pa3(c: Ctx) -> str:
     pa = c.p(".claude/pa.json")
     if pa.is_file():
         ver = json.loads(common.read(pa)).get("pa_version")
-        return "PA3 %s already installed here" % ver
+        return "PA3 %s already installed here%s. %s" % (ver, upgrade_ask(c), RESTART)
     conf = pathlib.Path(c.a.config_dir or os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"))
     pa3_dir = pathlib.Path(c.a.pa3_dir) if c.a.pa3_dir else conf / "pa3"
     py = c.python()
     if not (pa3_dir / "VERSION").is_file():
+        # --no-clone: install from the pinned cache clone; without it PA3 clones its upstream's default branch into
+        # <config>/pa3-src and follows it (pull --ff-only), so the machine drifts off the pin.
         raise common.Fail("PA3 is not installed on this machine. Run it once yourself (it edits %s/settings.json, "
-                          "after a backup):\n    %s %s --root\nthen re-run with --resume"
+                          "after a backup):\n    %s %s --root --no-clone\nthen re-run with --resume"
                           % (conf, py, pkg / "pa_install.py"))
     name = ans.get("PSXDECOMP_PROJECT_NAME") or common.slug(ans["GAME_TITLE"])
     cmd = [py, pkg / "pa_install.py", "--project", c.target, "--yes", "--name", name,
@@ -218,12 +220,46 @@ def s6_pa3(c: Ctx) -> str:
     got = json.loads(common.read(pa)).get("pa_version")
     if got != common.compat()["pa3"]["version"] and not c.a.force_untested:
         raise common.Fail("PA3 installed version %s, compat.toml pins %s" % (got, common.compat()["pa3"]["version"]))
+    up = upgrade_ask(c)
     dirty = c.git("status", "--porcelain").stdout.strip()
     if dirty:
         # PA3 commits its own install; anything left is its intentionally-uncommitted local state
         c.deviation("PA3 left uncommitted paths after its install: %s" % ", ".join(
             l[3:] for l in dirty.splitlines()[:5]))
-    return "PA3 %s installed (%s); next session: `claude --agent plain` for the intake" % (got, name)
+    return "PA3 %s installed (%s)%s. %s" % (got, name, up, RESTART)
+
+
+RESTART = "Exit, then run `claude --agent plain` here and type `/psxdecomp:new --resume`."
+UPGRADE_RE = re.compile(r'("pa_version"\s*:\s*"[^"]*",)')
+
+
+def with_upgrade_ask(text: str) -> str:
+    """pa.json text with `"upgrade": "ask"` (after pa_version, PA3's layout kept); unchanged when already ask."""
+    if json.loads(text).get("upgrade") == "ask":
+        return text
+    if '"upgrade"' in text:
+        new = re.sub(r'("upgrade"\s*:\s*)("[^"]*"|null)', r'\1"ask"', text, count=1)
+    else:
+        new = UPGRADE_RE.sub(lambda m: m.group(1) + '\n  "upgrade": "ask",', text, count=1)
+    if json.loads(new).get("upgrade") != "ask":
+        raise common.Fail(".claude/pa.json: could not set \"upgrade\": \"ask\" (no pa_version line)")
+    return new
+
+
+def upgrade_ask(c: Ctx) -> str:
+    """`"upgrade": "ask"` in .claude/pa.json, committed. PA3 reads a missing key as auto: its router would upgrade
+    before the first task, off the pin. Text-level, so PA3's own layout stays; returns a note for the DONE line."""
+    pa = c.p(".claude/pa.json")
+    if c.dry or not pa.is_file():
+        return ""
+    text = common.read(pa)
+    new = with_upgrade_ask(text)
+    if new == text:
+        return ""
+    common.write(pa, new)
+    sha = c.commit([".claude/pa.json"], "PA3 upgrades ask first: .claude/pa.json \"upgrade\": \"ask\" (psxdecomp pins PA3 "
+                                        "%s)" % common.compat()["pa3"]["version"])
+    return "; pa.json upgrade: ask (commit %s)" % sha
 
 
 PA3_GI_HEAD = "# Project Architect 3.0"
@@ -279,7 +315,7 @@ def s8_kit(c: Ctx) -> str:
         c.deviation(d)
     record = c.p("docs/decomp-architect-install.md")
     if record.is_file():
-        return "kit already installed (docs/decomp-architect-install.md)"
+        return "kit already installed (docs/decomp-architect-install.md)%s" % readme_policy(c)
     ans = c.answers()
     kit_vals, _ = answers_mod.split(ans)
     if not kit_vals.get("DUMP_PATH"):
@@ -305,8 +341,29 @@ def s8_kit(c: Ctx) -> str:
     if extra:
         c.deviation("the kit's dry run named paths its run did not write: %s" % ", ".join(extra[:6]))
     last = [l for l in r.stdout.splitlines() if l.startswith("summary:")]
-    return "%s; dry run listed %d of the %d written paths" % (last[0] if last else "kit installed",
-                                                             len(would & wrote), len(wrote))
+    return "%s; dry run listed %d of the %d written paths%s" % (last[0] if last else "kit installed",
+                                                               len(would & wrote), len(wrote), readme_policy(c))
+
+
+def readme_policy(c: Ctx) -> str:
+    """The AI policy block in README.md under its lead, in place of the kit's disclosure paragraph, committed. The
+    kit writes the README (its S9 skeleton; an existing README would make it write README.decomp-skeleton.md for a
+    hand merge), so this runs right after it. Idempotent; S10 calls it again for a repo whose S8 predates it."""
+    readme = c.p("README.md")
+    if c.dry or not readme.is_file():
+        return ""
+    old = common.read(readme)
+    try:
+        disc = c.answers().get("AI_DISCLOSURE")
+    except common.Fail:
+        disc = None
+    new = common.with_ai_policy(old, replace=disc)
+    if new == old:
+        return ""
+    c.write("README.md", new)
+    sha = c.commit(["README.md"], "README: the AI policy block under the lead%s" % (
+        ", in place of the kit's disclosure paragraph" if common.swappable_disclosure(disc) else ""))
+    return "; README AI policy (commit %s)" % sha
 
 
 # ---- S9 refs --------------------------------------------------------------------------------------------------
@@ -431,6 +488,7 @@ def s10_handoff(c: Ctx) -> str:
            "[psxdecomp]", 'version = "%s"' % common.plugin_version(), 'profile = "%s"' % prof["console"]["id"],
            'bootstrapped = "%s"' % common.today(), "", "[pa3]",
            'tag = "%s"' % comp["pa3"]["tag"], 'sha = "%s"' % comp["pa3"]["sha"], 'version = "%s"' % comp["pa3"]["version"],
+           'upgrade = "%s"  # .claude/pa.json: S6 sets "ask" so PA3 never upgrades off the pin unasked' % pa_upgrade(c),
            "", "[kit]", 'digest = "%s"' % comp["kit"]["digest"], 'repo = "%s"' % comp["kit"]["repo"],
            'sha = "%s"' % comp["kit"]["sha"], "", "[refs]", 'file = "config/refs.toml"', 'index = "docs/ops/refs.md"',
            "", "[host]", 'recipe = "%s"' % recipe, "", "[deviations]",
@@ -450,10 +508,7 @@ def s10_handoff(c: Ctx) -> str:
     if pa_src.is_file() and not c.p("docs/prior-art.md").exists():
         c.write("docs/prior-art.md", common.read(pa_src))
         paths.append("docs/prior-art.md")
-    readme = c.p("README.md")                     # the kit's README skeleton: the AI policy block under its lead
-    if readme.is_file() and common.AI_POLICY_MARK not in common.read(readme):
-        c.write("README.md", common.with_ai_policy(common.read(readme)))
-        paths.append("README.md")
+    readme_policy(c)                              # S8 did it; a repo whose S8 predates it gets it here
     how = c.p("HOW_WE_WORK.md")
     if how.is_file() and SCOPE_MARK not in common.read(how):
         c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Docs map", scope_line(ans, psyq_v)))
@@ -469,11 +524,16 @@ def s10_handoff(c: Ctx) -> str:
     if bad:
         raise common.Fail("doctor: %s" % "; ".join("%s: %s" % (r[0], r[2]) for r in bad))
     card_check(c)
-    sha = c.commit(paths, "psxdecomp handoff: the bootstrap record (pins, profile, host recipe), the prior-art "
-                          "table and the README's AI policy")
+    sha = c.commit(paths, "psxdecomp handoff: the bootstrap record (pins, profile, host recipe) and the prior-art "
+                          "table")
     nxt = ("Next: a bare `claude` in this repository; PA3's planner drafts GENERATION_PLAN.md from the ladder."
            + (" Phase 1.2 leads: %s." % (BOOT + "/seeds.txt") if seeds.is_file() else ""))
     return "record %s, commit %s. %s" % (RECORD, sha, nxt)
+
+
+def pa_upgrade(c: Ctx) -> str:
+    pa = c.p(".claude/pa.json")
+    return (json.loads(common.read(pa)).get("upgrade") or "auto") if pa.is_file() else "none"
 
 
 def scope_line(ans: dict, psyq_v: str, date: str | None = None) -> str:
@@ -675,6 +735,18 @@ def self_test() -> int:
         scope_line({"GAME_TITLE": "T"}, "4.7", "2026-10-01")
     ok &= pa3_block_first("# fw\n/.run/*\n!/.run/README.md\n\n# Project Architect 3.0\n/.run/*\n__pycache__/\n") == \
         "# Project Architect 3.0\n/.run/*\n__pycache__/\n\n# fw\n/.run/*\n!/.run/README.md\n"
+    pa = '{\n  "pa_version": "3.14.2",\n  "project": "x"\n}\n'
+    asked = with_upgrade_ask(pa)
+    ok &= json.loads(asked)["upgrade"] == "ask" and with_upgrade_ask(asked) == asked
+    ok &= asked.count("\n") == pa.count("\n") + 1
+    ok &= json.loads(with_upgrade_ask(pa.replace('"x"', '"x", "upgrade": "auto"')))["upgrade"] == "ask"
+    ok &= "--resume" in RESTART and "--agent plain" in RESTART
+    readme = "# G\n\nLead.\n\n## How this project is made\n\n%s\n\nThe standard.\n" % common.OLD_DISCLOSURE
+    swapped = common.with_ai_policy(readme, replace=common.OLD_DISCLOSURE)
+    ok &= common.OLD_DISCLOSURE not in swapped and swapped.count(common.AI_POLICY_MARK) == 1
+    ok &= "made\n\nThe standard." in swapped and common.with_ai_policy(swapped, common.OLD_DISCLOSURE) == swapped
+    own = readme.replace(common.OLD_DISCLOSURE, "We disclose AI use per pull request.")
+    ok &= "We disclose AI use" in common.with_ai_policy(own, replace="We disclose AI use per pull request.")
     with tempfile.TemporaryDirectory() as td:
         st = common.State(td)
         st.mark("S0", "done")

@@ -16,6 +16,11 @@ graders:
     target: last_message
     pattern: "console|PlayStation"
     flags: "i"
+  - name: no-psyq-question-in-s1
+    type: regex
+    target: last_message
+    pattern: "PsyQ"
+    match: not_contains
   - name: no-research-before-interview
     type: tool_used
     tool: Agent

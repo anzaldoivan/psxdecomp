@@ -12,10 +12,10 @@ two pinned installers. After S10 the repository needs nothing from the plugin.
   ├─ S0 preflight.py ─ S2 identify.py ─ profiles/psx/probes/psx.py      (scripts: deterministic, --self-test each)
   ├─ S1 interview ─ S3 scout-web × 6 + scout-repo ─ S4 gate            (the model: AskUserQuestion, agents)
   ├─ S5 install.py: firewall pack (from the pinned kit's templates) → first commit
-  ├─ S6 install.py → PA3's pa_install.py --project --yes  (pinned tag, sha-checked)
-  ├─ restart → claude --agent plain → /psxdecomp:new --resume
+  ├─ S6 install.py → PA3's pa_install.py --project --yes  (pinned tag, sha-checked); pa.json "upgrade": "ask"
+  ├─ restart → claude --agent plain → /psxdecomp:new --resume       (hooks/hooks.json repeats it at session start)
   ├─ S7 PA3's intake handed the kit's intake.decomp.md                 (PA3's tested path, unchanged)
-  ├─ S8 install.py → the kit's install.py --answers (dry run, then run; digest-checked)
+  ├─ S8 install.py → the kit's install.py --answers (dry run, then run; digest-checked) + README AI policy block
   ├─ S9 fetch_refs.py → refs/ (git-ignored, searchable via .ignore) + docs/ops/refs.md (committed)
   └─ S10 doctor.py + config/psxdecomp.toml
 ```
@@ -25,6 +25,20 @@ two pinned installers. After S10 the repository needs nothing from the plugin.
 PA3's hooks, agents and settings load at session start, and its intake is tested in a `claude --agent plain`
 session. Running the intake in the session that installed PA3 would be an untested path; the restart is one line for
 the developer and keeps "don't deviate from the tested PA3 framework" literal.
+
+The line is not left to the model: S6's `DONE` line carries all of it, and the plugin's `SessionStart` hook
+(`scripts/resume_hint.py`) prints it whenever a session opens on a bootstrap whose next stage is S7. A bare `claude`
+opens PA3's router, because PA3's installer merges `"agent": "pa-session"` into `.claude/settings.json`; there is no
+flag for "no agent", so `claude --agent plain` is the way past it (a per-project opt-out is proposed upstream, P1 in
+[ECOSYSTEM.md](ECOSYSTEM.md#proposed-to-upstreams)).
+
+## Why the PA3 pin holds after the install
+
+`resolve_pa3` checks the pin only while it installs. Two PA3 defaults would move a machine off it afterwards: a
+`--root` install without `--no-clone` clones PA3's upstream default branch and follows it, and a `.claude/pa.json`
+without `"upgrade"` means auto, so the router upgrades before its first task. S6's `--root` hint carries `--no-clone`,
+S6 writes `"upgrade": "ask"` (recorded in `config/psxdecomp.toml [pa3]`), and the doctor's `pa3-drift` row WARNs on
+either drift.
 
 ## Why S5 writes the kit's firewall before PA3
 

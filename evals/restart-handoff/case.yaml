@@ -1,0 +1,32 @@
+schema_version: "1.0"
+name: restart-handoff
+description: A bootstrap paused after S6, resumed in a session that is not a plain one, gives the full restart line and stops before the intake.
+tags: [flow, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "/psxdecomp:new --resume"
+  max_turns: 8
+  timeout_seconds: 300
+  allowed_tools: [Skill, Bash, Read, Glob, Grep, AskUserQuestion]
+runs: 1
+graders:
+  - name: says-plain-session
+    type: regex
+    target: last_message
+    pattern: "claude --agent plain"
+  - name: says-resume
+    type: regex
+    target: last_message
+    pattern: "/psxdecomp:new --resume"
+  - name: no-intake
+    type: file_exists
+    path: PROJECT_CONTEXT.md
+    exists: false
+  - name: no-kit-stage
+    type: tool_used
+    tool: Bash
+    input_match: "stage S8"
+    min: 0
+    max: 0
+expected_outcome: The skill reads the plan (NEXT S7), sees it is not a plain session, quotes "Exit, then run `claude --agent plain` here and type `/psxdecomp:new --resume`." and stops.

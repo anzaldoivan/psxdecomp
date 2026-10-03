@@ -5,8 +5,10 @@
                                            one row per check: OK / WARN / FAIL; exit 1 on any FAIL
     doctor.py --self-test
 
-Checks: the bootstrap record (config/psxdecomp.toml); PA3's version against compat.toml; the kit's install record;
-the interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
+Checks: the bootstrap record (config/psxdecomp.toml); PA3's version against compat.toml; pa3-drift (WARN only: the
+machine's PA3 against the pin, and pa.json `"upgrade": "ask"`); the kit's install record; the README's AI policy block
+(FAIL when missing; WARN when the old disclosure paragraph is still there); the interpreter pa.json names exists on
+this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
 PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
 hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs); progress (WARN
@@ -68,6 +70,7 @@ def base_rows(repo: pathlib.Path, add):
         ver = conf.get("pa_version")
         add("pa3", "OK" if ver == comp["pa3"]["version"] else "WARN",
             "PA3 %s%s" % (ver, "" if ver == comp["pa3"]["version"] else " (tested %s)" % comp["pa3"]["version"]))
+        add("pa3-drift", *pa3_drift_row(conf, machine_pa3_version(), comp["pa3"]["version"]))
         py = conf.get("python")
         add("python", "OK" if py and os.path.exists(py) else "FAIL",
             "%s %s" % (py, "exists" if py and os.path.exists(py) else "is missing on this machine (re-run PA3's "
@@ -81,6 +84,8 @@ def base_rows(repo: pathlib.Path, add):
             "" if "ProjectArchitect %s" % comp["pa3"]["version"] in head else " (written against another PA3)"))
     else:
         add("kit", "FAIL", "no docs/decomp-architect-install.md (the kit is not installed)")
+    readme = repo / "README.md"
+    add("readme", *readme_row(common.read(readme) if readme.is_file() else None))
     gi = repo / ".gitignore"
     gtext = common.read(gi) if gi.is_file() else ""
     add("ignore", "OK" if "# ROM firewall — in force from the FIRST commit" in gtext else "FAIL",
@@ -112,6 +117,46 @@ def base_rows(repo: pathlib.Path, add):
     else:
         add("refs", "WARN", "no config/refs.toml (no reference library)")
     add("hygiene", *hygiene_row(repo))
+
+
+def machine_pa3_version() -> str | None:
+    """The PA3 installed on this machine (<config>/pa3/VERSION `version:` line), or None when it is not installed."""
+    conf = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    f = pathlib.Path(conf) / "pa3" / "VERSION"
+    if not f.is_file():
+        return None
+    for line in common.read(f).splitlines():
+        if line.startswith("version:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def pa3_drift_row(conf: dict, machine: str | None, pin: str) -> tuple[str, str]:
+    """WARN when the machine's PA3 left the pin (an upstream clone it follows, or an upgrade) or when pa.json lets the
+    router upgrade unasked (a missing `upgrade` key is PA3's auto). Never FAIL: the repo still builds."""
+    warns = []
+    if machine and machine != pin:
+        warns.append("this machine runs PA3 %s, psxdecomp pins %s — fix: re-run the pinned installer with `--root "
+                     "--no-clone` (`psxd install where` prints its folder)" % (machine, pin))
+    if conf.get("upgrade") != "ask":
+        warns.append('.claude/pa.json "upgrade" is %s (PA3 auto-upgrades off the pin) — fix: set "upgrade": "ask" '
+                     "and commit it" % json.dumps(conf.get("upgrade", "absent")))
+    if warns:
+        return "WARN", "; ".join(warns)
+    return "OK", "PA3 %s on this machine; upgrades ask first" % (machine or "not installed")
+
+
+def readme_row(text: str | None) -> tuple[str, str]:
+    """The AI policy block (common.AI_POLICY_MARK) is in the README; the old disclosure paragraph is gone."""
+    if text is None:
+        return "WARN", "no README.md (the kit writes it at S8)"
+    if common.AI_POLICY_MARK not in text:
+        return "FAIL", "README.md lacks the AI policy block — fix: `/psxdecomp:new --resume` re-runs S8, or paste " \
+                       "common.ai_policy_block() under the lead"
+    if common.OLD_DISCLOSURE in text:
+        return "WARN", "README.md still carries the old disclosure paragraph (%r…): delete it, the AI policy block " \
+                       "replaces it" % common.OLD_DISCLOSURE[:40]
+    return "OK", "README.md carries the AI policy block"
 
 
 # Not the repo's own current text: fetched sources, research, phase records (scoped by their phase), and the harness
@@ -392,6 +437,7 @@ def self_test() -> int:
         common.git(td, "init", "--quiet")
         rows = dict((r[0], r[1]) for r in check(td))
     ok = rows.get("pa3") == "FAIL" and rows.get("record") == "WARN" and rows.get("audit") == "FAIL"
+    ok &= rows.get("readme") == "WARN"
     with tempfile.TemporaryDirectory() as td:
         repo = pathlib.Path(td).resolve()
         q = {"version": "4.7", "ships_compiler": "no"}
@@ -415,6 +461,16 @@ def self_test() -> int:
         planted = hygiene_row(repo)
         print("  hygiene: clean %s; planted %s" % (clean[0], planted[1]))
         ok &= clean[0] == "OK" and planted[0] == "WARN" and "PROJECT_CONTEXT.md (1)" in planted[1]
+    pin = "3.14.2"
+    drift = [pa3_drift_row({"upgrade": "ask"}, pin, pin), pa3_drift_row({"upgrade": "ask"}, None, pin),
+             pa3_drift_row({}, pin, pin), pa3_drift_row({"upgrade": "ask"}, "3.15.2", pin)]
+    print("  pa3-drift: %s" % "; ".join(d[0] for d in drift))
+    ok &= [d[0] for d in drift] == ["OK", "OK", "WARN", "WARN"] and "--no-clone" in drift[3][1]
+    good = "# G\n\nLead.\n\n%s\n## A\n" % common.ai_policy_block()
+    rm = [readme_row(None), readme_row("# G\n\nLead.\n"), readme_row(good),
+          readme_row(good + "\n%s; a person reviews each phase gate.\n" % common.OLD_DISCLOSURE)]
+    print("  readme: %s" % "; ".join(r[0] for r in rm))
+    ok &= [r[0] for r in rm] == ["WARN", "FAIL", "OK", "WARN"]
     ok &= self_test_progress()
     ok &= self_test_github()
     return common.self_test_banner("doctor", ok)

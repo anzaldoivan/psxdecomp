@@ -84,7 +84,9 @@ the build and debugging tools, as `docs/ops/host-recipe.md`.
 | 2 | `claude --agent plain`, then `/psxdecomp:new --resume` | intake, kit, reference library, handoff |
 | 3 | `claude` | Project Architect's planner drafts the roadmap |
 
-The restart between sessions 1 and 2 loads Project Architect's hooks. `--answers FILE` replaces the interview with a
+The restart between sessions 1 and 2 loads Project Architect's hooks; when session 2 opens, psxdecomp's own hook
+prints the resume line. A bare `claude` opens Project Architect's router (`agent: pa-session` in
+`.claude/settings.json`); `claude --agent plain` is the way around it. `--answers FILE` replaces the interview with a
 prepared file; `--deep` widens the research.
 
 ### Other commands
