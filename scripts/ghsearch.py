@@ -9,8 +9,11 @@ Community modding work rarely says "decomp" or "symbols" (Kuumba123's MegaManX6_
 phrase, the joined form `<joined> in:name` (MegaManX6) and the initials `<initials> in:name` (MMX6, DC2, BFM; a final
 numbered token is kept whole, and only initials of 3+ characters are used). A repository is kept only when its name or
 description holds one of those forms on a token boundary (drops MegaManX69, mmx5240), and a hit on the initials alone
-also needs the platform or another title word next to it (`DC2 in:name` is mostly Defcon badges). Code search (the
+also needs the platform or another title word next to it (`DC2 in:name` is mostly Defcon badges), or an owner that
+already has a name-matched row (Kuumba123's MMX5 DAT tools). Code search (the
 serial in both forms and the executable's name) needs GitHub auth; its hits are grouped per repository, 5 paths each.
+A code-only hit stays a row only when its name or paths look like research (RESEARCH), at most 8; the same files
+vendored in another repository fold into one row; the rest is one "catalog mentions" line (game lists, cover DBs).
 
 Backend: `gh api` when `gh auth status` is green; else api.github.com with $GH_TOKEN / $GITHUB_TOKEN; else anonymous
 (repository search only: `SKIP code search: no GitHub auth`). A network error prints `SKIP` and exits 0: the search
@@ -41,6 +44,10 @@ TIMEOUT = 20
 PER_PAGE = 30
 MAX_PATHS = 5
 MAX_CODE_REPOS = 15
+MAX_CODE_ROWS = 8                           # code-only rows kept; the rest is one "catalog mentions" line
+# A code-only hit is a lead only when its name or paths look like research, not a game list (audit 2026-10-03).
+RESEARCH = re.compile(r"(?i)decomp|disasm|disassembl|recomp|ghidra|symbol|overlay|ram[-_ ]?(map|notes)|\.cht\b|\.ld\b"
+                      r"|apworld|archipelago|randomi[sz]|practice|modding|hack")
 ALWAYS_EXCLUDE = ["*/psxdecomp"]            # the plugin itself: its fixtures and evals plant stale leads on purpose
 PLATFORM = re.compile(r"(?<![A-Za-z0-9])(ps1|psx|psone|playstation|ps-x)(?![a-z])", re.I)
 ROMAN = re.compile(r"^(?=[IVX]+$)X{0,3}(IX|IV|V?I{0,3})$")
@@ -104,6 +111,12 @@ def match(title: str, name: str, description: str) -> str | None:
             if PLATFORM.search(both) or any(_bounded(both, re.escape(w)) for w in words):
                 return "%s: %s" % (hit[0], v["initials"])
     return None
+
+
+def initials_only(title: str, name: str, description: str) -> bool:
+    """The initials sit on a token boundary in the name or description, without the corroboration match() needs."""
+    ini = variants(title)["initials"]
+    return bool(ini) and any(_bounded(t, re.escape(ini)) for t in (name, description))
 
 
 def serial_forms(serial: str | None, exe: str | None) -> list[str]:
@@ -196,11 +209,11 @@ def search(fetch, authed: bool, title: str, serial: str | None = None, exe: str 
     """Returns {'rows', 'skips', 'dropped', 'excluded', 'queries'}."""
     pats = ALWAYS_EXCLUDE + list(exclude or [])
     v = variants(title)
-    queries = ['"%s"' % v["phrase"], "%s in:name" % v["joined"]]
+    queries = ["%s in:name" % v["joined"], '"%s"' % v["phrase"]]      # joined first: it finds the modding repos
     if v["initials"] and v["initials"].lower() != v["joined"].lower():
         queries.append("%s in:name" % v["initials"])
     rows: dict[str, dict] = {}
-    skips, dropped, excl, fallback = [], [], set(), []
+    skips, dropped, excl, fallback, weak = [], [], set(), [], []
     for q in queries:
         try:
             items = fetch("search/repositories", {"q": q, "per_page": str(PER_PAGE)}).get("items") or []
@@ -217,9 +230,19 @@ def search(fetch, authed: bool, title: str, serial: str | None = None, exe: str 
                 continue
             m = match(title, repo.get("name") or fn.split("/")[-1], repo.get("description") or "")
             if m is None:
-                dropped.append(fn)
+                if initials_only(title, repo.get("name") or "", repo.get("description") or ""):
+                    weak.append(repo)
+                else:
+                    dropped.append(fn)
                 continue
             rows[fn.lower()] = _row(repo, m)
+    owners = {k.split("/")[0] for k in rows}
+    for repo in weak:                       # initials alone, kept when the owner already has a name-matched row
+        fn = repo.get("full_name", "")
+        if fn.split("/")[0].lower() in owners and fn.lower() not in rows:
+            rows[fn.lower()] = _row(repo, "name: %s (owner)" % v["initials"])
+        elif fn.lower() not in rows:
+            dropped.append(fn)
     codeq = serial_forms(serial, exe)
     if codeq and not authed:
         skips.append("SKIP code search: no GitHub auth (gh auth login, or $GH_TOKEN)")
@@ -253,11 +276,30 @@ def search(fetch, authed: bool, title: str, serial: str | None = None, exe: str 
                     pass
                 row = rows[key] = _row(repo, "")
             row["matched"] = "; ".join(x for x in (row["matched"], "code: " + ", ".join(h["terms"])) if x)
+            row["_all"] = {x.rsplit("/", 1)[-1] for x in h["paths"]}       # basenames: the vendored-copy test
+            row["_full"] = " ".join(h["paths"])                               # full paths: the research test
             row["paths"] = sorted(h["paths"])[:MAX_PATHS] + (["(+%d more)" % (len(h["paths"]) - MAX_PATHS)]
                                                             if len(h["paths"]) > MAX_PATHS else [])
     ordered = sorted(rows.values(), key=lambda r: r["updated"], reverse=True)       # newest first, then
     ordered.sort(key=lambda r: r["matched"].startswith("code:"))                      # named hits above code-only
-    return {"rows": ordered, "skips": skips, "fallback": fallback,
+    named = [r for r in ordered if not r["matched"].startswith("code:")]
+    code_only = [r for r in ordered if r["matched"].startswith("code:")]
+    catalog, code_rows = [], []
+    for r in sorted(code_only, key=lambda r: len(r.get("_all", ())), reverse=True):   # the largest set first
+        if not RESEARCH.search(r["repo"].split("/")[-1] + " " + r.get("_full", "")):
+            catalog.append(r["repo"])
+            continue
+        twin = next((c for c in code_rows if r.get("_all") and r["_all"] <= c.get("_all", set())), None)
+        if twin is not None:                # the same files vendored elsewhere: a note on the first row
+            twin["matched"] += "; also vendored in: %s" % r["repo"]
+        elif len(code_rows) < MAX_CODE_ROWS:
+            code_rows.append(r)
+        else:
+            catalog.append(r["repo"])
+    kept = named + [r for r in code_only if r in code_rows]
+    for r in kept:
+        r.pop("_all", None), r.pop("_full", None)
+    return {"rows": kept, "skips": skips, "fallback": fallback, "catalog": catalog,
             "dropped": sorted(set(dropped)), "excluded": sorted(excl), "queries": queries + ['"%s"' % q for q in codeq]}
 
 
@@ -270,7 +312,10 @@ def render(res: dict, title: str, backend: str, date: str) -> str:
     out = ["# GitHub search — %s (%s)" % (title, date), "",
            "Leads, not facts: each row is a repository whose name, description or files mention the game. Its "
            "licence is GitHub's field (`unstated` when GitHub has none: class `facts`). Nothing here is verified "
-           "against the game's bytes; the scouts classify each row.", "",
+           "against the game's bytes; the scouts classify each row. A row is a pointer, not a source: read its text "
+           "files through the API or raw URLs only; never clone it, download its releases or follow an off-GitHub "
+           "download link (modding repos may commit extracted game files; some title-named repos are download "
+           "lures).", "",
            "Backend: %s. Queries: %s." % (backend, ", ".join("`%s`" % q for q in res["queries"])), ""]
     if res["rows"]:
         out += ["| Repository | Licence | Last update | Matched by | Description | Paths |", "|---|---|---|---|---|---|"]
@@ -289,9 +334,14 @@ def render(res: dict, title: str, backend: str, date: str) -> str:
                 "below with WebFetch (anonymous: 10 searches a minute) and keep a repository only when its name or "
                 "description holds %s on a token boundary%s:" % (
                     " or ".join("`%s`" % x for x in (v["phrase"], v["joined"]) if x),
-                    (", or `%s` with the platform or another title word beside it" % v["initials"]) if v["initials"] else "")]
+                    (", or `%s` with the platform or another title word beside it" % v["initials"]) if v["initials"] else "")
+                + " On HTTP 403 or 429, wait 60 seconds and fetch that URL once more; a second refusal is a `SKIP` gap "
+                "named in Dead ends."]
         out += ["- <%s>" % u for u in res["fallback"]]
         out.append("")
+    if res.get("catalog"):
+        out.append("- Catalog mentions (%d: the serial in a game list, cover/ROM database or frontend; not leads): %s%s"
+                   % (len(res["catalog"]), ", ".join(res["catalog"][:12]), " …" if len(res["catalog"]) > 12 else ""))
     out.append("- Dropped by the name filter: %d repositor%s%s." % (
         len(res["dropped"]), "y" if len(res["dropped"]) == 1 else "ies",
         " (%s)" % ", ".join(res["dropped"][:8]) + (" …" if len(res["dropped"]) > 8 else "") if res["dropped"] else ""))
@@ -317,15 +367,19 @@ def _canned():
                               _repo("anzaldoivan/mmx6", "Matching decompilation of Mega Man X6"),
                               _repo("anzaldoivan/psxdecomp", "plugin with MegaManX6 fixtures")],
         "MMX6 in:name": [_repo("x/mmx6-randomizer", "a PS1 randomizer", "GPL-3.0"),
-                         _repo("y/mmx6x", "nothing"), _repo("z/MMX6", "my homework")],
+                         _repo("y/mmx6x", "nothing"), _repo("z/MMX6", "my homework"),
+                         _repo("Kuumba123/MMX6-DAT-Extract", "")],
     }
     code = {'"SLUS-01395"': [{"path": "docs/mmx6-ghidra-findings.md", "repository": _repo("silasary/apworlds")},
                              {"path": "src/a.md", "repository": _repo("anzaldoivan/mmx6")}],
-            '"SLUS_01395"': [],
+            '"SLUS_01395"': [{"path": "db/covers.txt", "repository": _repo("VTSTech/CoversDB")},
+                             {"path": "vendor/cheats/SLUS-01395.cht", "repository": _repo("a/emu-fork")}],
             '"SLUS_013.95"': [{"path": "cheats/SLUS-01395.cht", "repository": _repo("duckstation/chtdb")}]
                              + [{"path": "c/%d.cht" % i, "repository": _repo("duckstation/chtdb")} for i in range(7)]}
     meta = {"silasary/apworlds": _repo("silasary/apworlds", "Archipelago worlds", "MIT"),
-            "duckstation/chtdb": _repo("duckstation/chtdb", "Cheat database", None)}
+            "duckstation/chtdb": _repo("duckstation/chtdb", "Cheat database", None),
+            "VTSTech/CoversDB": _repo("VTSTech/CoversDB", "Companion App for CoversDB.org", "GPL-3.0"),
+            "a/emu-fork": _repo("a/emu-fork", "an emulator", "GPL-2.0")}
     calls = []
 
     def fetch(path, params):
@@ -363,16 +417,19 @@ def self_test() -> int:
     names = [r["repo"] for r in res["rows"]]
     print("  kept: %s" % ", ".join(names))
     ok &= set(names) == {"someone/mega-man-x6-tas", "Kuumba123/MegaManX6_PS1_Modding", "Kuumba123/MegaManX6_Practice",
-                         "x/mmx6-randomizer", "silasary/apworlds", "duckstation/chtdb"}
+                         "x/mmx6-randomizer", "silasary/apworlds", "duckstation/chtdb", "Kuumba123/MMX6-DAT-Extract"}
+    ok &= res["catalog"] == ["VTSTech/CoversDB"]                          # a code-only game list: one line, no row
     ok &= res["excluded"] == ["anzaldoivan/mmx6", "anzaldoivan/psxdecomp"]           # --exclude and the plugin itself
     ok &= set(res["dropped"]) == {"noise/MegaManX69", "y/mmx6x", "z/MMX6"}
     row = {r["repo"]: r for r in res["rows"]}
     ok &= row["Kuumba123/MegaManX6_PS1_Modding"]["licence"] == "unstated" and row["x/mmx6-randomizer"]["licence"] == "GPL-3.0"
     ok &= row["silasary/apworlds"]["licence"] == "MIT" and row["silasary/apworlds"]["paths"] == ["docs/mmx6-ghidra-findings.md"]
+    ok &= row["Kuumba123/MMX6-DAT-Extract"]["matched"] == "name: MMX6 (owner)"
+    ok &= "also vendored in: a/emu-fork" in row["duckstation/chtdb"]["matched"]
     ok &= len(row["duckstation/chtdb"]["paths"]) == MAX_PATHS + 1 and row["duckstation/chtdb"]["paths"][-1] == "(+3 more)"
     md = render(res, "Mega Man X6", "canned", "2026-10-03")
     ok &= "Leads, not facts" in md and "anzaldoivan" not in md and "- Excluded: 2 repositories." in md
-    ok &= "| unstated |" in md and md.count("\n| [") == 6
+    ok &= "| unstated |" in md and md.count("\n| [") == 7 and "Catalog mentions (1" in md
     fetch, calls = _canned()
     res = search(fetch, False, "Mega Man X6", "SLUS-01395", "SLUS_013.95")
     ok &= not any(p == "search/code" for p, _ in calls)
@@ -383,7 +440,7 @@ def self_test() -> int:
         raise NetError("<urlopen error [Errno 8] nodename nor servname provided>")
     res = search(down, True, "Mega Man X6", "SLUS-01395", None)
     ok &= res["rows"] == [] and len(res["skips"]) == 3 + 2 and all(s.startswith("SKIP") for s in res["skips"])
-    ok &= len(res["fallback"]) == 3 and "q=MegaManX6+in%3Aname" in res["fallback"][1]
+    ok &= len(res["fallback"]) == 3 and "q=MegaManX6+in%3Aname" in res["fallback"][0]
     ok &= "**Fallback.**" in render(res, "Mega Man X6", "down", "2026-10-03")
     ok &= "**Fallback.**" not in md
     with tempfile.TemporaryDirectory() as td:

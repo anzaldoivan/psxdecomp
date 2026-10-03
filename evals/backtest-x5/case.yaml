@@ -1,6 +1,6 @@
 schema_version: "1.0"
 name: backtest-x5
-description: Replays the Mega Man X5 (mmx5) bootstrap with the community leads blanked; S3 must rediscover the leads that bootstrap recorded, the MMX5 Improvement Project Addendum (a ROM hack's address workbook) among them.
+description: Replays the Mega Man X5 (mmx5) bootstrap with the community leads blanked; S3 must rediscover the leads that bootstrap recorded, the MMX5 Improvement Project Addendum (a ROM hack's address workbook) among them, and Kuumba123's modding repositories, found since.
 tags: [backtest, research, tier2]
 execution:
   prompt: "/psxdecomp:new --answers fixture:x5 --until S3"
@@ -22,7 +22,7 @@ graders:
   - name: finds-addendum
     type: regex
     target: {source: file, path: .run/bootstrap/prior-art.draft.md}
-    pattern: "Addendum|Improvement Project|hacks/6131"
+    pattern: 'archive\.org/details/(mmx5_improvement_project_addendum|megamanx5improvementprojectaddendum)|romhacking\.net/hacks/6131'
     flags: "i"
   - name: finds-kuumba
     type: regex
