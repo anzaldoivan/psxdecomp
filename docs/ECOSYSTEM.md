@@ -59,8 +59,9 @@ repo owns its own text. Each row goes to its owner as its own change. States: **
 | K8 | GitHub firewall settings and files from DC2 T0 (vulnerability reporting, rulesets, push protection, pinned actions) | DC2's settings read through `gh api` (2026-10-02); doctor's `github` row lints them | kit | proposed |
 | K9 | `.gitattributes` and `.editorconfig` | shared by the PS1 projects at 100% on decomp.dev (2026-10-02) | kit | proposed |
 | K10 | An optional `decomp.yaml` (ethteck/decomp_settings) | lom-decomp ships one; tools read one settings file (2026-10-02) | kit | proposed |
-| K11 | Carry the AI policy block in the README skeleton itself, above `{{AI_DISCLOSURE}}` | psxdecomp's S10 inserts it into every generated README meanwhile (`common.AI_POLICY`, 2026-10-02) | kit | proposed |
+| K11 | Carry the AI policy block in the README skeleton itself, above `{{AI_DISCLOSURE}}` | psxdecomp's S8 inserts it into every generated README meanwhile, in place of the disclosure paragraph (`common.AI_POLICY`, 2026-10-02) | kit | proposed |
 | M1 | Mark the bootstrap-era compiler candidate as superseded: one `HOW_WE_WORK.md` line for `PROJECT_CONTEXT.md:149,498` (never edited), a prefix on `docs/ops/decomp-environment.md:11` and the install record's line 14 | the candidate text still reads as current while `docs/ops/compiler-pin.md` holds the pin; the mislabelled mmx4 rules are already a `refs.toml` trap (2026-10-01) | mmx6 | proposed (after its router session) |
+| P1 | An installer flag such as `--project --default-agent none`, so a project keeps a bare `claude` vanilla and `claude --agent pa-session` opens the router; the add-if-absent merge of `project.snippet.json` would otherwise put `"agent"` back on every upgrade | `"agent": "pa-session"` in `.claude/settings.json` takes over a bare `claude`, and `claude --agent plain` is the only way past it; developers testing `/psxdecomp:new` read that as psxdecomp taking over (2026-10-02) | PA3 | proposed |
 
 ## Rules for reuse
 

@@ -19,7 +19,7 @@ design and test tiers: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Pins (Project Architect version and sha, kit digest): `compat.toml`, nowhere else. Upstream ledger:
   [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md).
 - Stages S0–S10: `scripts/common.py` `STAGES`; their texts: `skills/new/`.
-- The AI policy text: `common.AI_POLICY` (the README and every game README carry it). Install commands: `common.INSTALL`
+- The AI policy text: `common.AI_POLICY` (the README carries it; S8 puts it in every game README). Install commands: `common.INSTALL`
   and `profiles/psx/hosts/*.md`.
 - Reference library policy: [docs/REFS.md](docs/REFS.md); the profile's rows: `profiles/psx/refs.toml`.
 

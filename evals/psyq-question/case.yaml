@@ -1,0 +1,31 @@
+schema_version: "1.0"
+name: psyq-question
+description: The PsyQ question is asked at the gate (S4), worded from the version S2 read off the disc, with none recommended.
+tags: [flow, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "/psxdecomp:new --resume --until S4"
+  max_turns: 20
+  timeout_seconds: 600
+  allowed_tools: [Skill, Bash, Read, Write, Glob, Grep, AskUserQuestion]
+runs: 1
+graders:
+  - name: names-detected-version
+    type: regex
+    target: last_message
+    pattern: "PsyQ\\W{0,3}4\\.7"
+  - name: sdk-not-needed
+    type: regex
+    target: last_message
+    pattern: "(doesn't|does not|don't|do not|no) need"
+    flags: "i"
+  - name: none-offered
+    type: regex
+    target: last_message
+    pattern: "`none`|\\bnone\\b"
+  - name: nothing-installed
+    type: file_exists
+    path: .claude/pa.json
+    exists: false
+expected_outcome: S4 presents the medium (PsyQ 4.7), the drafts, and asks "Game links PsyQ 4.7 … The build doesn't need the SDK … or `none`" with none recommended; nothing installs.

@@ -270,21 +270,35 @@ def load_toml_str(text: str) -> dict:
     return tomllib.loads(text)
 
 
-# ---- the AI policy (one home: psxdecomp's README carries it verbatim, tier 0 checks; S10 puts it in every game
-# README) --------------------------------------------------------------------------------------------------------
+# ---- the AI policy (one home: psxdecomp's README carries it verbatim, tier 0 checks; S8 puts it in every game
+# README as soon as the kit writes it, in place of the kit's disclosure paragraph) ---------------------------------
 AI_POLICY = ("LLMs produce negligible decompilation results without good guidance. Investigate and familiarize "
              "yourself with the console's architecture and the game you are decompiling, and always use your own "
              "judgment. Humans drive the decisions; AI reads and writes the code.")
 AI_POLICY_MARK = "<!-- psxdecomp: ai-policy -->"
+# The start of the disclosure sentence the interview offered before AI_POLICY (and the canned answers still carry):
+# S8 swaps a paragraph that starts with it for the block; the doctor WARNs when one is left.
+OLD_DISCLOSURE = "This project is developed with substantial AI assistance"
 
 
 def ai_policy_block() -> str:
     return "%s\n> [!IMPORTANT]\n> **AI policy:** %s\n" % (AI_POLICY_MARK, AI_POLICY)
 
 
-def with_ai_policy(readme: str) -> str:
-    """The README with the AI policy block after its title and lead paragraph (before the first `## `); unchanged when
-    the block is already there."""
+def swappable_disclosure(text: str | None) -> bool:
+    """A disclosure paragraph the block replaces: the old default sentence, or the policy itself (kept once)."""
+    t = (text or "").strip()
+    return bool(t) and (t.startswith(OLD_DISCLOSURE) or t == AI_POLICY)
+
+
+def with_ai_policy(readme: str, replace: str | None = None) -> str:
+    """The README with the AI policy block after its title and lead paragraph (before the first `## `). `replace`:
+    the kit's disclosure paragraph (the AI_DISCLOSURE answer), removed when it is swappable — a developer's own
+    sentence stays. Idempotent."""
+    if replace and swappable_disclosure(replace):
+        para = "\n\n%s\n" % replace.strip()
+        while para in readme:
+            readme = readme.replace(para, "\n", 1)
     if AI_POLICY_MARK in readme:
         return readme
     lines = readme.splitlines(keepends=True)

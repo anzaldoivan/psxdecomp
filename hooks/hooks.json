@@ -1,0 +1,17 @@
+{
+  "description": "psxdecomp: when a bootstrap in this folder is paused before S7 (the intake), say how to resume.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/psxd\" resume_hint",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

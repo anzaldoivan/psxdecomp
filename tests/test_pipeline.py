@@ -31,7 +31,44 @@ def test_golden_tree(game):
 def test_clean_tree_and_commits(game):
     assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
     log = run(["git", "-C", game, "log", "--format=%s"]).stdout.splitlines()[::-1]
-    assert log[0].startswith("Firewall first") and len(log) == 7, log
+    assert log[0].startswith("Firewall first") and len(log) == 9, log
+    assert any(l.startswith("PA3 upgrades ask first") for l in log) and any(l.startswith("README: the AI policy")
+                                                                           for l in log), log
+
+
+def test_s6_restart_line_and_upgrade_ask(toolchain, game):
+    """S6's DONE line carries the whole restart line; pa.json says "upgrade": "ask", which PA3's own session hook
+    reads as ask (no auto-upgrade off the pin), and the record says so."""
+    import importlib
+    import sys
+    note = json.loads((game / ".run/bootstrap/state.json").read_text())["stages"]["S6"]["note"]
+    assert "`claude --agent plain`" in note and "`/psxdecomp:new --resume`" in note, note
+    assert json.loads((game / ".claude/pa.json").read_text())["upgrade"] == "ask"
+    assert run(["git", "-C", game, "status", "--porcelain", ".claude/pa.json"]).stdout == ""
+    sys.path.insert(0, str(toolchain["pkg"]))
+    try:
+        ss = importlib.import_module("pa.hooks.session_start")
+        assert ss._upgrade_mode(str(game)) == "ask"
+    finally:
+        sys.path.remove(str(toolchain["pkg"]))
+    assert 'upgrade = "ask"' in (game / "config/psxdecomp.toml").read_text()
+
+
+def test_s6_root_hint_pins_the_clone(toolchain, tmp_path):
+    """No PA3 on the machine: S6 prints the --root command with --no-clone (the pinned copy, not upstream's branch)."""
+    target = tmp_path / "noroot"
+    bootstrap(toolchain, target, "--until", "S5")
+    r = run([PY, ROOT / "scripts/install.py", "stage", "S6", "--target", target, "--pa3-dir", tmp_path / "nopa3",
+             "--config-dir", toolchain["cfg"]], env=toolchain["env"], check=False)
+    assert r.returncode == 1 and "--root --no-clone" in r.stdout, r.stdout
+
+
+def test_readme_policy_replaces_disclosure(game):
+    """S8 puts the AI policy block under the README's lead and drops the kit's old disclosure paragraph."""
+    readme = (game / "README.md").read_text()
+    assert common.OLD_DISCLOSURE not in readme
+    made = readme.split("## How this project is made", 1)[1].split("\n## ", 1)[0]
+    assert made.strip().startswith("The standard it holds itself to"), made[:120]
 
 
 def test_mmx6_install_list_present(game):

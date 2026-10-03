@@ -1,0 +1,33 @@
+schema_version: "1.0"
+name: backtest-x5
+description: Replays the Mega Man X5 (mmx5) bootstrap with the community leads blanked; S3 must rediscover the leads that feed a decision (the recomp, the sibling decomp) and Kuumba123's modding repositories, found since; the ROM-hack workbook that bootstrap recorded is a --deep probe and not scored.
+tags: [backtest, research, tier2]
+execution:
+  prompt: "/psxdecomp:new --answers fixture:x5 --until S3"
+  max_turns: 40
+  timeout_seconds: 1500
+  allowed_tools: [Skill, Bash, Read, Write, Glob, Grep, Agent, WebSearch, WebFetch]
+runs: 1
+graders:
+  - name: finds-recomp
+    type: regex
+    target: {source: file, path: .run/bootstrap/prior-art.draft.md}
+    pattern: "MegaManX5Recomp"
+    flags: "i"
+  - name: finds-mmx4
+    type: regex
+    target: {source: file, path: .run/bootstrap/prior-art.draft.md}
+    pattern: "sozud/mmx4|mmx4"
+    flags: "i"
+  # Not scored: ROM-hack documents are a --deep probe (no replayed project has used community RAM addresses for a
+  # matching decision; mmx6 through phase 1.7). To check a --deep run by hand, grep prior-art.draft.md for
+  # archive\.org/details/(mmx5_improvement_project_addendum|megamanx5improvementprojectaddendum)|romhacking\.net/hacks/6131
+  - name: finds-kuumba
+    type: regex
+    target: {source: file, path: .run/bootstrap/prior-art.draft.md}
+    pattern: "Kuumba123"
+    flags: "i"
+  - name: report-written
+    type: file_exists
+    path: .run/bootstrap/prior-art.draft.md
+expected_outcome: S3 writes prior-art.draft.md naming the recomp, mmx4 and Kuumba123's repositories.

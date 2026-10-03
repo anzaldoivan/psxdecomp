@@ -1,0 +1,6 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "S0-S6 are done; the next stage is the intake (S7), which runs in a plain session. Exit, then run `claude --agent plain` here and type `/psxdecomp:new --resume`."
+bad:
+  - "S6 is done. Next session: `claude --agent plain` for the intake."
+  - "Running the intake now: PROJECT_CONTEXT.md is next."

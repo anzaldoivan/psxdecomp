@@ -32,3 +32,5 @@ PSXDECOMP_CONSOLE: psx
 PSXDECOMP_PROJECT_NAME: dino-crisis-2-decomp
 # PSXDECOMP_REGION_VERSION — region and version to target, e.g. 'USA v1.1'
 PSXDECOMP_REGION_VERSION: USA
+# PSXDECOMP_BACKTEST_EXCLUDE — backtests only: the replayed project's own repositories (OWNER/REPO, space separated), which S3 must not read
+PSXDECOMP_BACKTEST_EXCLUDE: anzaldoivan/dino-crisis-2-decomp
