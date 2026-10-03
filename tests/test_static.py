@@ -82,6 +82,8 @@ def test_answers_fixtures():
         v, note = answers.parse(f.read_text())
         assert answers.check(v, allow_no_dump=True) == [], f
         assert answers.render(v, note, extras=True) == f.read_text(), "%s does not round-trip" % f
+        if f.parent.name == "backtest":           # a backtest never lets S3 read the project it replays
+            assert v.get("PSXDECOMP_BACKTEST_EXCLUDE"), f
     v, _ = answers.parse((ROOT / "fixtures/answers.n64.txt").read_text())
     assert any("not yet supported" in e for e in answers.check(v, allow_no_dump=True))
 
@@ -108,11 +110,13 @@ def test_eval_cases():
                 if k in g:
                     assert "(?i)" not in g[k], "JS RegExp: use flags: i"
                     re.compile(g[k])
+        if d["name"].startswith("backtest-"):
+            assert (ROOT / "fixtures/backtest" / ("%s.answers.txt" % d["name"][9:])).is_file(), d["name"]
         sc = d.get("context", {}).get("scaffold_script")
         if sc:
             assert (case.parent / sc).is_file()
     assert {"no-autofire", "interview-first", "answers-path", "refs-grep", "refs-grep-ignored", "refuse-nonpsx",
-            "backtest-x6", "backtest-dc2", "backtest-bfm", "poisoned-grep", "poisoned-grep-raw", "unpinned-candidate",
+            "backtest-x6", "backtest-x5", "backtest-dc2", "backtest-bfm", "poisoned-grep", "poisoned-grep-raw", "unpinned-candidate",
             "kit-calibration-scope", "id-collision", "restart-handoff", "psyq-question"} <= names
 
 

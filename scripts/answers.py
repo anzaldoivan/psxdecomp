@@ -47,6 +47,8 @@ EXTRAS = {
     "PSXDECOMP_PROJECT_NAME": "the repository / PA3 project name (a slug)",
     "PSXDECOMP_REGION_VERSION": "region and version to target, e.g. 'USA v1.1'",
     "PSXDECOMP_BYO_PSYQ_PATH": "optional local folder of your own PsyQ SDK (never fetched, never committed)",
+    "PSXDECOMP_BACKTEST_EXCLUDE": "backtests only: the replayed project's own repositories (OWNER/REPO, space separated), "
+                                  "which S3 must not read",
 }
 
 

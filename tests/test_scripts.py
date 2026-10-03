@@ -7,7 +7,7 @@ from conftest import PY, ROOT, run
 
 
 @pytest.mark.parametrize("script", ["answers", "fetch_refs", "identify", "preflight", "doctor", "upgrade", "install",
-                                    "decompdev", "resume_hint"])
+                                    "decompdev", "ghsearch", "resume_hint"])
 def test_self_test(script):
     r = run([PY, ROOT / "scripts" / ("%s.py" % script), "--self-test"], check=False)
     assert r.returncode == 0 and "SELF-TEST OK" in r.stdout, r.stdout + r.stderr

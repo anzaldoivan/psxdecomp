@@ -11,11 +11,22 @@ Inputs: the title, region/version and serial (from `.run/bootstrap/interview.jso
    re-find.
 2. **siblings** — same developer or engine: sibling decomps and the toolchain they pin (compiler, aspsx, PsyQ
    version). The toolchain of a sibling is the first rung of this game's compiler ladder (e.g. mmx4 for X6; scope: mmx6, 2026-10-01).
-3. **maps** — symbol or RAM maps, modding notes, practice hacks, randomizers, Archipelago worlds, cheat code sets.
+3. **maps** — symbol or RAM maps, modding notes, practice hacks, randomizers, Archipelago worlds, cheat code sets,
+   and ROM hacks with their documentation (romhacking.net, archive.org, hack source on GitHub). A hack's addresses
+   speak for the retail disc only when the hack names the dump it patches (a hash or a Redump id): the lead records
+   that id. Hack-only material (the hack's own code, its mod sheets) is out of scope. An unstated licence is class
+   `facts`.
 4. **ports** — recompilation or port projects (psxrecomp-based, PC ports): facts plus their licence.
 5. **versions** — releases, revisions and prototypes (TCRF, Redump): which release to target and why.
 6. **sdk** — for the detected SDK stamp (`medium.json psyq.version`): start from its rows in `profiles/psx/psyq.toml`,
    then find matching triples (compiler + aspsx + flags) it lacks and where each was proven.
+
+**GitHub search.** Right after the decomp.dev lookup, run `"$PSXD" ghsearch --title "<title>" --serial "<serial>"
+--exe <TARGET_BINARY>`, adding `--exclude "<value>"` (quoted) when `answers.txt` carries `PSXDECOMP_BACKTEST_EXCLUDE`. It writes
+`.run/bootstrap/research/github.md`: repositories named after the game (modding work rarely says "decomp") and, with
+GitHub auth, files citing the serial. Hand its rows to the **existing**, **maps** and **ports** agents as starting
+leads to classify, not to re-search. A `SKIP` line is a gap for the scouts' web search, never a failure. In a backtest
+(`PSXDECOMP_BACKTEST_EXCLUDE` set), no agent opens, cites or follows those repositories: tell every scout.
 
 Brief each agent with: the question, the title/serial/region, today's date, the output path
 `.run/bootstrap/research/<question>.md`, and "shallow" (default) or "deep" (`--deep`: extended search, more sources).

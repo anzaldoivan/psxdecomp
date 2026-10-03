@@ -10,7 +10,7 @@ two pinned installers. After S10 the repository needs nothing from the plugin.
 ```
 /psxdecomp:new (skill, invocation-only)
   ├─ S0 preflight.py ─ S2 identify.py ─ profiles/psx/probes/psx.py      (scripts: deterministic, --self-test each)
-  ├─ S1 interview ─ S3 scout-web × 6 + scout-repo ─ S4 gate            (the model: AskUserQuestion, agents)
+  ├─ S1 interview ─ S3 decompdev.py + ghsearch.py → scout-web × 6 + scout-repo ─ S4 gate   (the model: AskUserQuestion, agents)
   ├─ S5 install.py: firewall pack (from the pinned kit's templates) → first commit
   ├─ S6 install.py → PA3's pa_install.py --project --yes  (pinned tag, sha-checked); pa.json "upgrade": "ask"
   ├─ restart → claude --agent plain → /psxdecomp:new --resume       (hooks/hooks.json repeats it at session start)

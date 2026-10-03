@@ -43,7 +43,9 @@ Result: **4 core sources (13 MB, about 9 s)**; 6 optional (up to 109 MB if all a
 sources, of which a project needs only its pin's); 1 byo; 5 links.
 
 decomp.dev is a research source too, not a fetched row: `scripts/decompdev.py lookup --title T [--serial S]` lists its
-matching projects (repository, version, measures, last commit) from the read API, dated like any S3 lead.
+matching projects (repository, version, measures, last commit) from the read API, dated like any S3 lead. GitHub is
+the other one: `scripts/ghsearch.py --title T [--serial S] [--exe E]` lists repositories named after the game (modding
+work rarely says "decomp") and, with GitHub auth, files that cite its serial.
 
 Game-specific sources stay out of the profile: S3 adds them per game (mmx4 for X6; Xenogears, FF7, Vagrant Story and
 Tomba decomps were BFM's compiler precedents), as `optional` rows the S4 gate can promote.

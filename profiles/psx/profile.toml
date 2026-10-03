@@ -47,5 +47,7 @@ search_seeds = [
   "\"{title}\" tcrf prototype",
   "\"{title}\" randomizer OR archipelago OR practice hack",
   "site:decomp.dev \"{title}\"",
+  "site:romhacking.net \"{title}\"",
+  "\"{title}\" hack OR \"improvement project\" OR mod",
 ]
 sibling_hint = "same developer, publisher or engine: sibling decomps pin the toolchain lead (mmx4 for X6; Xenogears, FF7, Vagrant Story for BFM; scope: mmx6 and BFM-decomp, 2026-10-01)"

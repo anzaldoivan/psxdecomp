@@ -25,6 +25,7 @@ Each backtest replays a real bootstrap with its community leads blanked; the res
 | Game | Serial | Bootstrap |
 |---|---|---|
 | Mega Man X6 | SLUS-01395 (v1.1) | mmx6, 2026-10-01 |
+| Mega Man X5 | SLUS-01334 | mmx5, 2026-10-03 |
 | Dino Crisis 2 | SLUS-01279 | the DC2 branch, 2026-09-30 |
 | Brave Fencer Musashi | SLUS-00726 | [BFM-decomp](https://github.com/Druthulu/BFM-decomp), the kit's home project (2026-10-01) |
 
