@@ -14,7 +14,8 @@ serial in both forms and the executable's name) needs GitHub auth; its hits are 
 
 Backend: `gh api` when `gh auth status` is green; else api.github.com with $GH_TOKEN / $GITHUB_TOKEN; else anonymous
 (repository search only: `SKIP code search: no GitHub auth`). A network error prints `SKIP` and exits 0: the search
-never blocks S3. `--exclude` drops repositories (fnmatch, case-insensitive; backtests pass the replayed project's own
+never blocks S3; a failed repository query also prints its API URL for a WebFetch fallback (a sandboxed shell has no
+network, WebFetch does). `--exclude` drops repositories (fnmatch, case-insensitive; backtests pass the replayed project's own
 repositories); the plugin's own repository is always dropped (its fixtures are deliberately stale).
 
 Writes `.run/bootstrap/research/github.md` (or `--out`): one row per repository, leads, not facts.
@@ -199,12 +200,13 @@ def search(fetch, authed: bool, title: str, serial: str | None = None, exe: str 
     if v["initials"] and v["initials"].lower() != v["joined"].lower():
         queries.append("%s in:name" % v["initials"])
     rows: dict[str, dict] = {}
-    skips, dropped, excl = [], [], set()
+    skips, dropped, excl, fallback = [], [], set(), []
     for q in queries:
         try:
             items = fetch("search/repositories", {"q": q, "per_page": str(PER_PAGE)}).get("items") or []
         except NetError as e:
             skips.append("SKIP repo search %s: %s" % (q, e))
+            fallback.append("%s/search/repositories?%s" % (API, urllib.parse.urlencode({"q": q, "per_page": PER_PAGE})))
             continue
         for repo in items:
             fn = repo.get("full_name", "")
@@ -255,7 +257,7 @@ def search(fetch, authed: bool, title: str, serial: str | None = None, exe: str 
                                                             if len(h["paths"]) > MAX_PATHS else [])
     ordered = sorted(rows.values(), key=lambda r: r["updated"], reverse=True)       # newest first, then
     ordered.sort(key=lambda r: r["matched"].startswith("code:"))                      # named hits above code-only
-    return {"rows": ordered, "skips": skips,
+    return {"rows": ordered, "skips": skips, "fallback": fallback,
             "dropped": sorted(set(dropped)), "excluded": sorted(excl), "queries": queries + ['"%s"' % q for q in codeq]}
 
 
@@ -281,6 +283,15 @@ def render(res: dict, title: str, backend: str, date: str) -> str:
     out.append("")
     for s in res["skips"]:
         out.append("- %s" % s)
+    if res.get("fallback"):
+        v = variants(title)
+        out += ["", "**Fallback.** The shell could not reach the API (a sandboxed shell has no network). Fetch each URL "
+                "below with WebFetch (anonymous: 10 searches a minute) and keep a repository only when its name or "
+                "description holds %s on a token boundary%s:" % (
+                    " or ".join("`%s`" % x for x in (v["phrase"], v["joined"]) if x),
+                    (", or `%s` with the platform or another title word beside it" % v["initials"]) if v["initials"] else "")]
+        out += ["- <%s>" % u for u in res["fallback"]]
+        out.append("")
     out.append("- Dropped by the name filter: %d repositor%s%s." % (
         len(res["dropped"]), "y" if len(res["dropped"]) == 1 else "ies",
         " (%s)" % ", ".join(res["dropped"][:8]) + (" …" if len(res["dropped"]) > 8 else "") if res["dropped"] else ""))
@@ -372,6 +383,9 @@ def self_test() -> int:
         raise NetError("<urlopen error [Errno 8] nodename nor servname provided>")
     res = search(down, True, "Mega Man X6", "SLUS-01395", None)
     ok &= res["rows"] == [] and len(res["skips"]) == 3 + 2 and all(s.startswith("SKIP") for s in res["skips"])
+    ok &= len(res["fallback"]) == 3 and "q=MegaManX6+in%3Aname" in res["fallback"][1]
+    ok &= "**Fallback.**" in render(res, "Mega Man X6", "down", "2026-10-03")
+    ok &= "**Fallback.**" not in md
     with tempfile.TemporaryDirectory() as td:
         rc = main(["--title", "Mega Man X6", "--serial", "SLUS-01395", "--out", os.path.join(td, "g.md")],
                   backend=("down", down, True))
@@ -408,6 +422,8 @@ def main(argv=None, backend=None) -> int:
                                                     _cell(r["description"], 70)))
         for s in res["skips"]:
             print(s)
+        for u in res["fallback"]:
+            print("FALLBACK WebFetch %s" % u)
         print("GHSEARCH %d repositor%s for %r via %s, %d dropped by the name filter, %d excluded; %s (%s)" % (
             len(res["rows"]), "y" if len(res["rows"]) == 1 else "ies", a.title, label, len(res["dropped"]),
             len(res["excluded"]), out, date))

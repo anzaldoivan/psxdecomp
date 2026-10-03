@@ -22,11 +22,13 @@ Inputs: the title, region/version and serial (from `.run/bootstrap/interview.jso
    then find matching triples (compiler + aspsx + flags) it lacks and where each was proven.
 
 **GitHub search.** Right after the decomp.dev lookup, run `"$PSXD" ghsearch --title "<title>" --serial "<serial>"
---exe <TARGET_BINARY>`, adding `--exclude "<value>"` (quoted) when `answers.txt` carries `PSXDECOMP_BACKTEST_EXCLUDE`. It writes
-`.run/bootstrap/research/github.md`: repositories named after the game (modding work rarely says "decomp") and, with
-GitHub auth, files citing the serial. Hand its rows to the **existing**, **maps** and **ports** agents as starting
-leads to classify, not to re-search. A `SKIP` line is a gap for the scouts' web search, never a failure. In a backtest
-(`PSXDECOMP_BACKTEST_EXCLUDE` set), no agent opens, cites or follows those repositories: tell every scout.
+--exe <TARGET_BINARY>`, adding `--exclude "<value>"` (quoted) when `answers.txt` carries `PSXDECOMP_BACKTEST_EXCLUDE`.
+It writes `.run/bootstrap/research/github.md`: repositories named after the game (modding work rarely says "decomp")
+and, with GitHub auth, files citing the serial. Hand its rows to the **existing**, **maps** and **ports** agents as
+starting leads to classify, not to re-search. A `SKIP` line is a gap, never a failure: when the file lists
+**Fallback** URLs (the shell had no network), the **existing** agent fetches each with WebFetch and applies the filter
+the file states. In a backtest (`PSXDECOMP_BACKTEST_EXCLUDE` set), no agent opens, cites or follows those
+repositories: tell every scout.
 
 Brief each agent with: the question, the title/serial/region, today's date, the output path
 `.run/bootstrap/research/<question>.md`, and "shallow" (default) or "deep" (`--deep`: extended search, more sources).
