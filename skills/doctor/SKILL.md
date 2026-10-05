@@ -19,4 +19,6 @@ network: `progress` (when a workflow builds a decomp.dev report: its safety lint
 repository) and `github` (the repository's security settings through `gh api`; each WARN carries the `gh api` command
 that fixes it, for the developer to run). `--offline` skips both; `--only github` runs just that row. For drift in the reference library the
 fix is `"${CLAUDE_PLUGIN_ROOT}/scripts/psxd" fetch_refs --repo .`; for a repository not bootstrapped by psxdecomp it
-is `/psxdecomp:upgrade`. Never fix anything from this skill: it diagnoses.
+is `/psxdecomp:upgrade`. A README lint failure names its fix (the standard: `docs/PUBLISHING.md` in the plugin); the
+generated blocks are `python3 tools/psxd_publish.py render README.md --write`. Never fix anything from this skill: it
+diagnoses.

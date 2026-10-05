@@ -94,14 +94,16 @@ prepared file; `--deep` widens the research.
 
 | Command | Purpose |
 |---|---|
-| `/psxdecomp:doctor` | Read-only health check: pins, firewall, reference library, documentation hygiene. It also lints a decomp.dev progress workflow and the GitHub security settings, and names the fix for each finding. |
+| `/psxdecomp:doctor` | Read-only health check: pins, firewall, reference library, documentation hygiene, the README standard. It also lints a decomp.dev progress workflow and the GitHub security settings, and names the fix for each finding. |
 | `/psxdecomp:upgrade` | Adopts a repository that was set up by hand. |
 
 ## What a game repository contains
 
 ```
 your-game/
-  README.md               the project's front page, with the AI policy above
+  README.md               the project's front page, on the README standard, with the AI policy
+  config/discs.tsv        the disc, serial and executable rows the README's disc table shows
+  tools/psxd_publish.py   the README lint and the decomp.dev report checks, run by the game's CI
   config/psxdecomp.toml   the bootstrap record: pins, profile, PsyQ lead
   docs/prior-art.md       the research report you confirmed
   docs/ops/refs.md        the reference-library index (the sources sit in the ignored refs/)
@@ -125,6 +127,7 @@ PsyQ SDK is bring-your-own and never fetched; the tests run on a synthetic disc 
 | [skills/new/reference/stages.md](skills/new/reference/stages.md) | each stage: what it reads, writes and records |
 | [compat.toml](compat.toml) and [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md) | the pinned versions and the upstreams watched |
 | [docs/REFS.md](docs/REFS.md) | the reference library |
+| [docs/PUBLISHING.md](docs/PUBLISHING.md) | the README standard and publishing progress to decomp.dev |
 | [docs/PROFILES.md](docs/PROFILES.md) | console profiles and the consoles planned next |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | tests, releases and pin bumps |
 

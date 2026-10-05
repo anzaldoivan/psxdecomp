@@ -6,8 +6,10 @@
     doctor.py --self-test
 
 Checks: the bootstrap record (config/psxdecomp.toml); PA3's version against compat.toml; pa3-drift (WARN only: the
-machine's PA3 against the pin, and pa.json `"upgrade": "ask"`); the kit's install record; the README's AI policy block
-(FAIL when missing; WARN when the old disclosure paragraph is still there); the interpreter pa.json names exists on
+machine's PA3 against the pin, and pa.json `"upgrade": "ask"`); the kit's install record; the README (FAIL without the
+AI policy block; a README on the standard, docs/PUBLISHING.md, is linted and FAILs on a lint failure; an older one
+WARNs); publish-tool (WARN only: tools/psxd_publish.py and its workflow are the plugin's); categories (when
+config/categories.tsv exists: its rules, and no published id gone); the interpreter pa.json names exists on
 this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
 PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
@@ -32,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common  # noqa: E402
 import decompdev  # noqa: E402
 import fetch_refs  # noqa: E402
+import publish  # noqa: E402
 
 NETWORK_ROWS = ("progress", "github")
 
@@ -85,7 +88,11 @@ def base_rows(repo: pathlib.Path, add):
     else:
         add("kit", "FAIL", "no docs/decomp-architect-install.md (the kit is not installed)")
     readme = repo / "README.md"
-    add("readme", *readme_row(common.read(readme) if readme.is_file() else None))
+    add("readme", *readme_row(common.read(readme) if readme.is_file() else None, repo))
+    add("publish-tool", *publish_tool_row(repo))
+    cats = categories_row(repo)
+    if cats:
+        add("categories", *cats)
     gi = repo / ".gitignore"
     gtext = common.read(gi) if gi.is_file() else ""
     add("ignore", "OK" if "# ROM firewall — in force from the FIRST commit" in gtext else "FAIL",
@@ -146,17 +153,53 @@ def pa3_drift_row(conf: dict, machine: str | None, pin: str) -> tuple[str, str]:
     return "OK", "PA3 %s on this machine; upgrades ask first" % (machine or "not installed")
 
 
-def readme_row(text: str | None) -> tuple[str, str]:
-    """The AI policy block (common.AI_POLICY_MARK) is in the README; the old disclosure paragraph is gone."""
+def readme_row(text: str | None, repo: pathlib.Path | None = None) -> tuple[str, str]:
+    """The AI policy block (common.AI_POLICY_MARK) is in the README (FAIL without it). A README on the standard
+    (docs/PUBLISHING.md: it carries the generated progress block) is linted, FAIL on any lint failure; an older one
+    WARNs, and /psxdecomp:upgrade plan lists its migration."""
     if text is None:
         return "WARN", "no README.md (the kit writes it at S8)"
     if common.AI_POLICY_MARK not in text:
         return "FAIL", "README.md lacks the AI policy block — fix: `/psxdecomp:new --resume` re-runs S8, or paste " \
                        "common.ai_policy_block() under the lead"
-    if common.OLD_DISCLOSURE in text:
-        return "WARN", "README.md still carries the old disclosure paragraph (%r…): delete it, the AI policy block " \
-                       "replaces it" % common.OLD_DISCLOSURE[:40]
-    return "OK", "README.md carries the AI policy block"
+    if publish.marker("progress") not in text:
+        if common.OLD_DISCLOSURE in text:
+            return "WARN", "README.md still carries the old disclosure paragraph (%r…): delete it, the AI policy " \
+                           "block replaces it" % common.OLD_DISCLOSURE[:40]
+        return "WARN", "README.md predates the README standard (docs/PUBLISHING.md): `/psxdecomp:upgrade plan` " \
+                       "lists the lint findings to migrate it"
+    if repo is None:
+        return "OK", "README.md is on the README standard (not linted: no repository)"
+    st, detail = publish.lint_summary(publish.lint(text, publish.Ctx(repo)))
+    return st, "README.md %s%s" % (detail, "" if st == "OK" else " (tools/psxd_publish.py lint README.md)")
+
+
+def publish_tool_row(repo: pathlib.Path) -> tuple[str, str]:
+    """The vendored lint (tools/psxd_publish.py) and its workflow are psxdecomp's current ones. Never FAIL."""
+    want = {publish.VENDORED: common.PLUGIN_ROOT / "scripts" / "publish.py",
+            publish.WORKFLOW: common.PLUGIN_ROOT / "profiles" / "psx" / "psxdecomp-readme.yml"}
+    off = []
+    for rel, src in want.items():
+        have = repo / rel
+        if not have.is_file():
+            off.append("%s missing" % rel)
+        elif have.read_bytes() != src.read_bytes():
+            off.append("%s differs from psxdecomp %s's" % (rel, common.plugin_version()))
+    if off:
+        return "WARN", "%s — /psxdecomp:upgrade apply writes them" % "; ".join(off)
+    return "OK", "%s and %s are psxdecomp %s's" % (publish.VENDORED, publish.WORKFLOW, common.plugin_version())
+
+
+def categories_row(repo: pathlib.Path) -> tuple[str, str] | None:
+    """config/categories.tsv's rules and its freeze (no committed id gone); None before the first publish."""
+    rows, errs = publish.load_categories(repo / publish.CATEGORIES_REL)
+    if rows is None:
+        return None
+    more, n = publish.history_errors(repo, rows)
+    errs += more
+    if errs:
+        return "FAIL", "%d error(s): %s" % (len(errs), "; ".join(errs[:2]))
+    return "OK", "%d ids (%d active); none lost over %d commit(s)" % (len(rows), len(publish.active(rows)), n)
 
 
 # Not the repo's own current text: fetched sources, research, phase records (scoped by their phase), and the harness
@@ -469,8 +512,18 @@ def self_test() -> int:
     good = "# G\n\nLead.\n\n%s\n## A\n" % common.ai_policy_block()
     rm = [readme_row(None), readme_row("# G\n\nLead.\n"), readme_row(good),
           readme_row(good + "\n%s; a person reviews each phase gate.\n" % common.OLD_DISCLOSURE)]
-    print("  readme: %s" % "; ".join(r[0] for r in rm))
-    ok &= [r[0] for r in rm] == ["WARN", "FAIL", "OK", "WARN"]
+    with tempfile.TemporaryDirectory() as td:                           # a README on the standard is linted
+        repo = publish._self_repo(td)
+        std = publish.render(publish.SELF_README, publish.Ctx(repo))
+        rm += [readme_row(std, repo), readme_row(std.replace("## Progress", "## Status"), repo)]
+        tool = publish_tool_row(repo)
+        cats = categories_row(repo)
+        (repo / publish.CATEGORIES_REL).write_text(publish.SELF_TSV.replace("ovl.stage1\tovl\tStage 1\tactive\n", ""))
+        cats_gone = categories_row(repo)
+    print("  readme: %s; publish-tool %s; categories %s, an id removed %s" % (
+        "; ".join(r[0] for r in rm), tool[0], cats[0], cats_gone[0]))
+    ok &= [r[0] for r in rm] == ["WARN", "FAIL", "WARN", "WARN", "OK", "FAIL"] and "predates" in rm[2][1]
+    ok &= tool[0] == "WARN" and cats[0] == "OK" and cats_gone[0] == "FAIL" and "'ovl.stage1'" in cats_gone[1]
     ok &= self_test_progress()
     ok &= self_test_github()
     return common.self_test_banner("doctor", ok)

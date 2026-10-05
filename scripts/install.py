@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import answers as answers_mod  # noqa: E402
 import common  # noqa: E402
 import fetch_refs  # noqa: E402
+import publish  # noqa: E402
 
 BOOT = ".run/bootstrap"
 KIT_ANSWERS = ".run/decomp-architect/answers.txt"
@@ -315,7 +316,7 @@ def s8_kit(c: Ctx) -> str:
         c.deviation(d)
     record = c.p("docs/decomp-architect-install.md")
     if record.is_file():
-        return "kit already installed (docs/decomp-architect-install.md)%s" % readme_policy(c)
+        return "kit already installed (docs/decomp-architect-install.md)%s" % readme_standard(c, kit)
     ans = c.answers()
     kit_vals, _ = answers_mod.split(ans)
     if not kit_vals.get("DUMP_PATH"):
@@ -342,7 +343,75 @@ def s8_kit(c: Ctx) -> str:
         c.deviation("the kit's dry run named paths its run did not write: %s" % ", ".join(extra[:6]))
     last = [l for l in r.stdout.splitlines() if l.startswith("summary:")]
     return "%s; dry run listed %d of the %d written paths%s" % (last[0] if last else "kit installed",
-                                                               len(would & wrote), len(wrote), readme_policy(c))
+                                                               len(would & wrote), len(wrote), readme_standard(c, kit))
+
+
+README_TEMPLATE = common.PLUGIN_ROOT / "profiles" / "psx" / "README.md.template"
+PH_RE = re.compile(r"\{\{([A-Z_]+)\}\}")
+
+
+def skeleton_values(skeleton: str, readme: str) -> dict | None:
+    """The placeholder values of a README that is still the kit's skeleton as the kit filled it; None when it is not
+    (the developer edited it, or an older S8 already swapped the AI policy in)."""
+    pat, seen, pos = [], set(), 0
+    for m in PH_RE.finditer(skeleton):
+        pat.append(re.escape(skeleton[pos:m.start()]))
+        pat.append("(?P=%s)" % m[1] if m[1] in seen else "(?P<%s>.*?)" % m[1])
+        seen.add(m[1])
+        pos = m.end()
+    pat.append(re.escape(skeleton[pos:]))
+    m = re.fullmatch("".join(pat), readme, re.S)
+    return m.groupdict() if m else None
+
+
+def fill_template(template: str, vals: dict) -> str:
+    def sub(m):
+        if m[1] not in vals:
+            raise common.Fail("README template: no value for {{%s}}" % m[1])
+        return vals[m[1]]
+    return PH_RE.sub(sub, template)
+
+
+def discs_tsv(ans: dict) -> str | None:
+    """config/discs.tsv's first row from the answers, when the serial and the executable have the disc's own form."""
+    serial = re.search(r"\b[A-Z]{4}-\d{5}\b", ans.get("GAME_SERIAL", ""))
+    exe = ans.get("TARGET_BINARY", "").strip()
+    if not serial or not publish.EXE_RE.match(exe):
+        return None
+    label = ans.get("PSXDECOMP_REGION_VERSION", "").strip()
+    label = label if label and not label.lower().startswith("none") else "Disc 1"
+    return "%s\n%s\n" % ("\t".join(publish.DISCS_HEAD), "\t".join([label, serial[0], exe, "", "dump"]))
+
+
+def readme_standard(c: Ctx, kit: pathlib.Path) -> str:
+    """psxdecomp's README standard (docs/PUBLISHING.md) in place of the README the kit just wrote: the template filled
+    with the values the kit filled its skeleton with, the AI policy block, and the generated disc and progress blocks;
+    config/discs.tsv from the answers. A README that is not the kit's untouched skeleton keeps its prose and only gets
+    the AI policy block (readme_policy). Idempotent."""
+    readme = c.p("README.md")
+    if c.dry or not readme.is_file():
+        return ""
+    old = common.read(readme)
+    if publish.marker("progress") in old:
+        return ""
+    vals = skeleton_values(common.read(kit / "templates" / "README.skeleton.md"), old)
+    if vals is None:
+        return readme_policy(c)
+    paths = ["README.md"]
+    try:
+        ans = c.answers()
+    except common.Fail:
+        ans = {}
+    tsv = discs_tsv(ans)
+    if tsv and not c.p(publish.DISCS_REL).exists():
+        c.write(publish.DISCS_REL, tsv)
+        paths.append(publish.DISCS_REL)
+    vals["AI_POLICY_BLOCK"] = common.ai_policy_block()
+    new = publish.render(fill_template(common.read(README_TEMPLATE), vals), publish.Ctx(c.target))
+    c.write("README.md", new)
+    sha = c.commit(paths, "README: psxdecomp's README standard in place of the kit's skeleton (the AI policy block, "
+                          "generated disc and progress blocks)")
+    return "; README standard (commit %s)" % sha
 
 
 def readme_policy(c: Ctx) -> str:
@@ -509,6 +578,11 @@ def s10_handoff(c: Ctx) -> str:
         c.write("docs/prior-art.md", common.read(pa_src))
         paths.append("docs/prior-art.md")
     readme_policy(c)                              # S8 did it; a repo whose S8 predates it gets it here
+    for rel, body, mode in ((publish.VENDORED, common.read(common.PLUGIN_ROOT / "scripts" / "publish.py"), 0o755),
+                            (publish.WORKFLOW, common.read(common.PLUGIN_ROOT / "profiles/psx/psxdecomp-readme.yml"),
+                             None)):
+        c.write(rel, body, mode=mode)
+        paths.append(rel)
     how = c.p("HOW_WE_WORK.md")
     if how.is_file() and SCOPE_MARK not in common.read(how):
         c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Docs map", scope_line(ans, psyq_v)))
@@ -516,6 +590,7 @@ def s10_handoff(c: Ctx) -> str:
     seeds = c.boot("seeds.txt")
     if c.dry:
         return "would write the record, the profile, the host recipe and docs/prior-art.md"
+    c.git("add", "--", *[x for x in paths if c.p(x).exists()])   # the README lint counts tracked paths, not local
     import doctor
     rows = doctor.check(c.target)
     bad = [r for r in rows if r[1] == "FAIL"]
@@ -524,8 +599,8 @@ def s10_handoff(c: Ctx) -> str:
     if bad:
         raise common.Fail("doctor: %s" % "; ".join("%s: %s" % (r[0], r[2]) for r in bad))
     card_check(c)
-    sha = c.commit(paths, "psxdecomp handoff: the bootstrap record (pins, profile, host recipe) and the prior-art "
-                          "table")
+    sha = c.commit(paths, "psxdecomp handoff: the bootstrap record (pins, profile, host recipe), the prior-art table, "
+                          "and the README standard's lint and its CI")
     nxt = ("Next: a bare `claude` in this repository; PA3's planner drafts GENERATION_PLAN.md from the ladder."
            + (" Phase 1.2 leads: %s." % (BOOT + "/seeds.txt") if seeds.is_file() else ""))
     return "record %s, commit %s. %s" % (RECORD, sha, nxt)
@@ -747,6 +822,19 @@ def self_test() -> int:
     ok &= "made\n\nThe standard." in swapped and common.with_ai_policy(swapped, common.OLD_DISCLOSURE) == swapped
     own = readme.replace(common.OLD_DISCLOSURE, "We disclose AI use per pull request.")
     ok &= "We disclose AI use" in common.with_ai_policy(own, replace="We disclose AI use per pull request.")
+    skel = "# {{PROJECT_NAME}}\n\n{{GAME_TITLE}} ({{GAME_SERIAL}}).\n\n## Made\n\n{{AI_DISCLOSURE}}\n\n*{{GAME_TITLE}}*\n"
+    filled = skel.replace("{{PROJECT_NAME}}", "g").replace("{{GAME_TITLE}}", "Game X").replace(
+        "{{GAME_SERIAL}}", "USA, SLUS-01234").replace("{{AI_DISCLOSURE}}", common.OLD_DISCLOSURE + ".")
+    vals = skeleton_values(skel, filled)
+    ok &= vals is not None and vals["GAME_SERIAL"] == "USA, SLUS-01234" and vals["PROJECT_NAME"] == "g"
+    ok &= skeleton_values(skel, filled.replace("Game X (", "Game Y (")) is None          # a repeat must agree
+    ok &= skeleton_values(skel, filled + "An edit.\n") is None
+    ok &= fill_template("{{A}} {{A}}", {"A": "x"}) == "x x"
+    ok &= discs_tsv({"GAME_SERIAL": "USA, SLUS-01279", "TARGET_BINARY": "SLUS_012.79"}) == \
+        "disc\tserial\texecutable\ttrack\tsource\nDisc 1\tSLUS-01279\tSLUS_012.79\t\tdump\n"
+    ok &= discs_tsv({"GAME_SERIAL": "none (homebrew fixture, HELLO.EXE)", "TARGET_BINARY": "HELLO.EXE"}) is None
+    ok &= (discs_tsv({"GAME_SERIAL": "SLUS-01395", "TARGET_BINARY": "SLUS_013.95", "PSXDECOMP_REGION_VERSION":
+                      "USA v1.1"}) or "").split("\n")[1].startswith("USA v1.1\tSLUS-01395\t")
     with tempfile.TemporaryDirectory() as td:
         st = common.State(td)
         st.mark("S0", "done")

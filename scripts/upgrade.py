@@ -10,8 +10,10 @@ apply. psxrecomp's migrate shape, our own code.
     upgrade.py --self-test
 
 psxdecomp owns: config/psxdecomp.toml, config/refs.toml, docs/ops/refs.md, its .gitignore block, its firewall purge
-line, the one HOW_WE_WORK references line, the docs/ops/INDEX.md row. PA3 and kit upgrades are printed as commands for
-the developer (their own installers, their own gates).
+line, the one HOW_WE_WORK references line, the docs/ops/INDEX.md row, tools/psxd_publish.py and
+.github/workflows/psxdecomp-readme.yml (the README standard's lint and its CI). The README's prose is the developer's:
+its migration to the standard is a `manual` action listing the lint findings. PA3 and kit upgrades are printed as
+commands for the developer (their own installers, their own gates).
 """
 from __future__ import annotations
 
@@ -29,8 +31,11 @@ import common  # noqa: E402
 import doctor  # noqa: E402
 import fetch_refs  # noqa: E402
 import install  # noqa: E402
+import publish  # noqa: E402
 
 PROFILE_REFS = common.PLUGIN_ROOT / "profiles" / "psx" / "refs.toml"
+OWNED = {publish.VENDORED: common.PLUGIN_ROOT / "scripts" / "publish.py",
+         publish.WORKFLOW: common.PLUGIN_ROOT / "profiles" / "psx" / "psxdecomp-readme.yml"}
 
 
 def plan(repo: pathlib.Path) -> list[dict]:
@@ -69,6 +74,18 @@ def plan(repo: pathlib.Path) -> list[dict]:
                 add("manual", "refs: %s is %s/%s here, %s/%s in the profile" % (
                     n, mine[n]["class"], str(mine[n].get("ref", ""))[:12], default[n]["class"],
                     str(default[n].get("ref", ""))[:12]), "a pin or a class differs; decide per source", "refs-diff")
+    stale = [rel for rel, src in OWNED.items() if not (repo / rel).is_file() or
+             (repo / rel).read_bytes() != src.read_bytes()]
+    if stale:
+        add("psxdecomp", "publish: write %s (the README standard's lint and its CI)" % " and ".join(stale),
+            "missing or older than psxdecomp %s's" % common.plugin_version(), "publish")
+    readme = repo / "README.md"
+    if readme.is_file():
+        found = [f for f in publish.lint(common.read(readme), publish.Ctx(repo)) if f[0] == "FAIL"]
+        if found:
+            add("manual", "README: %d lint failure(s) against the README standard (docs/PUBLISHING.md; the prose is "
+                "yours, the two generated blocks are `python3 tools/psxd_publish.py render README.md --write`): %s"
+                % (len(found), "; ".join("%s: %s" % f[1:] for f in found[:8])), "the README standard", "readme")
     gi = repo / ".gitignore"
     if gi.is_file() and "/refs/" not in common.read(gi).splitlines():
         add("psxdecomp", "ignore: add the /refs/ line in a psxdecomp block", "refs/ must never be tracked", "ignore")
@@ -133,6 +150,11 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool) -> list[str]:
                 extra += [toml_table("trap", t) for t in prof["traps"]]
         w("config/refs.toml", cur.rstrip("\n") + "\n\n# ---- added by /psxdecomp:upgrade %s ----\n" % common.today()
           + "\n".join(extra))
+    if "publish" in acts:
+        for rel, src in OWNED.items():
+            st = common.write(repo / rel, common.read(src), dry=dry, mode=0o755 if rel.endswith(".py") else None)
+            if st != "unchanged":
+                written.append("%s%s %s" % ("would be " if dry else "", st, rel))
     if "refs-add" in acts or "ignore" in acts:
         gi = common.read(repo / ".gitignore") if (repo / ".gitignore").is_file() else ""
         if "/refs/" not in gi.splitlines():
@@ -208,7 +230,7 @@ def self_test() -> int:
         (repo / ".claude").mkdir()
         (repo / ".claude/pa.json").write_text(json.dumps({"pa_version": "3.14.1", "python": "/nonexistent/python"}))
         keys = {x["key"] for x in plan(repo)}
-        ok &= {"adopt", "refs-add", "ignore", "pa3", "python", "kit"} <= keys
+        ok &= {"adopt", "refs-add", "ignore", "pa3", "python", "kit", "publish"} <= keys
         before = sorted(p.name for p in repo.rglob("*") if ".git" not in p.parts)
         dry = apply(repo, True, False)
         ok &= sorted(p.name for p in repo.rglob("*") if ".git" not in p.parts) == before and len(dry) >= 4
@@ -216,7 +238,12 @@ def self_test() -> int:
         ok &= (repo / "config/refs.toml").is_file() and (repo / "docs/ops/refs.md").is_file()
         ok &= install.REFS_RULE in (repo / "HOW_WE_WORK.md").read_text()
         keys2 = {x["key"] for x in plan(repo)}
-        ok &= not ({"adopt", "refs-add", "ignore"} & keys2)
+        ok &= not ({"adopt", "refs-add", "ignore", "publish"} & keys2)
+        ok &= (repo / publish.VENDORED).read_bytes() == OWNED[publish.VENDORED].read_bytes()
+        (repo / "README.md").write_text("# G\n\n%s\n## Status\n" % common.ai_policy_block())
+        readme = next((x for x in plan(repo) if x["key"] == "readme"), None)
+        ok &= readme is not None and readme["owner"] == "manual" and "missing ## Description" in readme["what"]
+        (repo / "README.md").unlink()
         ok &= apply(repo, True, False) == []                     # a second apply has nothing to do
         # an older refs.toml (a dropped row, no authority/traps) gains the new rows and tables; the dropped row is manual
         old = fetch_refs.load_rows(PROFILE_REFS)[:2] + [dict(fetch_refs.load_rows(PROFILE_REFS)[0], name="psn00bsdk")]

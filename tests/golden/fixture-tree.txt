@@ -28,6 +28,7 @@
 .claude/settings.json
 .claude/skills/project-architect/SKILL.md
 .github/workflows/no-rom.yml
+.github/workflows/psxdecomp-readme.yml
 .gitignore
 .ignore
 .run/README.md
@@ -216,6 +217,7 @@ tools/outline.py
 tools/pa3_update.py
 tools/phaseend_index.py
 tools/plan_edit.py
+tools/psxd_publish.py
 tools/research_add.py
 tools/rules_add.py
 tools/run.ps1

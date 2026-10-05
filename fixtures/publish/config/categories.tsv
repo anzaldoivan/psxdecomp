@@ -1,0 +1,8 @@
+id	parent	name	status
+game		Game code	active
+sdk		PsyQ libraries	active
+main		PSXD_000.01, the boot executable	active
+ovl		OVL/ overlays on the disc	active
+ovl.title	ovl	Title screen	active
+ovl.stage1	ovl	Stage 1	active
+ovl.debug	ovl	Debug menu (cut from the disc)	retired

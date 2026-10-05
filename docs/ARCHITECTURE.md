@@ -15,9 +15,9 @@ two pinned installers. After S10 the repository needs nothing from the plugin.
   ├─ S6 install.py → PA3's pa_install.py --project --yes  (pinned tag, sha-checked); pa.json "upgrade": "ask"
   ├─ restart → claude --agent plain → /psxdecomp:new --resume       (hooks/hooks.json repeats it at session start)
   ├─ S7 PA3's intake handed the kit's intake.decomp.md                 (PA3's tested path, unchanged)
-  ├─ S8 install.py → the kit's install.py --answers (dry run, then run; digest-checked) + README AI policy block
+  ├─ S8 install.py → the kit's install.py --answers (dry run, then run; digest-checked) + the README standard
   ├─ S9 fetch_refs.py → refs/ (git-ignored, searchable via .ignore) + docs/ops/refs.md (committed)
-  └─ S10 doctor.py + config/psxdecomp.toml
+  └─ S10 doctor.py + config/psxdecomp.toml + tools/psxd_publish.py (the README lint, vendored; its CI)
 ```
 
 ## Why the restart between S6 and S7
