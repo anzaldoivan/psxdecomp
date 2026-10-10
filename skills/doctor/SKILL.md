@@ -22,7 +22,8 @@ runs just that row. In split mode `github` checks only that origin, the `-dev`, 
 history is exposed), and two more use `gh api`: `private-repo` FAILs when `<game>-private` breaks its rules (public,
 forked, Actions on, a writable or second deploy key, another collaborator, a `private_rev` it lacks), and
 `public-standard` WARNs with the public repository's drift from the standard (`settings --apply` fixes it, the
-developer's). For drift in the reference library the fix is `"${CLAUDE_PLUGIN_ROOT}/scripts/psxd" fetch_refs --repo .`;
+developer's). `dev-ci` reads the latest push run of each workflow on origin's default branch: WARN when one is red,
+FAIL when a red job is one of `[public].checks` (the fix is a green push on dev before the next release). For drift in the reference library the fix is `"${CLAUDE_PLUGIN_ROOT}/scripts/psxd" fetch_refs --repo .`;
 for a repository not bootstrapped by psxdecomp it is `/psxdecomp:upgrade`. A README lint failure names its fix (the
 standard: `docs/PUBLISHING.md` in the plugin); the generated blocks are
 `python3 tools/psxd_publish.py render README.md --write`. Never fix anything from this skill: it diagnoses.

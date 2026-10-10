@@ -25,6 +25,14 @@
     publish.py verify-pr N [--merge] [--repo DEV]
                                           a public PR's required checks, their provenance and its claims; --merge squashes
     publish.py ci-log FILE                the last 60 lines of a build log that carry no asm, hex dump or instruction
+    publish.py list [--draft] [--rev REV] [--repo DEV]
+                                          the files the list publishes at REV; --draft: a first list (the tracked files
+                                          outside the deny set, folded to `dir/`), and what it would leave behind
+    publish.py ci-sim [--workflow NAME] [--projection] [--rev REV] [--private DIR] [--image REF] [--repo DEV]
+                                          the workflow's `run:` steps as written, on a fresh clone of REV or on its
+                                          release projection: in a clean ubuntu:24.04 container, or on this machine
+                                          when the steps start containers themselves (build.yml; --private: a local
+                                          <game>-private, --image: the toolchain image in [public].image's place)
     publish.py --self-test
 
 One file, standard library only, no import from the plugin: S10 and /psxdecomp:upgrade copy it byte for byte into a
@@ -48,6 +56,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1452,6 +1461,8 @@ def cmd_release(repo=".", rev=None, summary=None, ack_new=False, dry_run=False, 
     if dry_run:
         print("RELEASE dry run: would commit %s on %s (tree %s, %d file(s)); no ref written" % (
             sha[:10], br, tree[:10], len(want)))
+        print("RELEASE next: `ci-sim --projection` runs no-rom on this tree in a clean container (and `--workflow "
+              "build`), before it is public")
         return 0
     ref = "refs/heads/" + br
     have = _git(cache, "rev-parse", "--verify", "-q", ref).stdout.strip()
@@ -2147,6 +2158,282 @@ def cmd_ci_log(path) -> int:
     print("\n".join(shown))
     print("CI-LOG %d line(s) shown of %d, %d withheld" % (len(shown), total, withheld))
     return 0
+
+
+# ---- list: what the list publishes, and --draft: a first list ----------------------------------------------------
+
+REF_FILES = ("Makefile", "*.mk", ".github/workflows/*", "config/*", "tools/*.py", "tools/*.sh")  # their text names paths
+PATH_TOKEN = re.compile(r"[\w.-]+(?:/[\w.-]+)+")
+DRAFT_HEAD = ("# %s — the files this repository publishes (default deny: a tracked file no entry\n# matches stays "
+              "private). An entry ending in `/` is a directory prefix; any other is a glob.\n" % PUBLIC_PATHS_REL)
+
+
+def draft_list(dev, rev: str) -> tuple[list[str], list[str]]:
+    """(entries, warnings) of a first list for dev at rev: every tracked file outside the deny set, a directory with
+    nothing private below it folded into `dir/` (so a file added there later is public without an edit: dc2 listed
+    tools/ file by file and a new tool stayed behind). A warning names a private path a public build file refers to."""
+    tree = tree_entries(dev, rev) or {}
+    deny = deny_entries(dev, rev)
+    private = {p for p, (mode, _) in tree.items() if is_denied(deny, p) or mode in ("120000", "160000")}
+    above = lambda p: ["/".join(p.split("/")[:i]) + "/" for i in range(1, p.count("/") + 1)]  # noqa: E731
+    closed = {d for p in private for d in above(p)}
+    public = sorted(set(tree) - private)
+    entries = list(dict.fromkeys(next((d for d in above(p) if d not in closed), p) for p in public))
+    if not is_listed(entries, PUBLIC_PATHS_REL):
+        entries.insert(0, PUBLIC_PATHS_REL)
+    refs = [p for p in public if is_listed(REF_FILES, p)]
+    blobs = read_blobs(dev, [tree[p][1] for p in refs])
+    named = {}
+    for p in refs:
+        for tok in set(PATH_TOKEN.findall(blobs[tree[p][1]][:1 << 20].decode("utf-8", errors="replace"))):
+            if tok in private:
+                named.setdefault(tok, []).append(p)
+    warns = ["%s stays private, and %s name%s it" % (t, ", ".join(by[:3]) + (" and %d more" % (len(by) - 3)
+                                                                             if len(by) > 3 else ""),
+                                                     "s" if len(by) == 1 else "") for t, by in sorted(named.items())]
+    return entries, warns
+
+
+@_cmd("LIST")
+def cmd_list(repo=".", draft=False, rev=None) -> int:
+    dev = repo_root(repo)
+    rev = _must(dev, "rev-parse", "--verify", "%s^{commit}" % (rev or "HEAD"))
+    tree = tree_entries(dev, rev) or {}
+    if not draft:
+        lst = _dev_list(dev, rev)[0]
+        if lst is None:
+            raise Fail("%s: missing at %s (list --draft prints a first one)" % (PUBLIC_PATHS_REL, rev[:10]))
+        deny = deny_entries(dev, rev)
+        paths = [p for p in sorted(tree) if is_listed(lst, p) and not is_denied(deny, p)]
+        print("\n".join(paths))
+        print("LIST %d of %d tracked file(s) are public at %s" % (len(paths), len(tree), rev[:10]), file=sys.stderr)
+        return 0
+    entries, warns = draft_list(dev, rev)
+    sys.stdout.write(DRAFT_HEAD + "\n".join(entries) + "\n")
+    for w in warns:
+        print("LIST WARN %s" % w, file=sys.stderr)
+    n = sum(is_listed(entries, p) for p in tree)
+    print("LIST draft: %d entr%s for %d of %d tracked file(s) at %s, %d warning(s); what must stay private beyond the "
+          "agent files goes in [public].deny first" % (len(entries), "y" if len(entries) == 1 else "ies", n, len(tree),
+                                                       rev[:10], len(warns)), file=sys.stderr)
+    return 0
+
+
+# ---- ci-sim: a workflow's `run:` steps as written, on a fresh clone of a revision or on its release projection ---
+
+SIM_BASE = "ubuntu:24.04"
+# What the steps of the kit's workflows take from GitHub's ubuntu-24.04 runner; everything else they install themselves.
+SIM_APT = "git make curl ca-certificates sudo xz-utils unzip python3 python3-venv clang-format build-essential " \
+          "software-properties-common"
+SIM_EXPR = re.compile(r"\$\{\{\s*(?:runner\.(temp)|matrix\.(exe)|env\.(\w+))\s*\}\}")
+SIM_IF = re.compile(r"steps\.([\w-]+)\.outputs\.([\w-]+)\s*==\s*'([^']*)'")
+SIM_DRIVER = """set -u
+export CI=true GITHUB_ACTIONS=true GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main GITHUB_SERVER_URL=https://github.com
+export GITHUB_WORKSPACE="$WS" RUNNER_TEMP="$TMP" GITHUB_ENV="$TMP/.env" GITHUB_PATH="$TMP/.path"
+mkdir -p "$TMP"; : > "$GITHUB_ENV"; : > "$GITHUB_PATH"; cd "$WS"
+export GITHUB_SHA="$(git rev-parse HEAD)"
+step() {
+  echo "CI-SIM step $1: $3"
+  ( while IFS= read -r l; do [ -n "$l" ] && export "$l"; done < "$GITHUB_ENV"
+    while IFS= read -r l; do PATH="$l:$PATH"; done < "$GITHUB_PATH"
+    [ -n "${SIM_IMAGE:-}" ] && [ -n "${IMAGE:-}" ] && export IMAGE="$SIM_IMAGE"
+    export GITHUB_OUTPUT="$TMP/.out.$2"; : > "$GITHUB_OUTPUT"
+    cd "$4" && bash -e "$SIM/$1.sh" ) || { echo "CI-SIM FAIL step $1: $3"; exit 1; }
+}
+"""
+
+
+def _sim_expr(s: str) -> str:
+    return SIM_EXPR.sub(lambda m: "${RUNNER_TEMP}" if m[1] else "${EXE}" if m[2] else "${%s}" % m[3], str(s))
+
+
+def _yaml_scalar(v: str, keep_hash: bool = False):
+    if v[:1] in "\"'" and v[1:].find(v[0]) >= 0:
+        return v[1:1 + v[1:].find(v[0])]
+    if not keep_hash:
+        v = re.sub(r"\s+#.*$", "", v)
+    if v.startswith("[") and v.endswith("]"):
+        return [_yaml_scalar(x.strip()) for x in v[1:-1].split(",") if x.strip()]
+    return v
+
+
+def parse_yaml(lines: list[str], i: int = 0, indent: int = -1):
+    """(value, next line) of the block-style YAML a workflow uses: mappings, `- ` lists, `|` scalars, [a, b] lists.
+    Not a YAML parser: this file takes no dependency, and a line it cannot read is a Fail, never a guess."""
+    out = None
+    while i < len(lines):
+        raw = lines[i]
+        ind = len(raw) - len(raw.lstrip())
+        body = raw[ind:]
+        if not body or body.startswith("#"):
+            i += 1
+            continue
+        if out is None:
+            if ind <= indent:
+                break
+            indent = ind
+        if ind < indent:
+            break
+        if ind > indent:
+            raise Fail("workflow line %d: indentation not understood: %s" % (i + 1, body[:60]))
+        if body.startswith("- "):
+            if isinstance(out, dict):
+                break
+            out = [] if out is None else out
+            lines[i] = " " * (ind + 2) + body[2:]
+            if re.match(r"[\w.-]+:(\s|$)", body[2:]):
+                item, i = parse_yaml(lines, i, ind + 1)
+            else:
+                item, i = _yaml_scalar(body[2:].strip()), i + 1
+            out.append(item)
+            continue
+        m = re.match(r"([\w.-]+):(?:\s+(.*))?$", body)
+        if not m or isinstance(out, list):
+            raise Fail("workflow line %d: not understood: %s" % (i + 1, body[:60]))
+        out = {} if out is None else out
+        key, val, i = m[1], (m[2] or "").strip(), i + 1
+        if val[:1] in ("|", ">") and len(val) <= 2:
+            blk = []
+            while i < len(lines) and (not lines[i].strip() or len(lines[i]) - len(lines[i].lstrip()) > ind):
+                blk.append(lines[i])
+                i += 1
+            w = min((len(l) - len(l.lstrip()) for l in blk if l.strip()), default=0)
+            out[key] = "\n".join(l[w:] for l in blk).rstrip("\n") + "\n"
+        elif not val or val.startswith("#"):
+            out[key], i = parse_yaml(lines, i, ind)
+        else:
+            out[key] = _yaml_scalar(val, keep_hash=key == "run")
+    return out, i
+
+
+def sim_job(job: dict, simdir: pathlib.Path, exe: str | None, host: bool) -> None:
+    """Write job.sh and one N.sh per step into simdir. A `run:` body is copied as written; of `uses:` only checkout,
+    setup-python (container only) and upload-artifact (the file exists) are stood in for; no expression is evaluated
+    beyond runner.temp, matrix.exe and env.NAME, and one in a `run:` body is a Fail."""
+    q = shlex.quote
+    push = {"EXE": exe or "", "FORK": "false", "BASE_SHA": "$GITHUB_SHA", "HEAD_SHA": "$GITHUB_SHA", "PR": ""}
+    drv = [SIM_DRIVER]
+    for k, v in (job.get("env") or {}).items():                         # a push to main: what the job's env resolves to
+        drv.append('export %s="%s"' % (k, push.get(k, "") if "${{" in str(v) else str(v).replace('"', '\\"')))
+    for n, st in enumerate(job.get("steps") or [], 1):
+        uses, w = str(st.get("uses") or ""), st.get("with") or {}
+        title = st.get("name") or uses or "run"
+        body = ["export %s=\"%s\"" % (k, _sim_expr(v)) for k, v in (st.get("env") or {}).items()]
+        if "run" in st:
+            body.append(st["run"])
+        elif uses.startswith("actions/checkout@") and w.get("repository"):
+            dest = q(str(w.get("path") or "."))
+            body.append('set -o pipefail\n[ -n "${SIM_PRIVATE:-}" ] || { echo "--private DIR: a local checkout of '
+                        '%s"; exit 1; }\nmkdir -p %s\ngit -C "$SIM_PRIVATE" archive "%s" | tar -x -C %s\n'
+                        % (_sim_expr(w["repository"]), dest, _sim_expr(w.get("ref") or "HEAD"), dest))
+        elif uses.startswith("actions/checkout@"):
+            body.append('echo "the tree at $GITHUB_SHA"\n')
+        elif uses.startswith("actions/setup-python@") and not host:
+            v = q(str(w.get("python-version") or "3"))
+            body.append('v=%s\ncommand -v "python$v" > /dev/null || { add-apt-repository -y ppa:deadsnakes/ppa && '
+                        'apt-get install -y -qq "python$v" "python$v-venv"; } > /dev/null 2>&1\n'
+                        '"python$v" -m venv "/opt/py$v" && echo "/opt/py$v/bin" >> "$GITHUB_PATH"\n' % v)
+        elif uses.startswith("actions/upload-artifact@"):
+            body.append('[ -s "%s" ] || { echo "nothing to upload at %s"; exit 1; }\necho "CI-SIM would upload %s: '
+                        '$(($(wc -c < "%s"))) bytes"\n' % ((_sim_expr(w.get("path", "")),) * 2
+                                                      + (_sim_expr(w.get("name", "artifact")), _sim_expr(w.get("path", "")))))
+        else:
+            body.append("echo %s\n" % q("CI-SIM not simulated: uses %s" % uses))
+        text = "\n".join(body)
+        if "${{" in text:
+            raise Fail("step %d (%s): an expression ci-sim does not evaluate: %s" % (
+                n, title, text[text.index("${{"):][:60].splitlines()[0]))
+        (simdir / ("%d.sh" % n)).write_text(text, encoding="utf-8")
+        call = 'step %d %s %s "%s"' % (n, q(str(st.get("id") or "s%d" % n)), q(title),
+                                       _sim_expr(st.get("working-directory") or "$WS"))
+        cond = SIM_IF.search(str(st.get("if") or ""))
+        if cond:
+            call = "if grep -qx %s \"$TMP/.out.%s\" 2> /dev/null; then %s; else echo %s; fi" % (
+                q("%s=%s" % (cond[2], cond[3])), cond[1], call, q("CI-SIM skip step %d: %s (its `if`)" % (n, title)))
+        drv.append(call)
+    (simdir / "job.sh").write_text("\n".join(drv) + "\n", encoding="utf-8")
+
+
+def sim_tree(dev, rev: str, proj: bool, dest: pathlib.Path) -> None:
+    """A repository at dest with one HEAD: a fresh clone of dev at rev (tracked files only: what actions/checkout
+    gives dev's CI), or rev's release projection as a first commit (what it gives the public repository's)."""
+    if not proj:
+        _must(dev, "clone", "-q", "--no-hardlinks", str(dev), str(dest))
+        _must(dest, "checkout", "-q", "--detach", rev)
+        return
+    cache = public_cache(dev)
+    tree, _, probs = projection(cache, dev, rev)
+    if probs:
+        raise Fail("the projection of %s is not publishable:\n%s" % (rev[:10], "\n".join("  " + x for x in probs)))
+    dest.mkdir()
+    _export(cache, tree, dest)
+    _must(dest, "init", "-q", "-b", "main")
+    _must(dest, "add", "-A", "-f")
+    _must(dest, "-c", "user.name=ci-sim", "-c", "user.email=ci-sim@localhost.invalid", "-c", "commit.gpgsign=false",
+          "commit", "-q", "-m", "the projection of %s" % rev)
+
+
+def _sim_run(argv, env=None) -> int:
+    p = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    for line in p.stdout:
+        print(line, end="", flush=True)
+    return p.wait()
+
+
+@_cmd("CI-SIM")
+def cmd_ci_sim(repo=".", workflow="no-rom", rev=None, proj=False, private=None, image=None, host=None) -> int:
+    dev = repo_root(repo)
+    rev = _must(dev, "rev-parse", "--verify", "%s^{commit}" % (rev or "HEAD"))
+    what = "the projection of %s" % rev[:10] if proj else "a fresh clone at %s" % rev[:10]
+    rel = ".github/workflows/%s.yml" % workflow
+    results = []
+    with tempfile.TemporaryDirectory(prefix="psxd-ci-sim-", ignore_cleanup_errors=True) as td:
+        td = pathlib.Path(td).resolve()
+        sim_tree(dev, rev, proj, td / "tree")
+        text = _read(td / "tree" / rel)
+        if text is None:
+            raise Fail("%s has no %s%s" % (what, rel, ": %s does not list it" % PUBLIC_PATHS_REL if proj else ""))
+        jobs = (parse_yaml(text.splitlines())[0] or {}).get("jobs") or {}
+        if host is None:                                               # steps that start containers run on this machine
+            host = bool(re.search(r"^\s*(?:id=\$\()?docker\s", "\n".join(
+                str(st.get("run", "")) for j in jobs.values() for st in j.get("steps") or []), re.M))
+        img = None
+        if not host:
+            base = image or SIM_BASE
+            img = "psxd-ci-sim:" + re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")[:60]
+            df = ("FROM %s\nRUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq %s > "
+                  "/dev/null && git config --system --add safe.directory '*'\n" % (base, SIM_APT))
+            r = subprocess.run(["docker", "build", "-q", "-t", img, "-"], input=df, capture_output=True, text=True)
+            if r.returncode != 0:
+                raise Fail("docker build of %s + the runner's tools: %s" % (base, _tail(r, 5)))
+        private = str(pathlib.Path(private).resolve()) if private else ""
+        n = 0
+        for jid, job in jobs.items():
+            exes = (((job.get("strategy") or {}).get("matrix") or {}).get("exe")) or [None]
+            for exe in exes if isinstance(exes, list) else [exes]:
+                n += 1
+                simdir = td / ("sim-%d" % n)
+                simdir.mkdir()
+                sim_job(job, simdir, exe, host)
+                name = _sim_expr(job.get("name") or jid).replace("${EXE}", exe or "")
+                print("CI-SIM job %s on %s%s" % (name, what, "" if host else " in %s" % (image or SIM_BASE)), flush=True)
+                if host:
+                    rc = _sim_run(["bash", str(simdir / "job.sh")], dict(
+                        os.environ, SIM=str(simdir), WS=str(td / "tree"), TMP=str(td / ("runner-%d" % n)),
+                        SIM_IMAGE=image or "", SIM_PRIVATE=private, GITHUB_REPOSITORY=origin_slug(dev) or ""))
+                else:
+                    rc = _sim_run(["docker", "run", "--rm", "-v", "%s:/src:ro" % (td / "tree"), "-v",
+                                   "%s:/sim:ro" % simdir, "-e", "SIM=/sim", "-e", "WS=/work", "-e", "TMP=/tmp/runner",
+                                   img, "bash", "-c", "cp -a /src /work && exec bash /sim/job.sh"])
+                results.append((name, rc))
+        if host and shutil.which("docker"):                             # containers wrote there as root
+            subprocess.run(["docker", "run", "--rm", "-v", "%s:/t" % td, image or SIM_BASE, "chown", "-R",
+                            "%d:%d" % (os.getuid(), os.getgid()), "/t"], capture_output=True)
+    for name, rc in results:
+        _line("CI-SIM", "OK" if rc == 0 else "FAIL", "%s%s" % (name, "" if rc == 0 else " (exit %d)" % rc))
+    bad = sum(rc != 0 for _, rc in results)
+    print("CI-SIM %s %s on %s: %d job(s)" % ("OK" if results and not bad else "FAIL", rel, what, len(results)))
+    return 0 if results and not bad else 1
 
 
 # ---- self-test --------------------------------------------------------------------------------------------------
@@ -3010,6 +3297,101 @@ def _public_self_test(check, td: str):
         os.environ.update(saved)
 
 
+SELF_SIM = """name: sim
+on:
+  push:
+    branches: [main]
+jobs:
+  a:
+    name: job ${{ matrix.exe }}
+    strategy:
+      matrix:
+        exe: ["PSXD_000.01"]
+    env:
+      EXE: ${{ matrix.exe }}
+      PLAIN: "p q"   # a comment
+    steps:
+      - uses: actions/checkout@0000000000000000000000000000000000000000 # v4
+        with:
+          submodules: false
+      - name: env — one, two
+        run: |
+          echo "X=1 2" >> "$GITHUB_ENV"
+          mkdir "$RUNNER_TEMP/work"
+      - name: report
+        id: rep
+        working-directory: ${{ runner.temp }}/work
+        env:
+          WANT: "1 2"
+        run: |
+          [ "$X" = "$WANT" ] && [ "$PLAIN" = "p q" ] && [ -f "$GITHUB_WORKSPACE/Makefile" ]
+          echo "$EXE" > report.json
+          echo "make=yes" >> "$GITHUB_OUTPUT"
+      - name: upload
+        if: success() && steps.rep.outputs.make == 'yes'
+        uses: actions/upload-artifact@0000000000000000000000000000000000000000 # v4
+        with:
+          name: ${{ matrix.exe }}_report
+          path: ${{ runner.temp }}/work/report.json
+      - run: test ! -e tools/private.py   # tracked files only
+"""
+
+
+def _sim_self_test(check, td: str):
+    """list --draft and ci-sim (its steps on this machine: no container) on a throwaway repository."""
+    repo = _self_repo(td)
+    saved = dict(os.environ)
+    os.environ.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t.invalid", GIT_COMMITTER_NAME="t",
+                      GIT_COMMITTER_EMAIL="t@t.invalid", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+
+    def commit(files: dict):
+        for rel, body in files.items():
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text(body, encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "more")
+
+    def sim(**k):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = cmd_ci_sim(str(repo), "sim", host=True, **k)
+        return rc, buf.getvalue()
+    try:
+        commit({".github/workflows/sim.yml": SELF_SIM, "tools/a.py": "# runs tools/wave.py\n", "tools/wave.py": "#\n",
+                "tools/sub/b.py": "#\n", "src/a.c": A_C, "CLAUDE.md": "agents\n", "notes/keep.md": "private\n",
+                CONFIG_REL: '[public]\nrepo = "example/synthetic"\ndeny = ["notes/"]\n'})
+        entries, warns = draft_list(repo, "HEAD")
+        check("list --draft folds what has nothing private", {"src/", ".github/", "docs/", "tools/sub/", "tools/a.py",
+              "config/"} <= set(entries) and not {"tools/", "tools/wave.py", "CLAUDE.md", "notes/"} & set(entries),
+              entries)
+        check("list --draft names what stays behind", warns == ["tools/wave.py stays private, and tools/a.py names it"],
+              warns)
+        wf = parse_yaml(SELF_SIM.splitlines())[0]
+        job = wf["jobs"]["a"]
+        check("ci-sim reads the workflow", [sorted(s) for s in job["steps"]][:2] == [["uses", "with"], ["name", "run"]]
+              and job["env"]["PLAIN"] == "p q" and job["strategy"]["matrix"]["exe"] == ["PSXD_000.01"]
+              and wf["on"]["push"]["branches"] == ["main"] and job["steps"][1]["name"] == "env — one, two", job)
+        rc, out = sim()
+        check("ci-sim: a fresh clone, green", rc == 0 and "would upload PSXD_000.01_report: 12 bytes" in out
+              and "CI-SIM OK   job PSXD_000.01" in out, out[-400:])
+        commit({".github/workflows/sim.yml": SELF_SIM.replace('echo "$EXE" > report.json', "test -e nowhere")})
+        rc, out = sim()
+        check("ci-sim: a failing step is red", rc == 1 and "CI-SIM FAIL step 3: report" in out
+              and "would upload" not in out, out[-400:])
+        commit({".github/workflows/sim.yml": SELF_SIM, PUBLIC_PATHS_REL: "config/\nMakefile\nsrc/\n"})
+        rc, out = sim(proj=True)
+        check("ci-sim --projection: an unlisted workflow", rc == 1 and "does not list it" in out, out[-300:])
+        commit({PUBLIC_PATHS_REL: "config/\nMakefile\nsrc/\n.github/\n"})
+        rc, out = sim(proj=True)
+        check("ci-sim --projection: the public tree, green", rc == 0 and "on the projection of" in out, out[-400:])
+        commit({".github/workflows/sim.yml": SELF_SIM.replace("test ! -e tools/private.py", "echo ${{ github.sha }}")})
+        rc, out = sim()
+        check("ci-sim refuses an expression in run", rc == 1 and "does not evaluate" in out, out[-300:])
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
 def self_test() -> int:
     ok = True
 
@@ -3156,6 +3538,8 @@ def self_test() -> int:
           and (withheld, kept, total) == (4, 2, 6), shown)
     with tempfile.TemporaryDirectory() as td:
         _public_self_test(check, td)
+    with tempfile.TemporaryDirectory() as td:
+        _sim_self_test(check, td)
     print("publish %s" % ("SELF-TEST OK" if ok else "SELF-TEST FAILED"))
     return 0 if ok else 1
 
@@ -3215,6 +3599,16 @@ def main(argv=None) -> int:
         p.add_argument("--repo", default=".", help="the dev repository (default: this one)")
     cl = sub.add_parser("ci-log")
     cl.add_argument("file")
+    ls = sub.add_parser("list")
+    ls.add_argument("--draft", action="store_true", help="print a first config/public-paths.txt")
+    cs = sub.add_parser("ci-sim")
+    cs.add_argument("--workflow", default="no-rom", help="the name in .github/workflows/ (default no-rom)")
+    cs.add_argument("--projection", action="store_true", help="the release projection, not a clone of dev")
+    cs.add_argument("--private", metavar="DIR", help="a local checkout of [public].private_repo (build.yml)")
+    cs.add_argument("--image", metavar="REF", help="the container image to use")
+    for p in (ls, cs):
+        p.add_argument("--rev", help="the dev revision (default HEAD)")
+        p.add_argument("--repo", default=".", help="the dev repository (default: this one)")
     pp = sub.add_parser("pre-push", help="git's pre-push hook calls this (stdin: the refs)")
     pp.add_argument("remote")
     pp.add_argument("url", nargs="?", default="")
@@ -3310,6 +3704,10 @@ def main(argv=None) -> int:
         return cmd_verify_pr(a.repo, a.pr, a.merge)
     if a.cmd == "ci-log":
         return cmd_ci_log(a.file)
+    if a.cmd == "list":
+        return cmd_list(a.repo, a.draft, a.rev)
+    if a.cmd == "ci-sim":
+        return cmd_ci_sim(a.repo, a.workflow, a.rev, a.projection, a.private, a.image)
     if a.cmd == "pre-push":
         return cmd_pre_push(a.remote, a.url)
     if a.cmd == "hook":
