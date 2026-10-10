@@ -21,6 +21,8 @@ settings, each with the `gh api` command that fixes it; doctor never applies one
 e.g. on psxdecomp itself. In split mode, github checks only that origin (the -dev) is private (FAIL otherwise), and two
 rows join it through `gh api`: private-repo ([public].private_repo against its rules, FAIL on any drift) and
 public-standard (WARN only: the public repository against the standard, the comparison `settings` prints).
+dev-ci (through `gh api`): the latest push run of each workflow on origin's default branch; WARN when one is red, FAIL
+when a red job is one of [public].checks (after a release that check blocks every public pull request).
 """
 from __future__ import annotations
 
@@ -41,7 +43,7 @@ import decompdev  # noqa: E402
 import fetch_refs  # noqa: E402
 import publish  # noqa: E402
 
-NETWORK_ROWS = ("progress", "github", "private-repo", "public-standard")
+NETWORK_ROWS = ("progress", "github", "dev-ci", "private-repo", "public-standard")
 SPLIT_ROWS = ("private-repo", "public-standard")
 
 
@@ -67,6 +69,10 @@ def check(repo, only=None, offline=False) -> list[tuple[str, str, str]]:
             texts = {p.name: common.read(p) for p in sorted(wf.glob("*.y*ml"))} if wf.is_dir() else {}
             for st, detail in github_rows(github_slug(repo), None if offline else gh_api, texts):
                 add("github", st, detail)
+    if not only or "dev-ci" in only:
+        ci = dev_ci_row(github_slug(repo), None if offline else gh_api, (cfg or {}).get("checks") or [])
+        if ci:
+            add("dev-ci", *ci)
     if cfg and (not only or set(only) & set(SPLIT_ROWS)):
         api = None if offline else publish.gh_api
         priv = private_repo_row(cfg, api)
@@ -614,6 +620,44 @@ def dev_row(slug: str | None, api, cfg: dict) -> tuple[str, str]:
         slug, cfg["repo"])
 
 
+def dev_ci_row(slug: str | None, api, checks: list[str]) -> tuple[str, str] | None:
+    """The latest completed push run of each workflow on origin's default branch. WARN when one is red; FAIL when a red
+    job is one of [public].checks: the public repository requires it, so after a release it blocks every pull request.
+    None without a GitHub origin."""
+    if not slug:
+        return None
+    if api is None:
+        return "OK", "offline: %s runs not checked" % slug
+    R = "repos/" + slug
+    try:
+        branch = api(R)["default_branch"]
+        runs = api("%s/actions/runs?branch=%s&event=push&status=completed&per_page=50" % (R, branch))["workflow_runs"]
+    except Exception as e:                                              # noqa: BLE001 — logged out, no gh, no network
+        return "OK", "skipped: gh api unavailable (%s)" % str(e)[:80]
+    latest = {}
+    for r in runs:                                                      # newest first
+        latest.setdefault(r.get("workflow_id"), r)
+    red, required = [], []
+    for r in latest.values():
+        if r.get("conclusion") in ("success", "skipped", "neutral"):
+            continue
+        try:
+            jobs = api("%s/actions/runs/%s/jobs?per_page=100" % (R, r["id"])).get("jobs") or []
+        except Exception:                                               # noqa: BLE001 — the run is red either way
+            jobs = []
+        bad = [j.get("name") or "?" for j in jobs if j.get("conclusion") not in ("success", "skipped", "neutral")]
+        required += [j for j in bad if j in checks]
+        red.append("%s at %s (%s)" % (r.get("name") or r.get("path"), (r.get("head_sha") or "")[:7],
+                                      ", ".join(bad) or r.get("conclusion")))
+    if not red:
+        return "OK", "%s %s: %s" % (slug, branch, "the latest push run of %d workflow(s) is green" % len(latest)
+                                    if latest else "no completed push run")
+    detail = "%s %s is red: %s" % (slug, branch, "; ".join(red))
+    if required:
+        return "FAIL", "%s — required on the public repository: %s" % (detail, ", ".join(sorted(set(required))))
+    return "WARN", detail
+
+
 def private_repo_row(cfg: dict, api) -> tuple[str, str] | None:
     """[public].private_repo against its rules (profiles/psx/private/README.md): private, no fork, Actions off, the
     owner its only collaborator, deploy keys read-only and at most one, private_rev one of its commits, and forking
@@ -1007,6 +1051,24 @@ def self_test_split() -> bool:
     dev.append(dev_row("example/game-dev", logged_out, cfg))
     ok &= [d[0] for d in dev] == ["OK", "FAIL", "OK", "OK", "OK"] and "exposed" in dev[1][1]
     ok &= dev[2][1].startswith("offline") and dev[4][1].startswith("skipped")
+    D = "repos/example/game-dev"                                        # dev-ci: shaped like mmx5-dev's red no-rom
+
+    def ci_api(conclusion, jobs):
+        store = {D: {"default_branch": "main"},
+                 D + "/actions/runs?branch=main&event=push&status=completed&per_page=50": {"workflow_runs": [
+                     {"id": 2, "workflow_id": 7, "name": "no-rom", "head_sha": "f096ef4b", "conclusion": conclusion},
+                     {"id": 1, "workflow_id": 7, "name": "no-rom", "head_sha": "0f5e8610", "conclusion": "failure"}]},
+                 D + "/actions/runs/2/jobs?per_page=100": {"jobs": [{"name": n, "conclusion": c} for n, c in jobs]}}
+        return store.__getitem__
+    jobs = [("audit", "success"), ("compile-only", "failure")]
+    ci = [dev_ci_row("example/game-dev", ci_api("success", []), ["compile-only"]),
+          dev_ci_row("example/game-dev", ci_api("failure", jobs), ["build SLUS_000.00"]),
+          dev_ci_row("example/game-dev", ci_api("failure", jobs), ["compile-only"]),
+          dev_ci_row("example/game-dev", None, []), dev_ci_row("example/game-dev", logged_out, []),
+          dev_ci_row(None, None, [])]
+    ok &= [c and c[0] for c in ci] == ["OK", "WARN", "FAIL", "OK", "OK", None]
+    ok &= "no-rom at f096ef4 (compile-only)" in ci[1][1] and "required on the public repository: compile-only" in ci[2][1]
+    print("  dev-ci: %s" % "; ".join("%s %s" % (c[0], c[1][:60]) for c in ci[:3]))
     with tempfile.TemporaryDirectory() as td:                           # check(): split mode swaps the github row
         repo = publish._self_repo(td)
         (repo / publish.CONFIG_REL).write_text('[public]\nrepo = "example/synthetic-decomp"\n')
