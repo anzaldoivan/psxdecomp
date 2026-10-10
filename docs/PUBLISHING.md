@@ -308,28 +308,67 @@ Who merges what:
 An existing game moves to split mode in this order, one game at a time. Every outward step is the developer's; the
 agents' deny list and the `CLAUDECODE` refusal stop an agent from running them. The developer runs them in a terminal
 outside Claude Code: a `!` command typed in a Claude Code session inherits `CLAUDECODE`, so the hook, `release`,
-`land` and `settings --apply` refuse it.
+`land` and `settings --apply` refuse it. An agent may prepare each step, print its commands and verify it afterwards,
+read-only.
 
+0. Before anything is renamed or created, in the checkout:
+   - `git remote set-url origin https://github.com/<owner>/<game>-dev.git`, even when the rename is already done. A
+     checkout whose origin still names `<game>` reaches `-dev` only through GitHub's redirect, and the same
+     `git push` reaches the public repository from the moment it exists.
+   - `git config core.autocrlf false`: the vendored `tools/psxd_publish.py` stays byte-identical to the plugin's.
+   - Dev's CI is green: doctor's `dev-ci` row is OK, and `ci-sim` passes on dev's HEAD. A check that is red on dev is
+     red on public, and once required it blocks every pull request there (dc2's `compile-only`, red for 8 days before
+     its release, 2026-10). Fix what the tools own; what an agent's code owns goes to its INBOX and waits.
+   - `/psxdecomp:upgrade`, then doctor's `readme` and `publish-tool` rows OK, `.github/CODEOWNERS` tracked, and every
+     workflow's actions pinned to a full commit SHA (the kit's `no-rom.yml` uses tags).
 1. Rename `<game>` to `<game>-dev`, make it private, and create the empty public `<game>` in the same sitting: until
    it exists, the old URL redirects to `-dev` (release refuses a URL that reaches dev's own history, and recomp.board
-   may mark the row "repo missing"). Recheck the fork count. In the checkout, point origin at `-dev`, then
-   `hook --install`.
+   may mark the row "repo missing"). Recheck the fork count. Then `hook --install`.
 2. Create `<game>-private` (private, Actions off, forking off where GitHub allows it: an organization's repository)
-   and push the build inputs, `check/<EXE>.sha1` and the optional backup. Add a read-only deploy key. On a personal
-   account its owner, the only collaborator, can still fork it, even into an organization that disallows private
-   forks; doctor's `private-repo` row FAILs on any fork.
-3. Stop the game's agents (`.run/status.json` clear, no live warmer, no open wave): this step commits to dev. Commit
-   `config/public-paths.txt`, `[public]` (with `private_rev`) and any README fixes, and pin every workflow's actions to
-   a full commit SHA (the kit's `no-rom.yml` uses tags). `/psxdecomp:upgrade` then writes `build.yml`. `release
-   --dry-run` must pass.
-4. Build the image from `profiles/psx/image/Dockerfile` with the game's args, push it to ghcr as public, audit its
-   layers, and set `[public].image` to its digest.
-5. Set the `PRIVATE_DEPLOY_KEY` secret on the empty public repository, then `release --push` makes release 1 the
-   public `main` (its push run needs the key), then `settings --apply`.
-   doctor's `public-standard`, `private-repo` and `split-guard` rows must be OK, and `build <EXE>` green on main with
-   the report uploaded.
-6. The next day, check the recomp.board row and decomp.dev ([the report contract](#the-report-contract)). The first
-   fork PR goes through `verify-pr`, then the merge.
+   and push the build inputs, `check/<EXE>.sha1` and the optional backup. Add a read-only deploy key.
+   `psxd private_init --repo <dev> --out <dir>` builds the local repository, checks each input against the hash list
+   and prints these commands; the key pair goes in `~/.ssh/psxd/`. On a personal account its owner, the only
+   collaborator, can still fork it, even into an organization that disallows private forks; doctor's `private-repo`
+   row FAILs on any fork.
+3. Stop the game's agents (`.run/status.json` clear, no live warmer, no open wave, no build container): this step
+   commits to dev. First record the sha1 of what the agents left pending (`.run/status.json`, untracked logs,
+   `phase-ends/current/INBOX.md`), outside the repository: those files are byte-identical when the agents resume.
+   Put what must stay private beyond the agent files in `[public].deny`, take `list --draft` as
+   `config/public-paths.txt`, and commit it with `[public]` (with `private_rev`) and any README fixes.
+   `/psxdecomp:upgrade` then writes `build.yml`. `release --dry-run` must pass, then `ci-sim --projection`: the public
+   tree runs its own `no-rom` green before anyone sees it.
+4. Build the image with `profiles/psx/image/build.sh` and the game's args (two builds, one image), run
+   `layer_audit.py` on it against the local `<game>-private`, push it to ghcr and make the package public (GitHub's
+   UI). An anonymous pull must return the digest the build printed; set `[public].image` to it. Then
+   `ci-sim --workflow build --private <dir>` must end in the byte check and, with a category list, a valid report.
+5. Release 1:
+
+   ```sh
+   git push origin main
+   gh secret set PRIVATE_DEPLOY_KEY --repo <owner>/<game> < ~/.ssh/psxd/<game>-private
+   python3 tools/psxd_publish.py release --summary "Release 1: the public tree" --ack-new --push
+   python3 tools/psxd_publish.py settings --apply && python3 tools/psxd_publish.py settings
+   ```
+
+   The secret comes first because release 1's push run needs the key; `settings --apply` comes last because its
+   rulesets would refuse that push. Then turn off administrator bypass in both environments
+   ([the standard](#the-public-repo-standard): UI only). doctor's `public-standard`, `private-repo` and `split-guard`
+   rows must be OK, and `build <EXE>` green on main with the report uploaded. Delete the key pair's local files only
+   after that green run. A red first run is fixed forward: release 2, merged as the standard's release PRs are.
+6. Back to the decomp: add the two bullets below to the agents' INBOX (uncommitted, the agents take them), check the
+   pending files against step 3's hashes, and resume the agents. The next day, check the recomp.board row and
+   decomp.dev ([the report contract](#the-report-contract)). The first fork PR goes through `verify-pr`, then the
+   merge.
+
+```markdown
+- Split mode is live: the public repo gets only the files `config/public-paths.txt` lists (default deny). When a
+  task adds a file the public build or CI needs (a tool a scanner row or the Makefile calls, a new config table, a
+  new docs page meant for contributors), add its path to `config/public-paths.txt` in the same commit. Standing fact
+  for HOW_WE_WORK.md.
+- `no-rom` is a required check on the public repo. Every step that banks or propagates code runs the game-free
+  scanners it runs (`make format-check`, `make compile-only`, the type check) before it commits: a bank that turns
+  one red blocks every public pull request until the next release.
+```
 
 ## The README
 
