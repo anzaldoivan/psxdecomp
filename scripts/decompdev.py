@@ -3,13 +3,14 @@
 
     decompdev.py lookup --title T [--serial S] [--json]    projects matching a title (and serial) on decomp.dev
     decompdev.py status --repo OWNER/REPO [--json]         listed or not; the default version's measures
-    decompdev.py validate REPORT.json [--artifact NAME [--version V]]
+    decompdev.py validate REPORT.json [--artifact NAME [--version V]] [--exe NAME] [--categories TSV]
     decompdev.py --self-test                               canned projects and reports; no network
 
 decomp.dev has no upload API: it reads an objdiff `report.json` from a GitHub Actions artifact named
 `<version>_report` on the default branch (polled every few minutes, or at once with its GitHub App), and projects are
-registered at https://decomp.dev/manage/new. `validate` checks a report against objdiff's report.proto in its proto3
-JSON form (uint64 fields as strings), its arithmetic, and the firewall: no field outside the schema and no byte-like
+registered at https://decomp.dev/manage/new. `validate` is publish.py's (the standard, docs/PUBLISHING.md): objdiff's
+report.proto in its proto3 JSON form (uint64 fields as strings), version 2, every measure's arithmetic including each
+category's sums, the category ids, the artifact name, and the firewall: no field outside the schema and no byte-like
 string (a long hex or base64 run). `--projects FILE` reads a saved /projects.json instead of the network.
 """
 from __future__ import annotations
@@ -25,155 +26,14 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common  # noqa: E402
+import publish  # noqa: E402
 
 BASE = "https://decomp.dev"
 TIMEOUT = 20
 
-# objdiff report.proto (encounter/objdiff objdiff-core/protos/report.proto, read 2026-10-02 at eed74b9).
-F, U64, U32, STR, BOOL = "float", "uint64", "uint32", "string", "bool"
-MEASURES = {"fuzzy_match_percent": F, "total_code": U64, "matched_code": U64, "matched_code_percent": F,
-            "total_data": U64, "matched_data": U64, "matched_data_percent": F, "total_functions": U32,
-            "matched_functions": U32, "matched_functions_percent": F, "complete_code": U64,
-            "complete_code_percent": F, "complete_data": U64, "complete_data_percent": F, "total_units": U32,
-            "complete_units": U32}
-SCHEMA = {
-    "Report": {"measures": "Measures", "units": ["ReportUnit"], "version": U32, "categories": ["ReportCategory"]},
-    "Measures": MEASURES,
-    "ReportCategory": {"id": STR, "name": STR, "measures": "Measures"},
-    "ReportUnit": {"name": STR, "measures": "Measures", "sections": ["ReportItem"], "functions": ["ReportItem"],
-                   "metadata": "ReportUnitMetadata"},
-    "ReportUnitMetadata": {"complete": BOOL, "module_name": STR, "module_id": U32, "source_path": STR,
-                           "progress_categories": [STR], "auto_generated": BOOL},
-    "ReportItem": {"name": STR, "size": U64, "fuzzy_match_percent": F, "metadata": "ReportItemMetadata",
-                   "address": U64},
-    "ReportItemMetadata": {"demangled_name": STR, "virtual_address": U64},
-}
-# (matched, total, percent): the percent is 100 * matched / total within PCT_TOL (0 or 100 when the total is 0).
-RATIOS = [("matched_code", "total_code", "matched_code_percent"),
-          ("matched_data", "total_data", "matched_data_percent"),
-          ("matched_functions", "total_functions", "matched_functions_percent"),
-          ("complete_code", "total_code", "complete_code_percent"),
-          ("complete_data", "total_data", "complete_data_percent")]
-SUMMED = ["total_code", "matched_code", "total_data", "matched_data", "total_functions", "matched_functions"]
-PCT_TOL = 0.01
-HEX_RUN = re.compile(r"[0-9A-Fa-f]{64,}")                  # 32+ bytes as hex
-B64_RUN = re.compile(r"[A-Za-z0-9+/]{80,}={0,2}")           # 60+ bytes as base64
-ARTIFACT = re.compile(r"^[A-Za-z0-9._-]+_report$")
-
-
-def _camel(name: str) -> str:
-    head, *rest = name.split("_")
-    return head + "".join(w[:1].upper() + w[1:] for w in rest)
-
-
-def _byte_like(s: str) -> bool:
-    if HEX_RUN.search(s):
-        return True
-    return any(re.search(r"\d", m) and re.search(r"[a-z]", m) and re.search(r"[A-Z]", m)
-               for m in (x.group(0) for x in B64_RUN.finditer(s)))
-
-
-def _num(v, kind: str, where: str, errs: list[str]):
-    """A field's value as a number; proto3 JSON writes uint64 as a string (decimal), the rest as JSON numbers."""
-    if kind == U64:
-        if not isinstance(v, str) or not v.isdigit():
-            errs.append("%s: uint64 must be a decimal string (proto3 JSON), got %r" % (where, v))
-            return int(v) if isinstance(v, int) and not isinstance(v, bool) else 0
-        return int(v)
-    if kind == U32:
-        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
-            errs.append("%s: uint32 must be a non-negative integer, got %r" % (where, v))
-            return 0
-        return v
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        errs.append("%s: float must be a number, got %r" % (where, v))
-        return 0.0
-    return float(v)
-
-
-def _walk(obj, msg: str, where: str, errs: list[str]) -> dict:
-    """Schema check of one message; returns its scalar fields as numbers (missing = proto3 default 0)."""
-    out = {}
-    if not isinstance(obj, dict):
-        errs.append("%s: %s must be an object" % (where, msg))
-        return out
-    fields = SCHEMA[msg]
-    names = {k: k for k in fields} | {_camel(k): k for k in fields}
-    for key, v in obj.items():
-        name = names.get(key)
-        here = "%s.%s" % (where, key)
-        if name is None:
-            errs.append("%s: unknown field (not in report.proto %s; the firewall allows nothing outside it)"
-                        % (here, msg))
-            continue
-        kind = fields[name]
-        if isinstance(kind, list):
-            if not isinstance(v, list):
-                errs.append("%s: repeated field must be a list" % here)
-                continue
-            for i, x in enumerate(v):
-                if kind[0] == STR:
-                    if not isinstance(x, str):
-                        errs.append("%s[%d]: string expected" % (here, i))
-                    elif _byte_like(x):
-                        errs.append("%s[%d]: byte-like string (long hex/base64 run): firewall" % (here, i))
-                else:
-                    _walk(x, kind[0], "%s[%d]" % (here, i), errs)
-        elif kind in SCHEMA:
-            out[name] = _walk(v, kind, here, errs)
-        elif kind == STR:
-            if not isinstance(v, str):
-                errs.append("%s: string expected" % here)
-            elif _byte_like(v):
-                errs.append("%s: byte-like string (long hex/base64 run): firewall" % here)
-        elif kind == BOOL:
-            if not isinstance(v, bool):
-                errs.append("%s: bool expected" % here)
-        else:
-            out[name] = _num(v, kind, here, errs)
-    return out
-
-
-def _measures(m: dict, where: str, errs: list[str]):
-    g = lambda k: m.get(k, 0)  # noqa: E731
-    for matched, total, pct in RATIOS:
-        if g(matched) > g(total):
-            errs.append("%s: %s %d > %s %d" % (where, matched, g(matched), total, g(total)))
-        want = 100.0 * g(matched) / g(total) if g(total) else None
-        got = g(pct)
-        if (want is None and got not in (0.0, 100.0)) or (want is not None and abs(got - want) > PCT_TOL):
-            errs.append("%s: %s %.4f is not 100*%s/%s (%s)" % (where, pct, got, matched, total,
-                                                             "0 or 100" if want is None else "%.4f" % want))
-    if g("complete_units") > g("total_units"):
-        errs.append("%s: complete_units > total_units" % where)
-    if not 0 <= g("fuzzy_match_percent") <= 100 + PCT_TOL:
-        errs.append("%s: fuzzy_match_percent out of range" % where)
-
-
-def validate(report, artifact: str | None = None, version: str | None = None) -> list[str]:
-    errs: list[str] = []
-    if artifact is not None:
-        if not ARTIFACT.match(artifact):
-            errs.append("artifact %r: decomp.dev reads an artifact named <version>_report" % artifact)
-        elif version is not None and artifact != "%s_report" % version:
-            errs.append("artifact %r: the version %r wants %s_report" % (artifact, version, version))
-    top = _walk(report, "Report", "report", errs)
-    tm = top.get("measures", {})
-    _measures(tm, "report.measures", errs)
-    units = report.get("units", []) if isinstance(report, dict) else []
-    sums = dict.fromkeys(SUMMED, 0)
-    for i, u in enumerate(units if isinstance(units, list) else []):
-        um = _walk(u, "ReportUnit", "units[%d]" % i, []).get("measures", {})
-        _measures(um, "units[%d].measures" % i, errs)
-        for k in SUMMED:
-            sums[k] += um.get(k, 0)
-    if units:
-        for k in SUMMED:
-            if sums[k] != tm.get(k, 0):
-                errs.append("report.measures.%s %d != the sum over units %d" % (k, tm.get(k, 0), sums[k]))
-        if tm.get("total_units", 0) != len(units):
-            errs.append("report.measures.total_units %d != %d units" % (tm.get("total_units", 0), len(units)))
-    return errs
+# The report checks (schema, arithmetic, version 2, categories, the artifact name) live in publish.py, the file game
+# repositories vendor as tools/psxd_publish.py; `validate` here is the same check from the plugin.
+validate = publish.validate
 
 
 # ---- the read API ---------------------------------------------------------------------------------------------
@@ -230,20 +90,19 @@ def status(rows: list[dict], repo: str) -> tuple[bool, str]:
 # ---- self-test ------------------------------------------------------------------------------------------------
 
 def _canned_report() -> dict:
-    def meas(code, mcode, funcs, mfuncs, units=None, done=0):
-        d = {"fuzzy_match_percent": 100.0 * mcode / code, "total_code": str(code), "matched_code": str(mcode),
-             "matched_code_percent": 100.0 * mcode / code, "total_functions": funcs, "matched_functions": mfuncs,
-             "matched_functions_percent": 100.0 * mfuncs / funcs}
-        if units:
-            d.update(total_units=units, complete_units=done)
-        return d
-    return {"measures": meas(1000, 600, 10, 7, units=2), "version": 1,
-            "units": [{"name": "main/a", "measures": meas(600, 500, 6, 5),
-                       "functions": [{"name": "func_80010000", "size": "120", "fuzzy_match_percent": 100.0,
-                                      "metadata": {"virtualAddress": "2147549184"}}]},
-                      {"name": "main/b", "measures": meas(400, 100, 4, 2),
-                       "metadata": {"complete": False, "progressCategories": ["game"]}}],
-            "categories": [{"id": "game", "name": "Game", "measures": meas(1000, 600, 10, 7)}]}
+    def meas(code, mcode, funcs, mfuncs):
+        return {"fuzzy_match_percent": 100.0 * mcode / code, "total_code": str(code), "matched_code": str(mcode),
+                "matched_code_percent": 100.0 * mcode / code, "total_functions": funcs, "matched_functions": mfuncs,
+                "matched_functions_percent": 100.0 * mfuncs / funcs}
+    report = {"version": publish.REPORT_VERSION,
+              "units": [{"name": "main/a", "measures": meas(600, 500, 6, 5),
+                         "functions": [{"name": "func_80010000", "size": "120", "fuzzy_match_percent": 100.0,
+                                        "metadata": {"virtualAddress": "2147549184"}}],
+                         "metadata": {"complete": False, "progressCategories": ["sdk"]}},
+                        {"name": "main/b", "measures": meas(400, 100, 4, 2),
+                         "metadata": {"complete": False, "progressCategories": ["game"]}}]}
+    rows = publish.parse_categories("id\tparent\tname\tstatus\ngame\t\tGame\tactive\nsdk\t\tSDK\tactive\n")[0]
+    return publish.categorize(report, rows)[0]
 
 
 def self_test() -> int:
@@ -289,6 +148,12 @@ def self_test() -> int:
     controls.append(("percent off", bad, None, "is not 100*"))
     controls.append(("artifact name", _canned_report(), "report", "<version>_report"))
     controls.append(("artifact version", _canned_report(), "eu_report", "wants SLUS_000.01_report"))
+    bad = _canned_report()
+    bad["version"] = 1                                                  # decomp.dev reads only v2 categories as is
+    controls.append(("version 1", bad, None, "emit 2"))
+    bad = _canned_report()
+    bad["categories"][0]["measures"]["matched_code"] = "200"            # a category off its units' sum
+    controls.append(("category sum", bad, None, "the sum over its units"))
     for name, rep, art, want in controls:
         errs = validate(rep, artifact=art, version="SLUS_000.01" if art else None)
         hit = any(want in e for e in errs)
@@ -313,11 +178,14 @@ def main(argv=None) -> int:
     va.add_argument("report")
     va.add_argument("--artifact")
     va.add_argument("--version")
+    va.add_argument("--exe", help="the executable's file name: the artifact must be <exe>_report")
+    va.add_argument("--categories", help="config/categories.tsv: the report's ids are its active ids")
     a = ap.parse_args(argv)
     if a.self_test:
         return self_test()
     if a.cmd == "validate":
-        errs = validate(json.loads(common.read(a.report)), a.artifact, a.version)
+        cats = publish.load_categories(a.categories)[0] if a.categories else None
+        errs = validate(json.loads(common.read(a.report)), a.artifact, a.version, cats, a.exe)
         for e in errs:
             print("REPORT ERROR %s" % e)
         print("REPORT %s (%d error%s)" % ("OK" if not errs else "FAIL", len(errs), "" if len(errs) == 1 else "s"))

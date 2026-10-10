@@ -1,0 +1,130 @@
+{
+ "units": [
+  {
+   "name": "main/boot",
+   "measures": {
+    "fuzzy_match_percent": 100.0,
+    "total_code": "1024",
+    "matched_code": "1024",
+    "matched_code_percent": 100.0,
+    "total_functions": 8,
+    "matched_functions": 8,
+    "matched_functions_percent": 100.0,
+    "complete_code": "1024",
+    "complete_code_percent": 100.0
+   },
+   "metadata": {
+    "complete": true,
+    "progress_categories": [
+     "game",
+     "main"
+    ]
+   }
+  },
+  {
+   "name": "main/game",
+   "measures": {
+    "fuzzy_match_percent": 12.5,
+    "total_code": "4096",
+    "matched_code": "512",
+    "matched_code_percent": 12.5,
+    "total_functions": 32,
+    "matched_functions": 6,
+    "matched_functions_percent": 18.75,
+    "complete_code": "0",
+    "complete_code_percent": 0.0
+   },
+   "metadata": {
+    "complete": false,
+    "progress_categories": [
+     "game",
+     "main"
+    ]
+   }
+  },
+  {
+   "name": "main/libgpu",
+   "measures": {
+    "fuzzy_match_percent": 100.0,
+    "total_code": "2048",
+    "matched_code": "2048",
+    "matched_code_percent": 100.0,
+    "total_functions": 20,
+    "matched_functions": 20,
+    "matched_functions_percent": 100.0,
+    "complete_code": "2048",
+    "complete_code_percent": 100.0
+   },
+   "metadata": {
+    "complete": true,
+    "progress_categories": [
+     "sdk"
+    ]
+   }
+  },
+  {
+   "name": "main/libcd",
+   "measures": {
+    "fuzzy_match_percent": 0.0,
+    "total_code": "1536",
+    "matched_code": "0",
+    "matched_code_percent": 0.0,
+    "total_functions": 12,
+    "matched_functions": 0,
+    "matched_functions_percent": 0.0,
+    "complete_code": "0",
+    "complete_code_percent": 0.0
+   },
+   "metadata": {
+    "complete": false,
+    "progress_categories": [
+     "sdk"
+    ]
+   }
+  },
+  {
+   "name": "ovl/title/menu",
+   "measures": {
+    "fuzzy_match_percent": 12.5,
+    "total_code": "2048",
+    "matched_code": "256",
+    "matched_code_percent": 12.5,
+    "total_functions": 16,
+    "matched_functions": 2,
+    "matched_functions_percent": 12.5,
+    "complete_code": "0",
+    "complete_code_percent": 0.0
+   },
+   "metadata": {
+    "complete": false,
+    "progress_categories": [
+     "game",
+     "ovl",
+     "ovl.title"
+    ]
+   }
+  },
+  {
+   "name": "ovl/stage1/actors",
+   "measures": {
+    "fuzzy_match_percent": 0.0,
+    "total_code": "3072",
+    "matched_code": "0",
+    "matched_code_percent": 0.0,
+    "total_functions": 24,
+    "matched_functions": 0,
+    "matched_functions_percent": 0.0,
+    "complete_code": "0",
+    "complete_code_percent": 0.0
+   },
+   "metadata": {
+    "complete": false,
+    "progress_categories": [
+     "game",
+     "ovl",
+     "ovl.stage1"
+    ]
+   }
+  }
+ ]
+}

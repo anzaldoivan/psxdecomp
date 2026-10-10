@@ -1,0 +1,4 @@
+# Game files: binary, never diffed, never merged (a conflict keeps ours). The hash lists stay text.
+inputs/** binary -diff merge=binary
+backup/** binary -diff merge=binary
+check/*.sha1 text eol=lf

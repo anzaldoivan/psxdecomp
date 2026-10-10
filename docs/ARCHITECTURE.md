@@ -15,10 +15,14 @@ two pinned installers. After S10 the repository needs nothing from the plugin.
   ├─ S6 install.py → PA3's pa_install.py --project --yes  (pinned tag, sha-checked); pa.json "upgrade": "ask"
   ├─ restart → claude --agent plain → /psxdecomp:new --resume       (hooks/hooks.json repeats it at session start)
   ├─ S7 PA3's intake handed the kit's intake.decomp.md                 (PA3's tested path, unchanged)
-  ├─ S8 install.py → the kit's install.py --answers (dry run, then run; digest-checked) + README AI policy block
+  ├─ S8 install.py → the kit's install.py --answers (dry run, then run; digest-checked) + the README standard
   ├─ S9 fetch_refs.py → refs/ (git-ignored, searchable via .ignore) + docs/ops/refs.md (committed)
-  └─ S10 doctor.py + config/psxdecomp.toml
+  └─ S10 doctor.py + config/psxdecomp.toml + tools/psxd_publish.py (the README lint, vendored; its CI)
 ```
+
+A game may also run in split mode: a public trunk, a private `-dev` workspace and a private `-private` store for the
+game files. It is opt-in through `[public]` and `config/public-paths.txt`, which the bootstrap does not write;
+`/psxdecomp:upgrade` then adds the public `build.yml` ([docs/PUBLISHING.md](PUBLISHING.md#split-mode-a-public-trunk-a-private-workspace-a-private-store)).
 
 ## Why the restart between S6 and S7
 
@@ -71,6 +75,7 @@ anything else; `--force-untested` proceeds and records a deviation in the game r
 | 0 | every push | manifests validate; schemas (profile, answers, refs, compat, eval cases); skills invocation-only; links; the repo's own firewall with its control; every script's `--self-test` |
 | 1 | every push | `install.py run` on the homebrew fixture: golden tree, a second run changes nothing, the S5 dry run lists what S5 writes, the firewall control fails on the planted blob, a wrong PA3 or kit is refused, resume from every stage, the dump never copied |
 | 1b | weekly | the fixture exe: extract → splat split → all-asm build → sha1 equal, in the profile container |
+| 1c | every push | split mode end to end on the fixture (`tests/test_split_e2e.py`) |
 | 2 | manual / pre-release | `claude plugin eval . --ablation none --runs 1` — regex, `tool_used`, `tool_order`, `file_exists` graders only; tag `hygiene` (5 runs, pass^5) proves an agent grepping a poisoned game repo answers the current pin, not stale or kit text, with one `llm` grader on the short answer |
 | 3 | per release | `/psxdecomp:new` on a real game with your own dump, stopped at PA3's first planner draft |
 

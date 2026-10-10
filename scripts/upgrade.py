@@ -10,8 +10,15 @@ apply. psxrecomp's migrate shape, our own code.
     upgrade.py --self-test
 
 psxdecomp owns: config/psxdecomp.toml, config/refs.toml, docs/ops/refs.md, its .gitignore block, its firewall purge
-line, the one HOW_WE_WORK references line, the docs/ops/INDEX.md row. PA3 and kit upgrades are printed as commands for
-the developer (their own installers, their own gates).
+line, the one HOW_WE_WORK references line, the docs/ops/INDEX.md row, tools/psxd_publish.py,
+.github/workflows/psxdecomp-readme.yml (the README standard's lint and its CI) and the agents' deny rules
+(profiles/psx/deny.json, added to .claude/settings.json `permissions.deny`, never removed). The README's prose is
+the developer's: its migration to the standard is a `manual` action listing the lint findings. PA3 and kit upgrades
+are printed as commands for the developer (their own installers, their own gates).
+
+Opt-in, only in a repository with config/public-paths.txt (split mode, docs/PUBLISHING.md): .github/workflows/build.yml,
+the public repository's byte check (written only when absent: it carries the game's own values; what upgrade cannot
+read stays a {{PLACEHOLDER}} and a `manual` action).
 """
 from __future__ import annotations
 
@@ -21,7 +28,9 @@ import io
 import json
 import os
 import pathlib
+import re
 import sys
+import tomllib
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -29,8 +38,57 @@ import common  # noqa: E402
 import doctor  # noqa: E402
 import fetch_refs  # noqa: E402
 import install  # noqa: E402
+import publish  # noqa: E402
 
 PROFILE_REFS = common.PLUGIN_ROOT / "profiles" / "psx" / "refs.toml"
+OWNED = {publish.VENDORED: common.PLUGIN_ROOT / "scripts" / "publish.py",
+         publish.WORKFLOW: common.PLUGIN_ROOT / "profiles" / "psx" / "psxdecomp-readme.yml"}
+PUBLIC_LIST = "config/public-paths.txt"
+BUILD_WF = ".github/workflows/build.yml"
+PROFILE_BUILD = common.PLUGIN_ROOT / "profiles" / "psx" / "build.yml"
+PROFILE_DENY = common.PLUGIN_ROOT / "profiles" / "psx" / "deny.json"
+SETTINGS = ".claude/settings.json"
+
+
+def deny_missing(repo: pathlib.Path) -> tuple[list[str], str | None]:
+    """(the profile's deny rules the game's .claude/settings.json lacks, why upgrade cannot add them or None)."""
+    want = json.loads(common.read(PROFILE_DENY))["permissions"]["deny"]
+    managed = publish._pa3_files(common.read(repo / publish.PA3_REL)) if (repo / publish.PA3_REL).is_file() else []
+    if SETTINGS in managed:
+        return want, "PA3 manages %s here" % SETTINGS
+    f = repo / SETTINGS
+    try:
+        conf = json.loads(common.read(f)) if f.is_file() else {}
+        have = conf.get("permissions", {}).get("deny", [])
+        assert isinstance(conf, dict) and isinstance(have, list)
+    except (ValueError, AttributeError, AssertionError):
+        return want, "%s is not a JSON object with a permissions.deny list" % SETTINGS
+    return [r for r in want if r not in have], None
+
+
+def with_denies(repo: pathlib.Path, missing: list[str]) -> str:
+    f = repo / SETTINGS
+    conf = json.loads(common.read(f)) if f.is_file() else {}
+    conf.setdefault("permissions", {}).setdefault("deny", []).extend(missing)
+    return json.dumps(conf, indent=2, ensure_ascii=False) + "\n"
+
+
+def build_values(repo: pathlib.Path) -> dict[str, str]:
+    """The build.yml placeholders this repository can answer: the public repository (`[public].repo` in
+    config/psxdecomp.toml) and the executables (config/discs.tsv, one required check `build <EXE>` each)."""
+    vals = {}
+    toml = repo / "config" / "psxdecomp.toml"
+    pub = tomllib.loads(common.read(toml)).get("public", {}) if toml.is_file() else {}
+    if re.fullmatch(r"[\w.-]+/[\w.-]+", str(pub.get("repo", ""))):
+        vals["REPO"] = pub["repo"]
+    rows = publish.load_discs(repo / publish.DISCS_REL)[0]
+    if rows:
+        vals["EXES"] = ", ".join('"%s"' % e for e in dict.fromkeys(r["executable"] for r in rows))
+    return vals
+
+
+def fill_known(text: str, vals: dict[str, str]) -> str:
+    return install.PH_RE.sub(lambda m: vals.get(m[1], m[0]), text)
 
 
 def plan(repo: pathlib.Path) -> list[dict]:
@@ -69,6 +127,33 @@ def plan(repo: pathlib.Path) -> list[dict]:
                 add("manual", "refs: %s is %s/%s here, %s/%s in the profile" % (
                     n, mine[n]["class"], str(mine[n].get("ref", ""))[:12], default[n]["class"],
                     str(default[n].get("ref", ""))[:12]), "a pin or a class differs; decide per source", "refs-diff")
+    stale = [rel for rel, src in OWNED.items() if not (repo / rel).is_file() or
+             (repo / rel).read_bytes() != src.read_bytes()]
+    if stale:
+        add("psxdecomp", "publish: write %s (the README standard's lint and its CI)" % " and ".join(stale),
+            "missing or older than psxdecomp %s's" % common.plugin_version(), "publish")
+    if (repo / PUBLIC_LIST).is_file():
+        bw = repo / BUILD_WF
+        if not bw.is_file():
+            add("psxdecomp", "build: write %s from the template, once (the public repo's byte-check CI)" % BUILD_WF,
+                "the repository lists public paths (%s)" % PUBLIC_LIST, "build")
+        left = sorted(set(install.PH_RE.findall(common.read(bw if bw.is_file() else PROFILE_BUILD)))
+                      - (set() if bw.is_file() else set(build_values(repo))))
+        if left:
+            add("manual", "build: fill %s in %s by hand (the game's own values; psxdecomp's docs/PUBLISHING.md)"
+                % (", ".join("{{%s}}" % k for k in left), BUILD_WF), "upgrade cannot read them", "build-fill")
+    missing, why = deny_missing(repo)
+    if missing:
+        add("manual" if why else "psxdecomp", "deny: add %d rule(s) to %s permissions.deny from psxdecomp's "
+            "profiles/psx/deny.json%s" % (len(missing), SETTINGS, " by hand (%s)" % why if why else " (add-only)"),
+            "PA3's own deny stops `git push` alone; these forms also reach a push, a PR or a release", "deny")
+    readme = repo / "README.md"
+    if readme.is_file():
+        found = [f for f in publish.lint(common.read(readme), publish.Ctx(repo)) if f[0] == "FAIL"]
+        if found:
+            add("manual", "README: %d lint failure(s) against the README standard (docs/PUBLISHING.md; the prose is "
+                "yours, the two generated blocks are `python3 tools/psxd_publish.py render README.md --write`): %s"
+                % (len(found), "; ".join("%s: %s" % f[1:] for f in found[:8])), "the README standard", "readme")
     gi = repo / ".gitignore"
     if gi.is_file() and "/refs/" not in common.read(gi).splitlines():
         add("psxdecomp", "ignore: add the /refs/ line in a psxdecomp block", "refs/ must never be tracked", "ignore")
@@ -133,6 +218,15 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool) -> list[str]:
                 extra += [toml_table("trap", t) for t in prof["traps"]]
         w("config/refs.toml", cur.rstrip("\n") + "\n\n# ---- added by /psxdecomp:upgrade %s ----\n" % common.today()
           + "\n".join(extra))
+    if "publish" in acts:
+        for rel, src in OWNED.items():
+            st = common.write(repo / rel, common.read(src), dry=dry, mode=0o755 if rel.endswith(".py") else None)
+            if st != "unchanged":
+                written.append("%s%s %s" % ("would be " if dry else "", st, rel))
+    if "build" in acts:
+        w(BUILD_WF, fill_known(common.read(PROFILE_BUILD), build_values(repo)))
+    if "deny" in acts:
+        w(SETTINGS, with_denies(repo, deny_missing(repo)[0]))
     if "refs-add" in acts or "ignore" in acts:
         gi = common.read(repo / ".gitignore") if (repo / ".gitignore").is_file() else ""
         if "/refs/" not in gi.splitlines():
@@ -208,7 +302,7 @@ def self_test() -> int:
         (repo / ".claude").mkdir()
         (repo / ".claude/pa.json").write_text(json.dumps({"pa_version": "3.14.1", "python": "/nonexistent/python"}))
         keys = {x["key"] for x in plan(repo)}
-        ok &= {"adopt", "refs-add", "ignore", "pa3", "python", "kit"} <= keys
+        ok &= {"adopt", "refs-add", "ignore", "pa3", "python", "kit", "publish"} <= keys
         before = sorted(p.name for p in repo.rglob("*") if ".git" not in p.parts)
         dry = apply(repo, True, False)
         ok &= sorted(p.name for p in repo.rglob("*") if ".git" not in p.parts) == before and len(dry) >= 4
@@ -216,8 +310,51 @@ def self_test() -> int:
         ok &= (repo / "config/refs.toml").is_file() and (repo / "docs/ops/refs.md").is_file()
         ok &= install.REFS_RULE in (repo / "HOW_WE_WORK.md").read_text()
         keys2 = {x["key"] for x in plan(repo)}
-        ok &= not ({"adopt", "refs-add", "ignore"} & keys2)
+        ok &= "deny" in keys and not ({"adopt", "refs-add", "ignore", "publish", "deny"} & keys2)
+        want = json.loads(common.read(PROFILE_DENY))["permissions"]["deny"]
+        ok &= json.loads((repo / SETTINGS).read_text())["permissions"]["deny"] == want
+        # add-only: the game's own rules and keys stay, in place; only the missing rules are appended
+        mine = {"model": "m", "permissions": {"allow": ["Bash(git add:*)"], "deny": ["Bash(git push:*)", want[3]]}}
+        (repo / SETTINGS).write_text(json.dumps(mine, indent=2) + "\n")
+        ok &= next(x for x in plan(repo) if x["key"] == "deny")["owner"] == "psxdecomp"
+        apply(repo, False, False)
+        got = json.loads((repo / SETTINGS).read_text())
+        ok &= got["model"] == "m" and got["permissions"]["allow"] == ["Bash(git add:*)"] and got["permissions"][
+            "deny"] == ["Bash(git push:*)", want[3]] + [r for r in want if r != want[3]]
+        ok &= "deny" not in {x["key"] for x in plan(repo)}
+        (repo / publish.PA3_REL).write_text(json.dumps({"files": {SETTINGS: "h"}}))
+        (repo / SETTINGS).write_text("{}\n")
+        ok &= next(x for x in plan(repo) if x["key"] == "deny")["owner"] == "manual"   # PA3's file: never written
+        (repo / publish.PA3_REL).unlink()
+        (repo / SETTINGS).write_text(json.dumps({"permissions": {"deny": want}}, indent=2) + "\n")
+        ok &= (repo / publish.VENDORED).read_bytes() == OWNED[publish.VENDORED].read_bytes()
+        (repo / "README.md").write_text("# G\n\n%s\n## Status\n" % common.ai_policy_block())
+        readme = next((x for x in plan(repo) if x["key"] == "readme"), None)
+        ok &= readme is not None and readme["owner"] == "manual" and "missing ## Description" in readme["what"]
+        (repo / "README.md").unlink()
         ok &= apply(repo, True, False) == []                     # a second apply has nothing to do
+        # the public list is opt-in: without it nothing new; with it build.yml, once, with what upgrade can read
+        ok &= "build" not in {x["key"] for x in plan(repo)}
+        (repo / "config/public-paths.txt").write_text("config/public-paths.txt\n")
+        (repo / "config/discs.tsv").write_text(publish.SELF_DISCS)
+        toml = repo / "config/psxdecomp.toml"
+        saved = toml.read_text() if toml.is_file() else None
+        toml.write_text((saved or "") + '\n[public]\nrepo = "Example/Game"\n')
+        ok &= {"build", "build-fill"} <= {x["key"] for x in plan(repo)}
+        apply(repo, False, False)
+        built = (repo / ".github/workflows/build.yml").read_text()
+        ok &= ("if: github.repository == 'Example/Game'" in built and 'exe: ["PSXD_000.01"]' in built
+               and "{{BUILD_COMMAND}}" in built)
+        (repo / ".github/workflows/build.yml").write_text("# the game's own\n")
+        apply(repo, False, False)
+        ok &= (repo / ".github/workflows/build.yml").read_text() == "# the game's own\n"   # never overwritten
+        ok &= "build" not in {x["key"] for x in plan(repo)}
+        for rel in ("config/public-paths.txt", "config/discs.tsv", ".github/workflows/build.yml"):
+            (repo / rel).unlink()
+        if saved is None:
+            toml.unlink()
+        else:
+            toml.write_text(saved)
         # an older refs.toml (a dropped row, no authority/traps) gains the new rows and tables; the dropped row is manual
         old = fetch_refs.load_rows(PROFILE_REFS)[:2] + [dict(fetch_refs.load_rows(PROFILE_REFS)[0], name="psn00bsdk")]
         (repo / "config/refs.toml").write_text("".join(toml_table("ref", r) for r in old))

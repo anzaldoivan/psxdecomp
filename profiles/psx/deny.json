@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git push *)",
+      "Bash(git push)",
+      "Bash(git * push *)",
+      "Bash(git * push)",
+      "Bash(* --no-verify *)",
+      "Bash(* --no-verify)",
+      "Bash(gh pr *)",
+      "Bash(gh repo *)",
+      "Bash(gh api * -X *)",
+      "Bash(gh api * --method *)",
+      "Bash(gh api -X *)",
+      "Bash(gh api --method *)",
+      "Bash(python3 tools/psxd_publish.py release *)",
+      "Bash(python3 tools/psxd_publish.py land *)",
+      "Bash(python3 tools/psxd_publish.py land)",
+      "Bash(python3 tools/psxd_publish.py settings *)",
+      "Bash(python3 tools/psxd_publish.py verify-pr *)",
+      "Bash(python3 tools/psxd_publish.py hook *)"
+    ]
+  }
+}

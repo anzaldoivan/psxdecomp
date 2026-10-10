@@ -270,19 +270,11 @@ def load_toml_str(text: str) -> dict:
     return tomllib.loads(text)
 
 
-# ---- the AI policy (one home: psxdecomp's README carries it verbatim, tier 0 checks; S8 puts it in every game
-# README as soon as the kit writes it, in place of the kit's disclosure paragraph) ---------------------------------
-AI_POLICY = ("LLMs produce negligible decompilation results without good guidance. Investigate and familiarize "
-             "yourself with the console's architecture and the game you are decompiling, and always use your own "
-             "judgment. Humans drive the decisions; AI reads and writes the code.")
-AI_POLICY_MARK = "<!-- psxdecomp: ai-policy -->"
-# The start of the disclosure sentence the interview offered before AI_POLICY (and the canned answers still carry):
-# S8 swaps a paragraph that starts with it for the block; the doctor WARNs when one is left.
-OLD_DISCLOSURE = "This project is developed with substantial AI assistance"
-
-
-def ai_policy_block() -> str:
-    return "%s\n> [!IMPORTANT]\n> **AI policy:** %s\n" % (AI_POLICY_MARK, AI_POLICY)
+# ---- the AI policy: its one home is publish.py (the file game repositories vendor, whose README lint checks the
+# block verbatim); re-exported here. psxdecomp's README carries it verbatim (tier 0 checks); S8 writes it into every
+# game README (the README standard), or swaps it for the kit's disclosure paragraph in an older README ---------------
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from publish import AI_POLICY, AI_POLICY_MARK, OLD_DISCLOSURE, ai_policy_block  # noqa: E402,F401
 
 
 def swappable_disclosure(text: str | None) -> bool:

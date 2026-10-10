@@ -8,7 +8,7 @@ design and test tiers: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | What | Command |
 |---|---|
 | Tier 0 (free; every script's self-test included) | `pytest -q tests/test_static.py tests/test_scripts.py` |
-| Tier 1 (bootstraps a fixture repo; fetches the pinned kit) | `pytest -q tests/test_pipeline.py` (`PSXDECOMP_KIT=<folder>` for a local kit) |
+| Tier 1 (bootstraps a fixture repo; fetches the pinned kit) | `pytest -q tests/test_pipeline.py tests/test_split_e2e.py` (`PSXDECOMP_KIT=<folder>` for a local kit) |
 | One script's self-test | `python3 scripts/<name>.py --self-test` → `SELF-TEST OK` |
 | Firewall audit | `python3 tools/audit_public.py --self-test && python3 tools/audit_public.py` |
 | Workflow lint | `docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest` |
@@ -19,9 +19,11 @@ design and test tiers: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Pins (Project Architect version and sha, kit digest): `compat.toml`, nowhere else. Upstream ledger:
   [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md).
 - Stages S0–S10: `scripts/common.py` `STAGES`; their texts: `skills/new/`.
-- The AI policy text: `common.AI_POLICY` (the README carries it; S8 puts it in every game README). Install commands: `common.INSTALL`
+- The AI policy text: `publish.AI_POLICY` (re-exported as `common.AI_POLICY`; the README carries it; S8 puts it in every game README). Install commands: `common.INSTALL`
   and `profiles/psx/hosts/*.md`.
 - Reference library policy: [docs/REFS.md](docs/REFS.md); the profile's rows: `profiles/psx/refs.toml`.
+- README standard and decomp.dev reports: [docs/PUBLISHING.md](docs/PUBLISHING.md); its code: `scripts/publish.py`
+  (vendored into games byte for byte: stdlib only, no plugin import).
 
 ## Rules
 

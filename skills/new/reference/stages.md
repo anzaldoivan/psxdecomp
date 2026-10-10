@@ -19,9 +19,9 @@ Every stage of `/psxdecomp:new`:
 | S5 repo | `.git`, `.gitignore`, the kit's firewall pack (`config/firewall.txt`, `config/firewall-fixture.sha1`, `tools/audit_public.py`, `.github/workflows/no-rom.yml`), `LICENSE` | the first commit |
 | S6 PA3 | PA3's per-repo files (its installer), `.gitignore` order, `.claude/pa.json` `"upgrade": "ask"` | PA3's install commit; the order fix; the upgrade pin |
 | S7 intake | `PROJECT_CONTEXT.md` and what PA3's intake writes | the intake |
-| S8 kit | the kit's files (its installer); `.run/decomp-architect/`; the AI policy block in `README.md`, in place of the kit's disclosure paragraph | the kit's close commit; the README commit |
+| S8 kit | the kit's files (its installer); `.run/decomp-architect/`; `README.md` from psxdecomp's README standard in place of the kit's untouched skeleton (else only the AI policy block, in place of the disclosure paragraph); `config/discs.tsv` when the answers carry a disc serial ([docs/PUBLISHING.md](../../../docs/PUBLISHING.md)) | the kit's close commit; the README commit |
 | S9 refs | `config/refs.toml`, `docs/ops/refs.md`, `.gitignore` `/refs/`, `.ignore` `!/refs/` (search still reaches refs/), `config/firewall.txt` purge line, one `HOW_WE_WORK.md` line, `docs/ops/INDEX.md` row; ignored `refs/` | the refs commit |
-| S10 handoff | `config/psxdecomp.toml`, `config/psxdecomp.profile.toml`, `docs/ops/host-recipe.md` (with install commands), `docs/prior-art.md` | the handoff commit |
+| S10 handoff | `config/psxdecomp.toml`, `config/psxdecomp.profile.toml`, `docs/ops/host-recipe.md` (with install commands), `docs/prior-art.md`, `tools/psxd_publish.py` and `.github/workflows/psxdecomp-readme.yml` (the README lint and its CI) | the handoff commit |
 
 Deviations (`--force-untested`, `--intake-fixture`, PA3 leaving uncommitted paths, a kit dry-run mismatch) are kept
 in the state file and written into `config/psxdecomp.toml [deviations]`.

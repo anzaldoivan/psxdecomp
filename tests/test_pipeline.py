@@ -32,8 +32,8 @@ def test_clean_tree_and_commits(game):
     assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
     log = run(["git", "-C", game, "log", "--format=%s"]).stdout.splitlines()[::-1]
     assert log[0].startswith("Firewall first") and len(log) == 9, log
-    assert any(l.startswith("PA3 upgrades ask first") for l in log) and any(l.startswith("README: the AI policy")
-                                                                           for l in log), log
+    assert any(l.startswith("PA3 upgrades ask first") for l in log) and any(
+        l.startswith("README: psxdecomp's README standard") for l in log), log
 
 
 def test_s6_restart_line_and_upgrade_ask(toolchain, game):
@@ -63,12 +63,18 @@ def test_s6_root_hint_pins_the_clone(toolchain, tmp_path):
     assert r.returncode == 1 and "--root --no-clone" in r.stdout, r.stdout
 
 
-def test_readme_policy_replaces_disclosure(game):
-    """S8 puts the AI policy block under the README's lead and drops the kit's old disclosure paragraph."""
+def test_readme_standard(game):
+    """S8 replaces the kit's skeleton with psxdecomp's README standard, filled with the kit's own values: no old
+    disclosure, the AI policy block, both generated blocks; the vendored lint passes it (before Phase 9 and with no
+    Sony serial, the categories and the disc rows are INFO), and the game's CI runs that lint."""
+    import publish
     readme = (game / "README.md").read_text()
-    assert common.OLD_DISCLOSURE not in readme
-    made = readme.split("## How this project is made", 1)[1].split("\n## ", 1)[0]
-    assert made.strip().startswith("The standard it holds itself to"), made[:120]
+    assert common.OLD_DISCLOSURE not in readme and "PSXDECOMP Homebrew Fixture" in readme and "{{" not in readme
+    assert [l[3:] for l in readme.splitlines() if l.startswith("## ")] == publish.README_H2
+    r = run([PY, "tools/psxd_publish.py", "lint", "README.md"], cwd=game, check=False)
+    assert r.returncode == 0 and "README LINT OK (0 warn)" in r.stdout, r.stdout
+    assert (game / publish.VENDORED).read_bytes() == (ROOT / "scripts/publish.py").read_bytes()
+    assert (game / publish.WORKFLOW).is_file() and not (game / publish.DISCS_REL).exists()
 
 
 def test_mmx6_install_list_present(game):
@@ -122,8 +128,9 @@ def test_doctor_and_record(game):
     shutil.rmtree(game / "refs" / "probe")
     assert "purge: refs/" in (game / "config/firewall.txt").read_text()
     assert "docs/ops/refs.md" in (game / "HOW_WE_WORK.md").read_text()
-    readme = (game / "README.md").read_text()                               # the AI policy, once, under the lead
-    assert readme.count(common.AI_POLICY) == 1 and readme.index(common.AI_POLICY_MARK) < readme.index("\n## ")
+    readme = (game / "README.md").read_text()                     # the AI policy, once, under ## Description
+    assert readme.count(common.AI_POLICY) == 1
+    assert readme.index("\n## Description") < readme.index(common.AI_POLICY_MARK) < readme.index("\n## Progress")
     recipe = (game / "docs/ops/host-recipe.md").read_text()
     assert "brew install" in recipe
 

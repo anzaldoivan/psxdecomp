@@ -117,7 +117,7 @@ def test_eval_cases():
             assert (case.parent / sc).is_file()
     assert {"no-autofire", "interview-first", "answers-path", "refs-grep", "refs-grep-ignored", "refuse-nonpsx",
             "backtest-x6", "backtest-x5", "backtest-dc2", "backtest-bfm", "poisoned-grep", "poisoned-grep-raw", "unpinned-candidate",
-            "kit-calibration-scope", "id-collision", "restart-handoff", "psyq-question"} <= names
+            "kit-calibration-scope", "id-collision", "id-collision-tool", "restart-handoff", "psyq-question"} <= names
 
 
 def _passes(g, text):
@@ -239,8 +239,9 @@ def test_scope_lint():
 
 
 def test_no_copied_prose():
-    """One home per fact: no prose sentence of 60+ characters appears in two of psxdecomp's docs (lint_dupes)."""
-    dupes = fetch_refs.lint_dupes(list(_docs()), ROOT)
+    """One home per fact: no prose sentence of 60+ characters appears in two of psxdecomp's docs (lint_dupes). The
+    synthetic game (fixtures/publish) is a game repository's text, which carries the AI policy verbatim by rule."""
+    dupes = fetch_refs.lint_dupes([p for p in _docs() if "fixtures/publish/" not in p.as_posix()], ROOT)
     assert not dupes, ["%s: %s" % (", ".join(w), t[:80]) for t, w in dupes]
 
 
@@ -270,7 +271,7 @@ def test_upstream_proposals():
     text = (ROOT / "docs/ECOSYSTEM.md").read_text().split("## Proposed to upstreams", 1)[1].split("\n## ", 1)[0]
     rows = [[c.strip() for c in l.strip("|").split("|")] for l in text.splitlines() if re.match(r"^\| [A-Z]\d+ \|", l)]
     assert len(rows) >= 10
-    states = ("proposed", "sent", "accepted", "declined", "deferred")
+    states = ("proposed", "sent", "accepted", "declined", "deferred", "superseded")
     for r in rows:
         assert len(r) == 5 and r[1] and r[2], r[0]
         assert r[3] in {"kit", "mmx6", "PA3", "DC2", "BFM"}, (r[0], r[3])
@@ -297,3 +298,141 @@ def test_readme_assets_exist():
     readme = (ROOT / "README.md").read_text()
     refs = re.findall(r'(?:src|srcset)="([^"]+)"', readme)
     assert refs and all(r.startswith("docs/assets/") and (ROOT / r).is_file() for r in refs), refs
+
+
+# ---- the publishing standard (scripts/publish.py; docs/PUBLISHING.md) ---------------------------------------------
+
+def _git_copy(src, dst, remote="https://github.com/example/synthetic-decomp.git"):
+    shutil.copytree(src, dst)
+    run(["git", "init", "-q", dst])
+    run(["git", "-C", dst, "remote", "add", "origin", remote])
+    run(["git", "-C", dst, "add", "-A"])
+    run(["git", "-C", dst, "-c", "commit.gpgsign=false", "commit", "-qm", "fixture"])
+    return dst
+
+
+def test_publish_fixture(tmp_path):
+    """The synthetic game (fixtures/publish: homebrew names, hashes of no disc) passes the lint at --release, its units
+    categorize into a report that validates; each planted fault fails."""
+    import publish
+    repo = _git_copy(ROOT / "fixtures/publish", tmp_path / "game")
+    lint = lambda *a: run([PY, ROOT / "scripts/publish.py", "lint", repo / "README.md", *a], check=False)  # noqa: E731
+    r = lint("--release")
+    assert r.returncode == 0 and "README LINT OK (0 warn)" in r.stdout, r.stdout
+    out = tmp_path / "report.json"
+    run([PY, ROOT / "scripts/publish.py", "categorize", repo / "units.json", "--categories",
+         repo / "config/categories.tsv", "-o", out])
+    r = run([PY, ROOT / "scripts/publish.py", "validate", out, "--categories", repo / "config/categories.tsv",
+             "--artifact", "PSXD_000.01_report", "--exe", "PSXD_000.01"], check=False)
+    assert r.returncode == 0 and "REPORT OK" in r.stdout, r.stdout
+    assert json.loads(out.read_text())["version"] == publish.REPORT_VERSION
+    readme = (repo / "README.md").read_text()
+    planted = {
+        "old disclosure": (readme.replace("The reference decompilations", common_old() + ". The reference "
+                                          "decompilations"), "old disclosure"),
+        "bad measure": (readme.replace("measure=functions&category=main", "measure=funcs&category=main"),
+                        "measure=funcs"),
+        "unknown category": (readme + "\n![x](https://decomp.dev/example/synthetic-decomp.svg?category=ovl.debug)\n",
+                             "category=ovl.debug"),
+        "stale block": (readme.replace("| `main` | PSXD_000.01, the boot executable", "| `main` | Boot"), "stale"),
+        "missing path": (readme.replace("`docs/` |", "`include/` |"), "include/ does not exist"),
+    }
+    for name, (text, want) in planted.items():
+        (repo / "README.md").write_text(text)
+        r = lint()
+        assert r.returncode == 1 and want in r.stdout, (name, r.stdout)
+    (repo / "README.md").write_text(readme)
+    tsv = repo / "config/categories.tsv"
+    tsv.write_text("".join(l for l in tsv.read_text().splitlines(True) if not l.startswith("ovl.debug\t")))
+    r = run([PY, ROOT / "scripts/publish.py", "categories", "--repo", repo, "--history"], check=False)
+    assert r.returncode == 1 and "'ovl.debug' was published" in r.stdout, r.stdout
+
+
+def common_old():
+    import common
+    return common.OLD_DISCLOSURE
+
+
+def test_readme_template_meets_the_standard(tmp_path):
+    """profiles/psx/README.md.template, filled from the canned answers as S8 fills it, lints clean in a repository
+    holding the paths a bootstrap writes (no disc rows: the homebrew fixture has no Sony serial, so INFO only)."""
+    import install
+    import publish
+    tpl = (ROOT / "profiles/psx/README.md.template").read_text()
+    vals, _ = answers.parse((ROOT / "fixtures/answers.psx.txt").read_text())
+    names = set(re.findall(r"\{\{([A-Z_]+)\}\}", tpl))
+    assert names <= set(vals) | {"PROJECT_NAME", "AI_POLICY_BLOCK"}, names - set(vals)
+    vals.update(PROJECT_NAME="homebrew-fixture", AI_POLICY_BLOCK=publish.ai_policy_block())
+    repo = tmp_path / "game"
+    for rel in ("src/NOTICE.md", "config/firewall.txt", "tools/audit_public.py", "docs/README.md", "cookbook/INDEX.md",
+                "rules/INDEX.md", "phase-ends/README.md", "docs/ops/host-recipe.md", "CONTRIBUTING.md"):
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text("x\n")
+    (repo / "README.md").write_text(install.fill_template(tpl, vals))
+    shutil.move(repo, tmp_path / "staging")
+    repo = _git_copy(tmp_path / "staging", repo)
+    ctx = publish.Ctx(repo)
+    text = publish.render((repo / "README.md").read_text(), ctx)
+    found = publish.lint(text, ctx)
+    assert [f for f in found if f[0] != "INFO"] == [], found
+    assert {f[1] for f in found} == {"categories", "discs"}
+
+
+def test_publish_is_vendorable():
+    """scripts/publish.py runs alone in a game repository (S10 copies it to tools/psxd_publish.py): standard library
+    only, nothing from the plugin; its workflow pins every action to a full commit SHA."""
+    text = (ROOT / "scripts/publish.py").read_text()
+    mods = set(re.findall(r"^(?:import|from) ([\w.]+)", text, re.M))
+    assert not mods & {"common", "answers", "install", "doctor", "fetch_refs", "decompdev"}, mods
+    wf = (ROOT / "profiles/psx/psxdecomp-readme.yml").read_text()
+    uses = re.findall(r"uses:\s*(\S+)", wf)
+    assert uses and all(re.search(r"@[0-9a-f]{40}$", u) for u in uses), uses
+    assert "tools/psxd_publish.py lint README.md" in wf and "--history" in wf and "fetch-depth: 0" in wf
+
+
+def test_split_build_invariants():
+    """The public build.yml pins every action to a full commit SHA and holds every invariant doctor lints:
+    push + pull_request_target only, contents: read, no cache, no always()/failure()/continue-on-error, the job's only
+    condition the repository guard, fork PRs in the fork-review environment, the deploy key only in the private
+    checkout, no expression inside run:, the build without network, the upload gated on success(). Each planted
+    violation is caught (a negative control per invariant)."""
+    import doctor
+    text = (ROOT / "profiles/psx/build.yml").read_text()
+    uses = re.findall(r"uses:\s*(\S+)", text)
+    assert uses and all(re.search(r"@[0-9a-f]{40}$", u) for u in uses), uses
+    assert not (ROOT / "profiles/psx/psxdecomp-release.yml").exists()        # no PAT release workflow
+    good = doctor.build_template()
+    assert doctor.lint_workflows({"build.yml": good}) == []
+    planted = {
+        "cache": good.replace("      - name: Stage", "      - uses: actions/cache@x\n      - name: Stage"),
+        "always()": good.replace("if: success() &&", "if: always() &&"),
+        "continue-on-error": good.replace("    timeout-minutes: 60", "    timeout-minutes: 60\n    continue-on-error: true"),
+        "triggers": good.replace("  pull_request_target:", "  pull_request_target:\n  pull_request:"),
+        "job condition": good.replace("    if: github.repository == 'example/game'", "    if: github.event_name == 'push'"),
+        "fork-review": good.replace("'fork-review'", "'ci'"),
+        "secrets": good.replace("    env:\n", "    env:\n      K: ${{ secrets.OTHER }}\n"),
+        "persist-credentials": good.replace("          persist-credentials: false\n", "", 1),
+        "expression inside run": good.replace("run: mv .psxd-private", "run: echo ${{ github.head_ref }}; mv .psxd-private"),
+        "network": good.replace("docker run -d --network none", "docker run -d"),
+        "permissions": good.replace("  contents: read\n", "  contents: read\n  pull-requests: write\n", 1),
+    }
+    for name, text in planted.items():
+        assert text != good, name
+        assert doctor.lint_split_build(text), name
+    pat = good.replace("ssh-key: ${{ secrets.PRIVATE_DEPLOY_KEY }}", "token: ${{ secrets.PRIVATE_REPO_TOKEN }}")
+    assert pat != good and doctor.lint_split_build(pat) == []                # a fine-grained PAT in its place
+    for wrong in ("token: ${{ secrets.PRIVATE_DEPLOY_KEY }}", "ssh-key: ${{ secrets.PRIVATE_REPO_TOKEN }}"):
+        assert doctor.lint_split_build(good.replace("ssh-key: ${{ secrets.PRIVATE_DEPLOY_KEY }}", wrong)), wrong
+
+
+def test_game_files_cite_no_foreign_ids():
+    """The files psxdecomp writes into a game cite no bare rule-like id (G41, D5, T2, ...): a game greps its own
+    rules/G41.md by id, and an id here would answer for it. The -private README cites only the game's G12 and G18."""
+    ids = re.compile(r"(?<![A-Za-z0-9_-])[GDKPRT]\d+\b")
+    for rel in ("scripts/publish.py", "profiles/psx/build.yml", "profiles/psx/image/Dockerfile",
+                "profiles/psx/psxdecomp-readme.yml"):
+        found = ["%d: %s" % (i, l.strip()) for i, l in enumerate((ROOT / rel).read_text().splitlines(), 1) if ids.search(l)]
+        assert not found, (rel, found)
+    assert set(ids.findall((ROOT / "profiles/psx/private/README.md").read_text())) <= {"G12", "G18"}
+    assert ids.search("see G41.") and ids.search("(D5)") and not ids.search("sha-G41x") and not ids.search("20260901T000000Z")
+

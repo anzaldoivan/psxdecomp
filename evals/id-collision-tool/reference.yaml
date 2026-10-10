@@ -1,0 +1,7 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "rules/G41.md, never key by bare function name: scratch directories, ledgers and drafts are keyed by binary and address, and an agent never removes anything outside its own work directory."
+bad:
+  - "G41 says a public PR is verified before merge: a forged check from another workflow fails."
+  - "G41: never key by bare function name; it is also the verify-pr check run gate."
+  - "rules/G41.md: never key by bare function name. Note tools/psxd_publish.py uses G41 for an unrelated public PR check."
