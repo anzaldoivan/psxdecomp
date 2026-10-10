@@ -1802,6 +1802,7 @@ REPO_WANT = {"allow_merge_commit": False, "allow_rebase_merge": False, "allow_sq
              "squash_merge_commit_title": "PR_TITLE", "squash_merge_commit_message": "PR_BODY",
              "delete_branch_on_merge": True, "allow_forking": True, "has_wiki": False, "has_projects": False}
 SECURITY_WANT = ("secret_scanning", "secret_scanning_push_protection")
+SQUASH_PAIR = ("squash_merge_commit_title", "squash_merge_commit_message")
 PR_KEYS = ("required_approving_review_count", "require_code_owner_review", "dismiss_stale_reviews_on_push",
            "require_last_push_approval", "required_review_thread_resolution")
 BRANCH_POLICY = {"protected_branches": False, "custom_branch_policies": True}
@@ -1863,9 +1864,12 @@ def settings_drift(cfg: dict, api) -> list[dict]:
         if have != want:
             row(what, have, want, ("PUT", path, fix))
     repo = api("GET", R) or {}
-    for k, v in REPO_WANT.items():
-        if repo.get(k) != v:
-            row("repo.%s" % k, repo.get(k), v, ("PATCH", R, {k: v}))
+    # One PATCH with the drifting keys only (GitHub refuses any allow_forking field on a user-owned repository), and
+    # the squash title and message always together: GitHub refuses the message alone even when the title matches (422).
+    drift = {k: v for k, v in REPO_WANT.items() if repo.get(k) != v}
+    body = dict(drift, **({k: REPO_WANT[k] for k in SQUASH_PAIR} if set(SQUASH_PAIR) & set(drift) else {}))
+    for k, v in drift.items():
+        row("repo.%s" % k, repo.get(k), v, ("PATCH", R, body))
     if repo.get("visibility") != "public":
         row("repo.visibility", repo.get("visibility"), "public")
     sa = repo.get("security_and_analysis") or {}
@@ -2288,6 +2292,12 @@ def _fake_api(store: dict, writes: list):
         writes.append((method, path, body))
         if method == "PUT" and "can_admins_bypass" in (body or {}):
             writes.append(("BAD", path, body))
+        if method == "PATCH" and len(set(SQUASH_PAIR) & set(body)) == 1:
+            raise Fail("gh api PATCH %s: invalid_squash_commit_setting_combo (HTTP 422)" % path)   # GitHub's rules
+        org = method == "PATCH" and (store[path].get("owner") or {}).get("type") == "Organization"
+        if method == "PATCH" and "allow_forking" in body and not org:
+            raise Fail("gh api PATCH %s: Allow forks setting can only be changed on org-owned private repositories "
+                       "(HTTP 422)" % path)
         if method == "PATCH":
             for k, v in body.items():
                 store[path].setdefault(k, {}).update(v) if isinstance(v, dict) else store[path].__setitem__(k, v)
@@ -2899,6 +2909,8 @@ def _public_self_test(check, td: str):
         rule = lambda path, t: lambda s: next(r for r in s[path]["rules"] if r["type"] == t)["parameters"]  # noqa: E731
         muts = [
             ("merge commit allowed", setv(R, "allow_merge_commit", True), "allow_merge_commit"),
+            ("squash message at GitHub's default", setv(R, "squash_merge_commit_message", "COMMIT_MESSAGES"),
+             "squash_merge_commit_message"),                  # alone in a PATCH, GitHub refuses PR_BODY (422)
             ("no push protection", setv(R, "security_and_analysis", "secret_scanning_push_protection", "status", "disabled"),
              "push_protection"),
             ("ruleset bypass actor", lambda s: s[R + "/rulesets/1"].update(bypass_actors=[
