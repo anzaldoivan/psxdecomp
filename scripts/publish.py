@@ -1236,7 +1236,7 @@ def fetch_public(cache, url: str) -> str | None:
     """Public main into the cache (PUB_REF); its sha, or None while the public repository has no main."""
     ls = _git(cache, "ls-remote", "--heads", url, "refs/heads/main")
     if ls.returncode != 0:
-        raise Fail("cannot read %s: %s" % (url, ls.stderr.strip()[:200]))
+        raise Fail("cannot read %s (create the empty public repository first): %s" % (url, ls.stderr.strip()[:200]))
     if not ls.stdout.strip():
         _git(cache, "update-ref", "-d", PUB_REF)
         return None
@@ -1346,7 +1346,11 @@ def _split(repo):
     if cfg is None:
         raise Fail("split mode is off: no [public] in %s" % CONFIG_REL)
     cache = public_cache(dev)
-    return dev, cfg, cache, fetch_public(cache, cfg["url"])
+    main = fetch_public(cache, cfg["url"])
+    if main and _git(dev, "merge-base", "--is-ancestor", main, "refs/heads/" + cfg["dev_branch"]).returncode == 0:
+        raise Fail("%s main (%s) is in dev's own history: the URL reaches dev, not the public repository (after the "
+                   "rename, the old URL redirects to -dev until the new public repository exists)" % (cfg["url"], main[:10]))
+    return dev, cfg, cache, main
 
 
 def _identity(dev) -> tuple[str, str]:
@@ -2598,6 +2602,10 @@ def _public_self_test(check, td: str):
         _self_repo(str(off))
         rc, out = call(cmd_release, str(off), summary="x")
         check("split mode off refuses", rc == 1 and "split mode is off" in out, out)
+        with with_cfg(url=str(M.dev)):
+            rc, out = M.rel(summary="first", ack_new=True, dry_run=True)
+        check("a URL that reaches dev's history refuses (the rename's redirect)", rc == 1 and "dev's own history" in out
+              and not M.branches(), out)
         rc, out = M.rel(summary="first")
         check("new paths refused w/o --ack-new", rc == 1 and "--ack-new" in out and not M.branches(), out)
         rc, out = M.rel(summary=" ", ack_new=True)
@@ -3180,7 +3188,7 @@ def main(argv=None) -> int:
     rl.add_argument("--rev", help="the dev revision (default: [public].dev_branch's tip)")
     rl.add_argument("--ack-new", action="store_true", help="allow paths public does not have yet")
     rl.add_argument("--dry-run", action="store_true", help="the checks and the list; no ref is written")
-    rl.add_argument("--push", action="store_true", help="push the branch and open the PR")
+    rl.add_argument("--push", action="store_true", help="push the branch and open the PR (release 1: push main)")
     im = sub.add_parser("import")
     im.add_argument("--accept-governance", action="store_true")
     im.add_argument("--skip", action="append", default=[], metavar="SHA", help="a public commit dev must never take")

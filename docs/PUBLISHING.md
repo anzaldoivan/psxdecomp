@@ -269,21 +269,22 @@ this. A fork PR that carries `Release:` or `Release-*` trailers is refused.
 
 ### Cutover order
 
-An existing game moves to split mode in this order. Every outward step is the developer's; the agents' deny list
-and the `CLAUDECODE` refusal stop an agent from running them. Do one game at a time, and steps 1 to 5 in one
-sitting: between the rename and the create, the old URL redirects to a private repository.
+An existing game moves to split mode in this order, one game at a time. Every outward step is the developer's; the
+agents' deny list and the `CLAUDECODE` refusal stop an agent from running them.
 
-1. Rename `<game>` to `<game>-dev` and make it private (GitHub redirects the old URL). Recheck the fork count. In
-   the checkout, point origin at `-dev`, then `hook --install`.
+1. Rename `<game>` to `<game>-dev`, make it private, and create the empty public `<game>` in the same sitting: until
+   it exists, the old URL redirects to `-dev` (release refuses a URL that reaches dev's own history, and recomp.board
+   may mark the row "repo missing"). Recheck the fork count. In the checkout, point origin at `-dev`, then
+   `hook --install`.
 2. Create `<game>-private` (private, forking off, Actions off) and push the build inputs, `check/<EXE>.sha1` and the
    optional backup. Add a read-only deploy key.
 3. Commit `config/public-paths.txt`, `[public]` (with `private_rev`) and any README fixes. `/psxdecomp:upgrade`
    then writes `build.yml`. `release --dry-run` must pass.
 4. Build the image from `profiles/psx/image/Dockerfile` with the game's args, push it to ghcr as public, audit its
    layers, and set `[public].image` to its digest.
-5. Create the empty public `<game>`. `release --push` makes release 1 its `main`; then `settings --apply` and the
-   `PRIVATE_DEPLOY_KEY` secret. doctor's public standard and `split-guard` rows must be OK, and `build <EXE>` green
-   on main with the report uploaded.
+5. `release --push` makes release 1 the public `main`; then `settings --apply` and the `PRIVATE_DEPLOY_KEY` secret.
+   doctor's public standard and `split-guard` rows must be OK, and `build <EXE>` green on main with the report
+   uploaded.
 6. The next day, check the recomp.board row and decomp.dev ([the report contract](#the-report-contract)). The first
    fork PR goes through `verify-pr`, then the merge.
 
