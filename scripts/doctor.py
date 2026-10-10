@@ -17,12 +17,15 @@ PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_P
 hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs); progress (WARN
 only, when a workflow builds a decomp.dev report: its safety lint, and whether decomp.dev lists the repo); github (WARN
 only, through `gh api`, skipped offline or logged out: the repository's security settings, each with the `gh api`
-command that fixes it; doctor never applies one). `--only github` runs just that row, e.g. on psxdecomp itself.
+command that fixes it; doctor never applies one). `--only github` runs just that row, e.g. on psxdecomp itself. In
+split mode, also through `gh api`: private-repo ([public].private_repo against its rules, FAIL on any drift) and
+public-standard (WARN only: the public repository against the standard, the comparison `settings` prints).
 """
 from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import io
 import json
 import os
@@ -37,7 +40,8 @@ import decompdev  # noqa: E402
 import fetch_refs  # noqa: E402
 import publish  # noqa: E402
 
-NETWORK_ROWS = ("progress", "github")
+NETWORK_ROWS = ("progress", "github", "private-repo", "public-standard")
+SPLIT_ROWS = ("private-repo", "public-standard")
 
 
 def check(repo, only=None, offline=False) -> list[tuple[str, str, str]]:
@@ -55,6 +59,17 @@ def check(repo, only=None, offline=False) -> list[tuple[str, str, str]]:
         texts = {p.name: common.read(p) for p in sorted(wf.glob("*.y*ml"))} if wf.is_dir() else {}
         for st, detail in github_rows(github_slug(repo), None if offline else gh_api, texts):
             add("github", st, detail)
+    if not only or set(only) & set(SPLIT_ROWS):
+        try:
+            cfg = publish.load_public(repo)
+        except publish.Fail:
+            cfg = None                                                  # split-guard reports the malformed table
+        if cfg:
+            api = None if offline else publish.gh_api
+            priv = private_repo_row(cfg, api)
+            if priv:
+                add("private-repo", *priv)
+            add("public-standard", *public_standard_row(cfg, api))
     return [r for r in rows if not only or r[0] in only]
 
 
@@ -555,6 +570,85 @@ def github_rows(slug: str | None, api, texts: dict[str, str] | None = None) -> l
                                                   "fork approval, secret scanning + push protection, ruleset" % slug)]
 
 
+# ---- split mode: the -private repository and the public standard (publish.gh_api: GETs only, None on a 404) ------
+
+def private_repo_row(cfg: dict, api) -> tuple[str, str] | None:
+    """[public].private_repo against its rules (profiles/psx/private/README.md): private, no fork, Actions off, the
+    owner its only collaborator, deploy keys read-only and at most one, private_rev one of its commits, and forking
+    off when GitHub allows it (an organization's repository). FAIL on any drift; None without a private_repo."""
+    P = cfg.get("private_repo")
+    if not P:
+        return None
+    if api is None:
+        return "OK", "offline: %s not checked" % P
+    R = "repos/" + P
+    try:
+        info = api("GET", R)
+    except Exception as e:                                              # noqa: BLE001 — logged out, no gh, no network
+        return "OK", "skipped: gh api unavailable (%s)" % str(e)[:80]
+    if info is None:
+        return "FAIL", "%s not found: create it (docs/PUBLISHING.md, Cutover order, step 2)" % P
+    bad, notes = [], []
+    try:
+        if info.get("private") is not True:
+            bad.append("it is %s: make it private at once, rotate the deploy key, and see SECURITY.md's purge path"
+                       % info.get("visibility"))
+        if info.get("forks_count"):
+            bad.append("%d fork(s)" % info["forks_count"])
+        if (info.get("owner") or {}).get("type") == "Organization":
+            if info.get("allow_forking") is not False:
+                bad.append("forking is on — fix: gh api -X PATCH %s -F allow_forking=false" % R)
+        else:
+            notes.append("forking: fixed on a personal account (only collaborators can fork)")
+        if (api("GET", R + "/actions/permissions") or {}).get("enabled") is not False:
+            bad.append("Actions are on — fix: gh api -X PUT %s/actions/permissions -F enabled=false" % R)
+        owner = P.split("/")[0].lower()
+        others = sorted(c.get("login") or "?" for c in api("GET", R + "/collaborators?affiliation=direct") or []
+                        if (c.get("login") or "").lower() != owner)
+        if others:
+            bad.append("collaborators besides the owner: %s" % ", ".join(others))
+        keys = api("GET", R + "/keys") or []
+        rw = [k.get("title") or str(k.get("id")) for k in keys if k.get("read_only") is not True]
+        if rw:
+            bad.append("deploy key(s) with write access: %s (delete them; add a read-only one)" % ", ".join(rw))
+        if len(keys) > 1:
+            bad.append("%d deploy keys: keep the one the public CI holds" % len(keys))
+        notes.append("%d read-only deploy key" % len(keys) if keys else
+                     "no deploy key (right only with a PRIVATE_REPO_TOKEN in its place)")
+        rev = cfg.get("private_rev")
+        if rev:
+            try:
+                found = api("GET", "%s/commits/%s" % (R, rev)) is not None
+            except publish.Fail:                                        # 422: no commit for that sha
+                found = False
+            if not found:
+                bad.append("private_rev %s is not a commit of %s" % (rev[:10], P))
+            else:
+                notes.append("private_rev %s present" % rev[:10])
+    except Exception as e:                                              # noqa: BLE001 — a partial read is no verdict
+        return "WARN", "%s: could not read every setting (%s)" % (P, str(e)[:80])
+    if bad:
+        return "FAIL", "%s: %s" % (P, "; ".join(bad))
+    return "OK", "%s: private, no fork, Actions off, the owner alone; %s" % (P, "; ".join(notes))
+
+
+def public_standard_row(cfg: dict, api) -> tuple[str, str]:
+    """The public repository against the standard, read-only (publish.settings_drift, the comparison `settings`
+    prints). WARN only: before release 1 every row drifts; cutover step 5 ends with it OK."""
+    if api is None:
+        return "OK", "offline: %s settings not checked" % cfg["repo"]
+    try:
+        rows = publish.settings_drift(cfg, api)
+    except Exception as e:                                              # noqa: BLE001 — logged out, no gh, no network
+        return "OK", "skipped: gh api unavailable (%s)" % str(e)[:80]
+    if not rows:
+        return "OK", "%s is on the public-repo standard" % cfg["repo"]
+    hand = [r["what"] for r in rows if not r["fix"]]
+    return "WARN", "%s: %d drift(s): %s — fix: python3 %s settings --apply (the developer's)%s" % (
+        cfg["repo"], len(rows), ", ".join(r["what"] for r in rows[:6]) + (", …" if len(rows) > 6 else ""),
+        publish.VENDORED, "; by hand: %s" % ", ".join(hand) if hand else "")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", default=".")
@@ -638,6 +732,7 @@ def self_test() -> int:
     ok &= tool[0] == "WARN" and cats[0] == "OK" and cats_gone[0] == "FAIL" and "'ovl.stage1'" in cats_gone[1]
     ok &= self_test_progress()
     ok &= self_test_github()
+    ok &= self_test_split()
     return common.self_test_banner("doctor", ok)
 
 
@@ -780,6 +875,75 @@ def self_test_github() -> bool:
             and "gh api -X PUT repos/example/game/actions/permissions" in warn[0][1]
             and [s for s, _ in clean] == ["OK"] and skipped[0][0] == "OK" and "skipped" in skipped[0][1]
             and github_rows(None, down) == [] and github_rows("example/game", None)[0][1].startswith("offline"))
+
+
+REV = "ab" * 20
+
+
+def _private_store(org: bool = False) -> dict:
+    """Canned gh api responses shaped like dc2-private's real ones (read 2026-10-10): a personal repository."""
+    R = "repos/example/game-private"
+    return {R: {"private": True, "visibility": "private", "forks_count": 0, "allow_forking": True,
+                "owner": {"login": "example", "type": "Organization" if org else "User"}},
+            R + "/actions/permissions": {"enabled": False},
+            R + "/collaborators?affiliation=direct": [{"login": "example"}],
+            R + "/keys": [{"id": 1, "title": "public CI (read-only)", "read_only": True}],
+            R + "/commits/" + REV: {"sha": REV}}
+
+
+def _store_api(store: dict):
+    def api(method, path, body=None):
+        assert method == "GET", (method, path)                          # doctor never writes
+        if "/commits/" in path and path not in store:
+            raise publish.Fail("gh api GET %s: No commit found for SHA (HTTP 422)" % path)
+        return copy.deepcopy(store.get(path))
+    return api
+
+
+def self_test_split() -> bool:
+    cfg = {"repo": "example/game", "checks": ["build SLUS_000.00"], "private_repo": "example/game-private",
+           "private_rev": REV}
+    good = private_repo_row(cfg, _store_api(_private_store()))
+    R = "repos/example/game-private"
+    drifts = {"public": (R, "private", False), "forked": (R, "forks_count", 1),
+              "actions": (R + "/actions/permissions", "enabled", True)}
+    got = {}
+    for name, (path, k, v) in drifts.items():
+        s = _private_store()
+        s[path][k] = v
+        got[name] = private_repo_row(cfg, _store_api(s))
+    s = _private_store()
+    s[R + "/keys"] = [{"id": 1, "title": "rw", "read_only": False}, {"id": 2, "title": "ro", "read_only": True}]
+    got["keys"] = private_repo_row(cfg, _store_api(s))
+    s = _private_store()
+    s[R + "/collaborators?affiliation=direct"].append({"login": "mallory"})
+    got["collab"] = private_repo_row(cfg, _store_api(s))
+    got["rev"] = private_repo_row(dict(cfg, private_rev="cd" * 20), _store_api(_private_store()))
+    got["org-fork"] = private_repo_row(cfg, _store_api(_private_store(org=True)))
+    s = _private_store(org=True)
+    s[R]["allow_forking"] = False
+    org_ok = private_repo_row(cfg, _store_api(s))
+    gone = private_repo_row(cfg, _store_api({}))
+
+    def down(method, path, body=None):
+        raise publish.Fail("gh: not logged in")
+    want = {"public": "make it private", "forked": "1 fork", "actions": "enabled=false", "keys": "write access: rw",
+            "collab": "mallory", "rev": "not a commit", "org-fork": "allow_forking=false"}
+    ok = good[0] == "OK" and "personal account" in good[1] and "private_rev abababab" in good[1]
+    ok &= all(got[n][0] == "FAIL" and w in got[n][1] for n, w in want.items()) and "2 deploy keys" in got["keys"][1]
+    ok &= org_ok[0] == "OK" and gone[0] == "FAIL" and "not found" in gone[1]
+    ok &= private_repo_row(cfg, down)[1].startswith("skipped") and private_repo_row(cfg, None)[1].startswith("offline")
+    ok &= private_repo_row(dict(cfg, private_repo=""), None) is None
+    store = publish._fake_store(cfg)                                    # publish's compliant public repository
+    std = public_standard_row(cfg, _store_api(store))
+    del store["repos/example/game/contents/.github/CODEOWNERS"]
+    store["repos/example/game"]["allow_forking"] = False
+    drift = public_standard_row(cfg, _store_api(store))
+    ok &= std[0] == "OK" and drift[0] == "WARN" and "2 drift(s)" in drift[1] and "settings --apply" in drift[1]
+    ok &= "by hand: CODEOWNERS" in drift[1] and public_standard_row(cfg, down)[1].startswith("skipped")
+    print("  private-repo: good %s; %s" % (good[0], "; ".join("%s %s" % (n, g[0]) for n, g in got.items())))
+    print("  public-standard: compliant %s; drift %s" % (std[0], drift[1][:90]))
+    return ok
 
 
 if __name__ == "__main__":

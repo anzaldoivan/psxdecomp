@@ -16,14 +16,18 @@ The compiler is not here: CI downloads it by pinned sha256, as the game's own re
 
 ## Rules (G12 scope clause)
 
-- Private. Never made public, never forked (forking disabled), the owner is the only collaborator.
+- Private. Never made public, never forked, the owner is the only collaborator. GitHub lets an organization's
+  repository turn forking off; a personal account's private repository can't, and only its collaborators can fork it,
+  so the owner stays the only one.
 - Actions disabled: it runs no workflow and publishes no package.
 - One deploy key, read-only, held only as the public `{{GAME}}`'s secret `PRIVATE_DEPLOY_KEY`; or in its place a
   fine-grained PAT with read access to this repository alone, held as `PRIVATE_REPO_TOKEN`.
 - The agents never clone it. The developer's clone, if any, sits beside the game checkouts, never inside one.
 - The public `{{GAME}}`'s `config/psxdecomp.toml` `[public].private_rev` names the commit CI reads.
 
-`/psxdecomp:doctor` FAILs when any of these drifts.
+`/psxdecomp:doctor`'s `private-repo` row reads this repository's settings through `gh api` and FAILs when one drifts:
+visibility, forks, forking (an organization's repository), Actions, collaborators, the deploy keys, and
+`private_rev`. The two clone rules are the developer's.
 
 ## If its contents leak
 
