@@ -9,7 +9,7 @@ apply. psxrecomp's migrate shape, our own code.
                                                   or the kit's files; prints the paths to commit
     upgrade.py --self-test
 
-psxdecomp owns: config/psxdecomp.toml, config/refs.toml, docs/ops/refs.md, its .gitignore block, its firewall purge
+psxdecomp owns: config/psxdecomp.toml (apply sets its [psxdecomp].version to this plugin's), config/refs.toml, docs/ops/refs.md, its .gitignore block, its firewall purge
 line, the one HOW_WE_WORK references line, the docs/ops/INDEX.md row, tools/psxd_publish.py,
 .github/workflows/psxdecomp-readme.yml (the README standard's lint and its CI) and the agents' deny rules
 (profiles/psx/deny.json, added to .claude/settings.json `permissions.deny`, never removed). The README's prose is
@@ -104,6 +104,10 @@ def plan(repo: pathlib.Path) -> list[dict]:
     if not (repo / install.RECORD).is_file():
         add("psxdecomp", "adopt: write %s (pins as found, profile psx, `adopted`)" % install.RECORD,
             "the repository was not bootstrapped by psxdecomp", "adopt")
+    elif record_version(common.read(repo / install.RECORD)) not in (None, common.plugin_version()):
+        add("psxdecomp", "record: [psxdecomp].version %s -> %s in %s" % (
+            record_version(common.read(repo / install.RECORD)), common.plugin_version(), install.RECORD),
+            "the record names the psxdecomp whose tools the repository carries", "version")
     refs = repo / "config" / "refs.toml"
     default = {r["name"]: r for r in fetch_refs.load_rows(PROFILE_REFS)}
     if not refs.is_file():
@@ -176,6 +180,14 @@ def plan(repo: pathlib.Path) -> list[dict]:
     return acts
 
 
+VERSION_RE = re.compile(r'(\[psxdecomp\][^\[]*?^version = ")([^"]*)"', re.M | re.S)
+
+
+def record_version(text: str) -> str | None:
+    m = VERSION_RE.search(text)
+    return m[2] if m else None
+
+
 def toml_table(kind: str, d: dict) -> str:
     """One [[kind]] table; strings and string lists as JSON literals (valid TOML basic strings)."""
     lines = ["[[%s]]" % kind]
@@ -201,6 +213,9 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool) -> list[str]:
             'bootstrapped = "adopted %s"' % common.today(), "", "[pa3]", 'version = "%s"' % conf.get("pa_version", ""),
             "", "[refs]", 'file = "config/refs.toml"', 'index = "docs/ops/refs.md"', "", "[deviations]",
             'list = ["adopted: not bootstrapped by psxdecomp; pins recorded as found"]', ""]))
+    if "version" in acts:
+        w(install.RECORD, VERSION_RE.sub(lambda m: '%s%s"' % (m[1], common.plugin_version()),
+                                         common.read(repo / install.RECORD), count=1))
     if "refs-add" in acts:
         w("config/refs.toml", common.read(PROFILE_REFS))
     elif "refs-rows" in acts or "refs-meta" in acts:
@@ -333,6 +348,12 @@ def self_test() -> int:
         ok &= readme is not None and readme["owner"] == "manual" and "missing ## Description" in readme["what"]
         (repo / "README.md").unlink()
         ok &= apply(repo, True, False) == []                     # a second apply has nothing to do
+        rec = (repo / install.RECORD).read_text()                # an older record: apply bumps its version, only that
+        old = rec.replace('version = "%s"' % common.plugin_version(), 'version = "0.1.0"', 1)
+        (repo / install.RECORD).write_text(old)
+        ok &= old != rec and "version" in {x["key"] for x in plan(repo)}
+        apply(repo, False, False)
+        ok &= (repo / install.RECORD).read_text() == rec and "version" not in {x["key"] for x in plan(repo)}
         # the public list is opt-in: without it nothing new; with it build.yml, once, with what upgrade can read
         ok &= "build" not in {x["key"] for x in plan(repo)}
         (repo / "config/public-paths.txt").write_text("config/public-paths.txt\n")
