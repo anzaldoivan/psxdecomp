@@ -271,6 +271,16 @@ it with `gh api`. doctor's `public-standard` row runs the same comparison read-o
 under `pull_request_target`, on the PR's current head, with success. A check forged by a workflow a fork added fails
 this. A fork PR that carries `Release:` or `Release-*` trailers is refused.
 
+Who merges what:
+
+- **A contributor's PR:** `verify-pr N`, then the owner's approving review, then `verify-pr N --merge` (a squash pinned
+  to the head it checked).
+- **A release PR** is the owner's own, and GitHub never lets an author approve their PR, so `main-review` is passed with
+  the admin bypass: `gh pr merge N --squash --admin --match-head-commit <head>`. `main-integrity` has no bypass: the
+  checks must still be green and up to date.
+- **A release that changes a workflow** (`no-rom.yml`, `build.yml`) makes `verify-pr` refuse, since that check would
+  certify itself. The owner's review of the diff is the gate; then the admin merge above.
+
 ### Cutover order
 
 An existing game moves to split mode in this order, one game at a time. Every outward step is the developer's; the
@@ -283,7 +293,9 @@ outside Claude Code: a `!` command typed in a Claude Code session inherits `CLAU
    may mark the row "repo missing"). Recheck the fork count. In the checkout, point origin at `-dev`, then
    `hook --install`.
 2. Create `<game>-private` (private, Actions off, forking off where GitHub allows it: an organization's repository)
-   and push the build inputs, `check/<EXE>.sha1` and the optional backup. Add a read-only deploy key.
+   and push the build inputs, `check/<EXE>.sha1` and the optional backup. Add a read-only deploy key. On a personal
+   account its owner, the only collaborator, can still fork it, even into an organization that disallows private
+   forks; doctor's `private-repo` row FAILs on any fork.
 3. Stop the game's agents (`.run/status.json` clear, no live warmer, no open wave): this step commits to dev. Commit
    `config/public-paths.txt`, `[public]` (with `private_rev`) and any README fixes, and pin every workflow's actions to
    a full commit SHA (the kit's `no-rom.yml` uses tags). `/psxdecomp:upgrade` then writes `build.yml`. `release

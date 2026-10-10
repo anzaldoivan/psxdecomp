@@ -640,7 +640,7 @@ def private_repo_row(cfg: dict, api) -> tuple[str, str] | None:
             if info.get("allow_forking") is not False:
                 bad.append("forking is on — fix: gh api -X PATCH %s -F allow_forking=false" % R)
         else:
-            notes.append("forking: fixed on a personal account (only collaborators can fork)")
+            notes.append("forking: fixed on a personal account (only collaborators, the owner included, can fork)")
         if (api("GET", R + "/actions/permissions") or {}).get("enabled") is not False:
             bad.append("Actions are on — fix: gh api -X PUT %s/actions/permissions -F enabled=false" % R)
         owner = P.split("/")[0].lower()
