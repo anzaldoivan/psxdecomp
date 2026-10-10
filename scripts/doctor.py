@@ -14,13 +14,13 @@ public repository, the pre-push hook is in place, every workflow action is pinne
 interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
 PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
-hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs); progress (WARN
-only, when a workflow builds a decomp.dev report: its safety lint, and whether decomp.dev lists the repo); github (WARN
-only, through `gh api`, skipped offline or logged out: the repository's security settings, each with the `gh api`
-command that fixes it; doctor never applies one). `--only github` runs just that row, e.g. on psxdecomp itself. In
-split mode, github checks only that origin (the -dev) is private (FAIL otherwise), and two rows join it through
-`gh api`: private-repo ([public].private_repo against its rules, FAIL on any drift) and public-standard (WARN only: the
-public repository against the standard, the comparison `settings` prints).
+hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs); progress (WARN only,
+when a workflow builds a decomp.dev report: its safety lint, and whether decomp.dev lists the repo, in split mode the
+public [public].repo); github (WARN only, through `gh api`, skipped offline or logged out: the repository's security
+settings, each with the `gh api` command that fixes it; doctor never applies one). `--only github` runs just that row,
+e.g. on psxdecomp itself. In split mode, github checks only that origin (the -dev) is private (FAIL otherwise), and two
+rows join it through `gh api`: private-repo ([public].private_repo against its rules, FAIL on any drift) and
+public-standard (WARN only: the public repository against the standard, the comparison `settings` prints).
 """
 from __future__ import annotations
 
@@ -486,13 +486,14 @@ def github_slug(repo: pathlib.Path) -> str | None:
 
 
 def progress_row(repo: pathlib.Path, fetch) -> tuple[str, str] | None:
-    """None without a report workflow; else WARN on any lint finding or when decomp.dev does not list the repo."""
+    """None without a report workflow; else WARN on any lint finding or when decomp.dev does not list the repo (in split
+    mode the public [public].repo: decomp.dev registers the public repo, never the private `-dev` origin)."""
     wf = repo / ".github" / "workflows"
     texts = {p.name: common.read(p) for p in sorted(wf.glob("*.y*ml"))} if wf.is_dir() else {}
     if not any(REPORT_HINT.search(t) for t in texts.values()):
         return None
     found = lint_workflows(texts)
-    slug = github_slug(repo)
+    slug = publish.readme_slug(repo)
     if not slug:
         listed, note = None, "no GitHub remote: decomp.dev status not checked"
     elif fetch is None:
@@ -866,6 +867,13 @@ def self_test_progress() -> bool:
         c = progress_row(repo, None)
         print("  progress row: listed %s; unlisted %s; offline %s" % (a[0], b[0], c[0]))
         ok &= a[0] == "OK" and "commit 1234567" in a[1] and b[0] == "WARN" and "/manage/new" in b[1] and c[0] == "OK"
+        common.git(repo, "remote", "set-url", "origin", "https://github.com/example/game-a-decomp-dev.git")
+        d = progress_row(repo, lambda: listed)                         # split mode, [public] off: the -dev origin
+        (repo / publish.CONFIG_REL).parent.mkdir(parents=True, exist_ok=True)
+        (repo / publish.CONFIG_REL).write_text('[public]\nrepo = "example/game-a-decomp"\n')
+        e = progress_row(repo, lambda: listed)                         # split mode on: the public repo is looked up
+        print("  progress row: -dev origin %s; split mode %s" % (d[0], e[0]))
+        ok &= d[0] == "WARN" and e[0] == "OK" and "commit 1234567" in e[1]
     return ok
 
 
