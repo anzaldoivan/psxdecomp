@@ -270,8 +270,9 @@ commit offline (no fetch; public main as the cache last saw it) and runs the rel
 
 - **Blocks the push** (`PRE-PUSH FAIL`): a listed path that is denied, a symlink or a gitlink, a check-public
   failure, or a failing audit. These would leak at the next release.
-- **Warns only** (`PRE-PUSH WARN`): a README lint failure, no audit configured, new public paths, nothing new to
-  release. Otherwise the last line is `PRE-PUSH release-ready: N files, M new`.
+- **Warns only** (`PRE-PUSH WARN`): a README lint failure, no audit configured, new public paths (not counted
+  until the cache holds public main: ship and `release --dry-run` fetch it), nothing new to release. Otherwise the
+  last line is `PRE-PUSH release-ready: N files, M new`.
 
 The hook file itself never changes; the vendored tool carries the gate. `git push --no-verify` skips every hook: the
 developer's escape hatch for a broken hook, and the reason the agents' deny list refuses it. That list is `profiles/psx/deny.json`: `/psxdecomp:upgrade` adds its rules
