@@ -188,6 +188,18 @@ def _read(path) -> str | None:
         return None
 
 
+GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR",
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX")
+
+
+def own_git_env() -> None:
+    """Drop git's repository-location variables from this process. Every git call here names its repository with -C,
+    but git exports GIT_DIR to a hook run in a linked worktree, and an inherited GIT_DIR wins over -C: the push gate's
+    `git init` and `git add -A -f` in a temporary tree would rewrite dev's index and mark its repository bare."""
+    for k in GIT_LOCATION_ENV:
+        os.environ.pop(k, None)
+
+
 def _git(repo, *args) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(repo)] + list(args), capture_output=True, text=True)
 
@@ -2481,8 +2493,8 @@ def push_gate(dev, cfg, sha: str) -> tuple[list[str], list[str], str]:
             warns.append("%d new public path(s) since public main (as last fetched); ship asks you to confirm them: "
                          "%s%s" % (len(new), ", ".join(new[:5]), ", ..." if len(new) > 5 else ""))
     else:
-        warns.append("no public main in the cache yet, so new paths are not counted (ship or release --dry-run "
-                     "fetches it)")
+        warns.append("no public main in the cache, so new paths are not counted (before release 1 public has none; "
+                     "after it, ship or release --dry-run fetches it)")
     return blocks, warns, "release-ready: %d files, %d new" % (len(want), len(new))
 
 
@@ -2503,6 +2515,7 @@ def pre_push_report(dev, url: str, lines: list[str]) -> tuple[list[str], list[st
 
 
 def cmd_pre_push(remote: str, url: str, stdin=None) -> int:
+    own_git_env()                                      # git runs the hook in the worktree's root: "." finds dev
     try:
         blocks, warns, last = pre_push_report(repo_root("."), url or remote, (stdin or sys.stdin).read().splitlines())
     except Fail as e:
@@ -3964,6 +3977,21 @@ def _public_self_test(check, td: str):
                 M.head(), base_h)))
         check("the hook ends release-ready", rc == 0 and out.strip() == "PRE-PUSH release-ready: %d files, 0 new" % len(
             tree_entries(M.cache, PUB_REF)), out)
+        wt = M.root / "wt"                                              # dc2's checkout is a linked worktree
+        g(M.dev, "worktree", "add", "-q", "--detach", str(wt))
+        os.environ["GIT_DIR"] = _must(wt, "rev-parse", "--absolute-git-dir")   # what git exports to its hooks there
+        try:
+            with contextlib.chdir(wt):
+                rc, out = call(cmd_pre_push, "origin", dev_url, io.StringIO("refs/heads/main %s refs/heads/main %s\n" % (
+                    M.head(), base_h)))
+        finally:
+            os.environ.pop("GIT_DIR", None)
+        wt_index = sorted(p for p in _git(wt, "ls-files", "-z").stdout.split("\0") if p)
+        check("a push from a linked worktree leaves its index and core.bare alone", rc == 0 and "release-ready" in out
+              and wt_index == sorted(tree_entries(M.dev, "HEAD")) and _git(M.dev, "config", "core.bare").stdout.strip()
+              == "false", (out, len(wt_index), _git(M.dev, "config", "core.bare").stdout))
+        g(M.dev, "config", "core.bare", "false")
+        g(M.dev, "worktree", "remove", "--force", str(wt))
     finally:
         globals()["gh"], globals()["load_public"] = real_gh, real_load
         os.environ.clear()
@@ -4299,6 +4327,7 @@ def main(argv=None) -> int:
     hk.add_argument("--install", action="store_true")
     hk.add_argument("--repo", default=".")
     a = ap.parse_args(argv)
+    own_git_env()
     if a.self_test:
         return self_test()
     if a.cmd in ("lint", "render"):
