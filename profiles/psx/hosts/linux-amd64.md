@@ -54,5 +54,10 @@ sandbox.
   `docker.io` inside the distribution, which needs systemd (on by default for Ubuntu from `wsl --install`; otherwise
   `[boot] systemd=true` in `/etc/wsl.conf`, then `wsl --shutdown`).
 - **Claude Code** installs and runs inside the WSL terminal (the Linux installer above), not from PowerShell.
+- **Line endings:** `git config core.autocrlf false` in the clone. A game's `tools/psxd_publish.py` is the plugin's
+  file byte for byte, and a CRLF conversion breaks that without a visible diff.
+- **Split mode:** the developer's pushes, `release`, `land` and `settings --apply` run in a WSL terminal outside Claude
+  Code. Deploy keys live in `~/.ssh/psxd/` inside WSL (mode 0600), never on the Windows side. `docker login ghcr.io`
+  is the developer's, and the image tools need `docker buildx` (with `docker.io`: the `docker-buildx` package).
 - **GUI tools** (Ghidra, PCSX-Redux) run under WSLg on Windows 11 or Windows 10 build 19044+, or use their Windows
   builds on the Windows side.
