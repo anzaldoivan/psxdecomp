@@ -2335,7 +2335,7 @@ def sim_job(job: dict, simdir: pathlib.Path, exe: str | None, host: bool) -> Non
                         '"python$v" -m venv "/opt/py$v" && echo "/opt/py$v/bin" >> "$GITHUB_PATH"\n' % v)
         elif uses.startswith("actions/upload-artifact@"):
             body.append('[ -s "%s" ] || { echo "nothing to upload at %s"; exit 1; }\necho "CI-SIM would upload %s: '
-                        '$(wc -c < "%s") bytes"\n' % ((_sim_expr(w.get("path", "")),) * 2
+                        '$(($(wc -c < "%s"))) bytes"\n' % ((_sim_expr(w.get("path", "")),) * 2
                                                       + (_sim_expr(w.get("name", "artifact")), _sim_expr(w.get("path", "")))))
         else:
             body.append("echo %s\n" % q("CI-SIM not simulated: uses %s" % uses))

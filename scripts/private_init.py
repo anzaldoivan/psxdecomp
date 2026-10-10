@@ -86,6 +86,7 @@ def game_slug(repo: pathlib.Path) -> str | None:
 
 
 def build(repo: pathlib.Path, out: pathlib.Path, extra: list[str], game: str | None) -> int:
+    repo, out = repo.resolve(), out.resolve()                          # macOS: /var is a link to /private/var
     if out.exists() and (not out.is_dir() or any(out.iterdir())):
         print("PRIVATE FAIL %s exists and is not empty" % out)
         return 1
