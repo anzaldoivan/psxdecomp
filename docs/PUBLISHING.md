@@ -202,14 +202,18 @@ writes `.git/hooks/pre-push` (never over another hook). The hook refuses any pus
 a push of dev to the public repository (by `[public].url` or the GitHub slug, which also catches an old URL that now
 redirects to it), and a deletion or force-push of the dev branch. `git push --no-verify` skips every hook, which is
 why the agents' deny list refuses it too. That list is `profiles/psx/deny.json`: `/psxdecomp:upgrade` adds its rules
-to a game's `.claude/settings.json` `permissions.deny` and never removes one. doctor's `split-guard` row FAILs while the hook is missing or origin is the
-public repository. In split mode the README names `[public].repo`, never dev's origin.
+to a game's `.claude/settings.json` `permissions.deny` and never removes one. doctor's `split-guard` row FAILs while the hook is missing, origin is the
+public repository, or a workflow's action is not pinned to a full commit SHA (the public standard requires it, so
+GitHub would not start that job). In split mode the README names `[public].repo`, never dev's origin.
 
 ### Public CI: `build.yml`
 
 `profiles/psx/build.yml` is the template (`/psxdecomp:upgrade` writes it once, filling `{{REPO}}` and `{{EXES}}`).
 It runs on `push` to main and on `pull_request_target` for every PR, so each PR runs main's copy of the file:
 
+- **The code under test** is the pushed commit, or the PR's merge commit `refs/pull/N/merge`, taken only once
+  GitHub has built it from the PR's current head on the current base. The event can arrive before GitHub
+  computes it, so the job waits for it instead of reading the event's merge commit.
 - **The game files** come from `<game>-private` at `[public].private_rev`, checked out with the read-only deploy key
   `PRIVATE_DEPLOY_KEY`. GitHub never passes that secret to a workflow triggered from a fork, so a workflow a fork adds
   can't reach them. A fine-grained PAT with read access to `<game>-private` alone works the same way: store it as
@@ -281,11 +285,13 @@ outside Claude Code: a `!` command typed in a Claude Code session inherits `CLAU
 2. Create `<game>-private` (private, Actions off, forking off where GitHub allows it: an organization's repository)
    and push the build inputs, `check/<EXE>.sha1` and the optional backup. Add a read-only deploy key.
 3. Stop the game's agents (`.run/status.json` clear, no live warmer, no open wave): this step commits to dev. Commit
-   `config/public-paths.txt`, `[public]` (with `private_rev`) and any README fixes. `/psxdecomp:upgrade` then writes
-   `build.yml`. `release --dry-run` must pass.
+   `config/public-paths.txt`, `[public]` (with `private_rev`) and any README fixes, and pin every workflow's actions to
+   a full commit SHA (the kit's `no-rom.yml` uses tags). `/psxdecomp:upgrade` then writes `build.yml`. `release
+   --dry-run` must pass.
 4. Build the image from `profiles/psx/image/Dockerfile` with the game's args, push it to ghcr as public, audit its
    layers, and set `[public].image` to its digest.
-5. `release --push` makes release 1 the public `main`; then `settings --apply` and the `PRIVATE_DEPLOY_KEY` secret.
+5. Set the `PRIVATE_DEPLOY_KEY` secret on the empty public repository, then `release --push` makes release 1 the
+   public `main` (its push run needs the key), then `settings --apply`.
    doctor's `public-standard`, `private-repo` and `split-guard` rows must be OK, and `build <EXE>` green on main with
    the report uploaded.
 6. The next day, check the recomp.board row and decomp.dev ([the report contract](#the-report-contract)). The first

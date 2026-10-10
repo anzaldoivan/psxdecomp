@@ -10,8 +10,8 @@ machine's PA3 against the pin, and pa.json `"upgrade": "ask"`); the kit's instal
 AI policy block; a README on the standard, docs/PUBLISHING.md, is linted and FAILs on a lint failure; an older one
 WARNs); publish-tool (WARN only: tools/psxd_publish.py and its workflow are the plugin's); categories (when
 config/categories.tsv exists: its rules, and no published id gone); split-guard (split mode only: origin is not the
-public repository and the pre-push hook is in place); the interpreter pa.json names exists on
-this machine; the firewall (ignore block, audit passes on the tree, the
+public repository, the pre-push hook is in place, every workflow action is pinned to a full commit SHA); the
+interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
 PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
 hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs); progress (WARN
@@ -228,9 +228,24 @@ def split_guard_row(repo: pathlib.Path) -> tuple[str, str] | None:
     hook = publish.hook_path(repo)
     if publish._read(hook) != publish.PRE_PUSH or not os.access(hook, os.X_OK):
         bad.append("no psxdecomp pre-push hook (python3 %s hook --install)" % publish.VENDORED)
+    loose = unpinned_actions(repo)
+    if loose:
+        bad.append("actions not pinned to a full commit SHA, so the public repository (which requires it) won't "
+                   "start these jobs: %s" % ", ".join(loose[:4]))
     if bad:
         return "FAIL", "; ".join(bad)
     return "OK", "origin %s, not the public %s; pre-push hook in place" % (github_slug(repo), cfg["repo"])
+
+
+def unpinned_actions(repo: pathlib.Path) -> list[str]:
+    """`<workflow>: <action@ref>` for each `uses:` of a remote action not pinned to a 40-hex commit SHA."""
+    wf = repo / ".github" / "workflows"
+    out = []
+    for f in sorted(wf.glob("*.y*ml")) if wf.is_dir() else []:
+        for u in re.findall(r"^\s*(?:- )?uses:\s*['\"]?([^\s'\"#]+)", common.read(f), re.M):
+            if not u.startswith(("./", "docker://")) and not re.search(r"@[0-9a-f]{40}$", u):
+                out.append("%s: %s" % (f.name, u))
+    return out
 
 
 def categories_row(repo: pathlib.Path) -> tuple[str, str] | None:
@@ -405,6 +420,9 @@ def lint_split_build(text: str) -> list[str]:
     for l in re.findall(r"docker run[^\n]*", text):
         if " -d " in l and "--network none" not in l:
             found.append("a PR-code container with network after the game files are staged: --network none")
+    if "merge_commit_sha" in text or "refs/pull/$PR/merge" not in text:
+        found.append("the code under test: refs/pull/N/merge built from the PR's head, resolved at run time (the "
+                     "payload's merge_commit_sha can be empty, and a fallback tests the base instead)")
     up = re.search(r"^      - name: Upload report\n        if: (.*)$", text, re.M)
     if not up or not up[1].startswith("success() && "):
         found.append("the report upload must be gated on success()")
@@ -745,6 +763,14 @@ def self_test() -> int:
         print("  split-guard: %s" % "; ".join("%s %s" % (g[0], g[1]) if g else "none" for g in guard))
         ok &= guard[0] is None and guard[1][0] == "FAIL" and "origin is the public" in guard[1][1] and "hook" in guard[1][1]
         ok &= guard[2][0] == "OK"
+        wf = repo / ".github" / "workflows"
+        wf.mkdir(parents=True, exist_ok=True)
+        (wf / "no-rom.yml").write_text("jobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n"
+                                       "      - uses: ./local\n      - uses: actions/setup-python@%s # v5\n" % ("a" * 40))
+        loose = split_guard_row(repo)
+        print("  split-guard, an unpinned action: %s %s" % (loose[0], loose[1][-60:]))
+        ok &= loose[0] == "FAIL" and "no-rom.yml: actions/checkout@v4" in loose[1] and "setup-python" not in loose[1]
+        (wf / "no-rom.yml").unlink()
         (repo / publish.CONFIG_REL).unlink()
         cats = categories_row(repo)
         (repo / publish.CATEGORIES_REL).write_text(publish.SELF_TSV.replace("ovl.stage1\tovl\tStage 1\tactive\n", ""))
