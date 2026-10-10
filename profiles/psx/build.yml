@@ -33,9 +33,30 @@ jobs:
       EXE: ${{ matrix.exe }}
       FORK: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository }}
       BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
-      TEST_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PR: ${{ github.event.pull_request.number }}
     steps:
-      # The code under test: the PR's merge commit (its first parent must be the base: the ruleset keeps PRs up to date)
+      # The code under test: the pushed commit, or the PR's merge commit (refs/pull/N/merge). GitHub computes that one
+      # after the event, so the payload's merge commit sha can be empty: wait for the ref built from this head (its
+      # second parent). Its first parent must be the base: the ruleset keeps PRs up to date. No PR code runs here.
+      - name: The code under test
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" != pull_request_target ]; then
+            echo "TEST_SHA=$GITHUB_SHA" >> "$GITHUB_ENV"; exit 0
+          fi
+          m="$RUNNER_TEMP/merge.git"; git init -q --bare "$m"
+          for _ in $(seq 20); do
+            if git -C "$m" fetch -q --depth=2 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "+refs/pull/$PR/merge:refs/m" \
+                && [ "$(git -C "$m" rev-parse 'refs/m^2')" = "$HEAD_SHA" ]; then
+              if [ "$(git -C "$m" rev-parse 'refs/m^1')" != "$BASE_SHA" ]; then
+                echo "::error::the merge commit is not on the current base: update the branch"; exit 1
+              fi
+              echo "TEST_SHA=$(git -C "$m" rev-parse refs/m)" >> "$GITHUB_ENV"; exit 0
+            fi
+            sleep 6
+          done
+          echo "::error::no merge commit for $HEAD_SHA after 2 minutes (a conflict? update the branch)"; exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TEST_SHA }}
@@ -47,9 +68,6 @@ jobs:
       - name: Trusted config and tools
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = pull_request_target ] && [ "$(git rev-parse HEAD^1)" != "$BASE_SHA" ]; then
-            echo "::error::the merge commit is not on the current base: update the branch"; exit 1
-          fi
           rev=$TEST_SHA; [ "$FORK" = true ] && rev=$BASE_SHA
           git show "$rev:config/psxdecomp.toml" > "$RUNNER_TEMP/psxdecomp.toml"
           git show "$BASE_SHA:tools/psxd_publish.py" > "$RUNNER_TEMP/psxd_publish.py"

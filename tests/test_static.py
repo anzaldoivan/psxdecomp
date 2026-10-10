@@ -415,6 +415,9 @@ def test_split_build_invariants():
         "expression inside run": good.replace("run: mv .psxd-private", "run: echo ${{ github.head_ref }}; mv .psxd-private"),
         "network": good.replace("docker run -d --network none", "docker run -d"),
         "permissions": good.replace("  contents: read\n", "  contents: read\n  pull-requests: write\n", 1),
+        "merge_commit_sha": good.replace("refs/pull/$PR/merge", "refs/heads/main").replace(
+            "      PR: ${{ github.event.pull_request.number }}\n",
+            "      PR: ${{ github.event.pull_request.merge_commit_sha || github.sha }}\n"),
     }
     for name, text in planted.items():
         assert text != good, name
