@@ -18,7 +18,8 @@ are printed as commands for the developer (their own installers, their own gates
 
 Opt-in, only in a repository with config/public-paths.txt (split mode, docs/PUBLISHING.md): .github/workflows/build.yml,
 the public repository's byte check (written only when absent: it carries the game's own values; what upgrade cannot
-read stays a {{PLACEHOLDER}} and a `manual` action).
+read stays a {{PLACEHOLDER}} and a `manual` action), and docs/ops/psxdecomp-split.md, the release operator's card
+(profiles/psx/split-mode.md, owned: rewritten whenever it differs; never public, docs/ops/ is denied).
 """
 from __future__ import annotations
 
@@ -43,6 +44,7 @@ import publish  # noqa: E402
 PROFILE_REFS = common.PLUGIN_ROOT / "profiles" / "psx" / "refs.toml"
 OWNED = {publish.VENDORED: common.PLUGIN_ROOT / "scripts" / "publish.py",
          publish.WORKFLOW: common.PLUGIN_ROOT / "profiles" / "psx" / "psxdecomp-readme.yml"}
+SPLIT_OWNED = {"docs/ops/psxdecomp-split.md": common.PLUGIN_ROOT / "profiles" / "psx" / "split-mode.md"}
 PUBLIC_LIST = "config/public-paths.txt"
 BUILD_WF = ".github/workflows/build.yml"
 PROFILE_BUILD = common.PLUGIN_ROOT / "profiles" / "psx" / "build.yml"
@@ -137,6 +139,11 @@ def plan(repo: pathlib.Path) -> list[dict]:
         add("psxdecomp", "publish: write %s (the README standard's lint and its CI)" % " and ".join(stale),
             "missing or older than psxdecomp %s's" % common.plugin_version(), "publish")
     if (repo / PUBLIC_LIST).is_file():
+        card = [rel for rel, src in SPLIT_OWNED.items() if not (repo / rel).is_file() or
+                (repo / rel).read_bytes() != src.read_bytes()]
+        if card:
+            add("psxdecomp", "split: write %s (the release operator's card: ship, the push gate, contributor PRs)"
+                % " and ".join(card), "missing or older than psxdecomp %s's" % common.plugin_version(), "split-doc")
         bw = repo / BUILD_WF
         if not bw.is_file():
             add("psxdecomp", "build: write %s from the template, once (the public repo's byte-check CI)" % BUILD_WF,
@@ -238,6 +245,9 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool) -> list[str]:
             st = common.write(repo / rel, common.read(src), dry=dry, mode=0o755 if rel.endswith(".py") else None)
             if st != "unchanged":
                 written.append("%s%s %s" % ("would be " if dry else "", st, rel))
+    if "split-doc" in acts:
+        for rel, src in SPLIT_OWNED.items():
+            w(rel, common.read(src))
     if "build" in acts:
         w(BUILD_WF, fill_known(common.read(PROFILE_BUILD), build_values(repo)))
     if "deny" in acts:
@@ -361,8 +371,14 @@ def self_test() -> int:
         toml = repo / "config/psxdecomp.toml"
         saved = toml.read_text() if toml.is_file() else None
         toml.write_text((saved or "") + '\n[public]\nrepo = "Example/Game"\n')
-        ok &= {"build", "build-fill"} <= {x["key"] for x in plan(repo)}
+        ok &= {"build", "build-fill", "split-doc"} <= {x["key"] for x in plan(repo)}
         apply(repo, False, False)
+        card = repo / "docs/ops/psxdecomp-split.md"
+        ok &= card.read_bytes() == SPLIT_OWNED["docs/ops/psxdecomp-split.md"].read_bytes()
+        card.write_text("an edited copy\n")
+        ok &= "split-doc" in {x["key"] for x in plan(repo)}                # owned: an edited copy is rewritten
+        apply(repo, False, False)
+        ok &= "split-doc" not in {x["key"] for x in plan(repo)} and card.read_text() != "an edited copy\n"
         built = (repo / ".github/workflows/build.yml").read_text()
         ok &= ("if: github.repository == 'Example/Game'" in built and 'exe: ["PSXD_000.01"]' in built
                and "{{BUILD_COMMAND}}" in built)
@@ -370,8 +386,10 @@ def self_test() -> int:
         apply(repo, False, False)
         ok &= (repo / ".github/workflows/build.yml").read_text() == "# the game's own\n"   # never overwritten
         ok &= "build" not in {x["key"] for x in plan(repo)}
-        for rel in ("config/public-paths.txt", "config/discs.tsv", ".github/workflows/build.yml"):
+        for rel in ("config/public-paths.txt", "config/discs.tsv", ".github/workflows/build.yml",
+                    "docs/ops/psxdecomp-split.md"):
             (repo / rel).unlink()
+        ok &= "split-doc" not in {x["key"] for x in plan(repo)}            # split mode only
         if saved is None:
             toml.unlink()
         else:
