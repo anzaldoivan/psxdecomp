@@ -140,6 +140,28 @@ is an `fnmatch.fnmatchcase` glob (`*` crosses `/`). Default deny: a tracked file
 `check-public [DIR]` FAILs on an unlisted file, on an agent path even if listed (`CLAUDE.md`, `.claude/`,
 `docs/ops/`, PA3's managed files, `[public].deny`), and on a missing list.
 
+`list --draft` prints a first list: every tracked file outside the deny set, with a directory that has nothing private
+below it folded into `dir/` (a file added there later is public without an edit; a list kept file by file leaves new
+tools behind). It warns when a public build file (the Makefile, `*.mk`, a workflow, `config/`, a tool) names a path
+that stays private. What must stay private beyond the agent files goes in `[public].deny` first. `list` alone prints
+the files the committed list publishes.
+
+### `ci-sim`: the workflows on the tree that will be public
+
+```sh
+python3 tools/psxd_publish.py ci-sim [--workflow no-rom|build] [--projection] [--rev REV] [--private DIR] [--image REF]
+```
+
+It runs a workflow's `run:` steps as written, one job at a time, on a fresh clone of dev at REV (tracked files only,
+what dev's CI gets) or, with `--projection`, on REV's release projection (what the public repository's CI gets). A dev
+checkout hides both gaps: its ignored files (a fetched compiler, `asm/`) satisfy a step that fails in CI, and the
+projection can lack a file a step calls. `no-rom` runs in a clean `ubuntu:24.04` container that has only the runner
+tools the kit's steps name (`SIM_APT` in the code); `actions/setup-python` becomes a venv of that version. `build`
+starts containers itself, so its steps run on this machine: `--private` is a local `<game>-private` checkout (the
+deploy-key checkout's stand-in, read at `[public].private_rev`) and `--image` replaces `[public].image`, e.g. a local
+tag before the push. Other `uses:` steps are named and skipped, except `upload-artifact`: its file must exist. An
+expression in a `run:` body is refused, never guessed. It simulates a push to main, not a pull request.
+
 ### Release (dev to public)
 
 ```sh
