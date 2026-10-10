@@ -52,6 +52,107 @@ sys.exit("conflict markers: %s" % bad if bad else 0)
 GITATTRIBUTES = "* text=auto\n*.sh text eol=lf\n"
 AGENT_PATHS = ("src/agent_log.c", "src/units.tsv", "src/pulled/", "phase-ends/current/", ".claude-state/memory/")
 UNITS = "# units: one row per carve, appended by the agents and by contributors\n# alias\tstart\tunit\n"
+FAKE_DOCKER = r"""#!/usr/bin/env python3
+# A fake `docker` for ship's ci-sim stage: the image build passes; a job run checks what ci-sim mounts at /src (the
+# projection, with no-rom.yml and what its jobs call) and at /sim (the job script) instead of running it.
+import pathlib, sys
+a = sys.argv[1:]
+if a[:1] == ["build"]:
+    print("sha256:" + "0" * 64)
+    sys.exit(0)
+if a[:1] != ["run"]:
+    sys.exit("fake docker: unexpected " + " ".join(a))
+mounts = dict(reversed(v.split(":")[:2]) for k, v in zip(a, a[1:]) if k == "-v")
+tree, sim = pathlib.Path(mounts["/src"]), pathlib.Path(mounts["/sim"])
+need = [".github/workflows/no-rom.yml", "Makefile", "tools/audit_public.py", "tools/psxd_publish.py"]
+missing = [n for n in need if not (tree / n).is_file()] + ([] if (sim / "job.sh").is_file() else ["job.sh"])
+leaked = [n for n in ("CLAUDE.md", ".claude", "phase-ends") if (tree / n).exists()]
+print("fake job on %s: missing %s, private %s" % (tree.name, missing, leaked))
+sys.exit(1 if missing or leaked else 0)
+"""
+FAKE_GH = r"""#!/usr/bin/env python3
+# A fake `gh` for ship: open release PRs in a JSON file, every check green, and `pr merge` as GitHub's squash merge
+# of the PR into the bare public repository (PR_TITLE (#n) + PR_BODY), authored by the developer.
+import json, os, pathlib, subprocess, sys
+state = pathlib.Path(os.environ["FAKE_GH_STATE"])
+st = json.loads(state.read_text()) if state.exists() else {"prs": {}, "n": 100}
+pub, R, DEVR = os.environ["FAKE_GH_PUB"], "repos/" + os.environ["FAKE_GH_REPO"], os.environ["FAKE_GH_DEV"]
+CHECKS = json.loads(os.environ["FAKE_GH_CHECKS"])
+a = sys.argv[1:]
+
+
+def git(*args):
+    return subprocess.run(["git", "-c", "commit.gpgsign=false"] + [str(x) for x in args], capture_output=True,
+                          text=True, check=True).stdout.strip()
+
+
+def opt(k):
+    return a[a.index(k) + 1]
+
+
+def api(path):
+    head = lambda n: st["prs"][n]["sha"]  # noqa: E731
+    if path.startswith("repos/%s/actions/runs?head_sha=" % DEVR):
+        return {"workflow_runs": [{"id": 1, "workflow_id": 1, "name": "no-rom", "event": "push",
+                                   "status": "completed", "conclusion": "success"}]}
+    for n in st["prs"]:
+        if path == "%s/pulls/%s" % (R, n):
+            p = st["prs"][n]
+            return {"state": p["state"], "base": {"ref": "main"}, "title": p["title"], "body": p["body"],
+                    "head": {"sha": p["sha"], "ref": p["br"], "repo": {"full_name": R[6:]}}}
+        if path == "%s/pulls/%s/files?per_page=100" % (R, n):
+            return [{"filename": f} for f in git("-C", pub, "diff", "--name-only", head(n) + "^", head(n)).split()]
+    if path.startswith("%s/commits/" % R) and path.endswith("/check-runs?per_page=100"):
+        return {"check_runs": [{"name": c, "status": "completed", "conclusion": "success", "app": {"id": 15368},
+                                "check_suite": {"id": 100 + i}} for i, c in enumerate(CHECKS)]}
+    if path.startswith("%s/actions/runs?head_sha=" % R) and "&event=push" in path:
+        return {"workflow_runs": [{"id": 70, "name": "build", "path": ".github/workflows/build.yml",
+                                   "status": "completed", "conclusion": "success"}]}
+    if path.startswith("%s/actions/runs?head_sha=" % R):
+        h = path.split("=")[1].split("&")[0]
+        return {"workflow_runs": [{"id": 900 + i, "check_suite_id": 100 + i, "head_sha": h,
+                                   "path": ".github/workflows/build.yml" if c.startswith("build ") else
+                                   ".github/workflows/no-rom.yml",
+                                   "event": "pull_request_target" if c.startswith("build ") else "pull_request"}
+                                  for i, c in enumerate(CHECKS)]}
+    if path == "%s/actions/runs/70/artifacts?per_page=100" % R:
+        return {"artifacts": [{"name": c[len("build "):] + "_report"} for c in CHECKS if c.startswith("build ")]}
+    sys.exit("HTTP 404: " + path)
+
+
+out = ""
+if a[:2] == ["pr", "list"]:
+    out = json.dumps([{"number": int(n), "headRefName": p["br"], "url": p["url"]} for n, p in st["prs"].items()
+                      if p["state"] == "open"])
+elif a[:2] == ["pr", "create"]:
+    st["n"] += 1
+    br = opt("--head")
+    st["prs"][str(st["n"])] = {"br": br, "sha": git("-C", pub, "rev-parse", "refs/heads/" + br), "state": "open",
+                               "title": opt("--title"), "body": pathlib.Path(opt("--body-file")).read_text(),
+                               "url": "https://github.com/%s/pull/%d" % (R[6:], st["n"])}
+    out = st["prs"][str(st["n"])]["url"]
+elif a[:2] == ["pr", "merge"]:
+    p = st["prs"][a[2]]
+    if opt("--match-head-commit") != p["sha"] or "--admin" not in a:
+        sys.exit("the head moved, or no --admin")
+    wc = state.parent / "gh-merge"
+    if not wc.exists():
+        git("clone", "-q", pub, wc)
+    git("-C", wc, "fetch", "-q", "origin")
+    git("-C", wc, "checkout", "-q", "-f", "-B", "main", "origin/main")
+    git("-C", wc, "fetch", "-q", "origin", "refs/heads/" + p["br"])
+    git("-C", wc, "merge", "--squash", "-q", "FETCH_HEAD")
+    git("-C", wc, "-c", "user.name=Dev", "-c", "user.email=dev@example.invalid", "commit", "-q", "-m",
+        "%s (#%s)\n\n%s" % (p["title"], a[2], p["body"]))
+    git("-C", wc, "push", "-q", "origin", "HEAD:main")
+    p["state"] = "merged"
+elif a[:1] == ["api"]:
+    out = json.dumps(api(a[3]))
+else:
+    sys.exit("fake gh: unexpected " + " ".join(a))
+state.write_text(json.dumps(st))
+print(out)
+"""
 
 
 @pytest.fixture(scope="module")
@@ -530,6 +631,54 @@ def _story(w: World, agent: Agent):
     assert rc and "CLAUDECODE" in out, out
     assert w.git(devremote, "rev-parse", "main") == w.git(d, "rev-parse", "main")
     assert "dev-history" not in w.git(w.pub, "for-each-ref")
+
+    # the phase-end push through the gate, then ship end to end: origin (-dev) is a local bare repository for pushes,
+    # GitHub a fake gh on PATH that squash-merges into the bare public repository
+    origin = w.root / "origin.git"
+    w.git(w.root, "init", "-q", "--bare", origin)
+    w.git(d, "config", "url.%s.pushInsteadOf" % origin, "https://github.com/example/homebrew-fixture-dev.git")
+    fake = w.root / "bin"
+    fake.mkdir()
+    for name, text in (("gh", FAKE_GH), ("docker", FAKE_DOCKER)):
+        (fake / name).write_text(text)
+        (fake / name).chmod(0o755)
+    w.env.update(PATH=str(fake) + os.pathsep + w.env["PATH"], FAKE_GH_STATE=str(w.root / "gh.json"),
+                 FAKE_GH_PUB=str(w.pub), FAKE_GH_REPO="example/homebrew-fixture",
+                 FAKE_GH_DEV="example/homebrew-fixture-dev",
+                 FAKE_GH_CHECKS=json.dumps(["build PSXD_000.01", "public-clean audit (no game bytes)"]))
+    agent.resume(1)
+    agent.pause()
+    rc, out = w.tool("ship", "--summary", "tenth", "--ack-new")
+    assert rc == 1 and "push first" in out, out                                       # -dev lacks the commit
+    lst = w.git(d, "show", "HEAD:config/public-paths.txt", strip=False) + "CLAUDE.md\n"
+    idx = {"GIT_INDEX_FILE": str(w.root / "planted.index")}
+    w.git(d, "read-tree", "HEAD", env=idx)
+    blob = subprocess.run(["git", "-C", str(d), "hash-object", "-w", "--stdin"], input=lst, capture_output=True,
+                          text=True, env=w.env).stdout.strip()
+    w.git(d, "update-index", "--cacheinfo", "100644,%s,config/public-paths.txt" % blob, env=idx)
+    planted = w.git(d, "commit-tree", w.git(d, "write-tree", env=idx), "-p", "HEAD", "-m", "plant CLAUDE.md")
+    rc, out = push("origin", "%s:refs/heads/main" % planted)
+    assert rc and "PRE-PUSH FAIL" in out and "CLAUDE.md" in out, out                  # the gate blocks the leak
+    assert not w.git(origin, "for-each-ref")
+    rc, out = push("origin", "main")
+    assert rc == 0 and "PRE-PUSH WARN" in out and "new public path" in out, out       # the agents' new files
+    rc, out = w.tool("ship", "--summary", "tenth", agent=True)
+    assert rc == 1 and "CLAUDECODE" in out, out
+    refs = w.git(w.pub, "for-each-ref")
+    rc, out = w.tool("ship", "--summary", "tenth", "--ack-new", "--dry-run")
+    assert rc == 0 and "SHIP ci      OK CI-SIM OK .github/workflows/no-rom.yml on the projection" in out, out
+    assert "would push" in out and w.git(w.pub, "for-each-ref") == refs, out
+    rc, out = w.tool("ship", "--summary", "tenth", "--ack-new")
+    head = w.git(d, "rev-parse", "HEAD")
+    assert rc == 0 and "SHIP OK" in out and "SHIP merge   OK" in out, out
+    msg = w.git(w.pub, "log", "-1", "--format=%B")
+    assert msg.startswith("Release: tenth (#101)") and "Release-Of: %s" % head in msg, msg
+    assert w.tree(w.pub, "main")["src/agent_log.c"] == w.tree(d, "HEAD")["src/agent_log.c"]
+    ledger = (d / ".git/psxdecomp/ships.tsv").read_text().splitlines()
+    assert ledger[1:] and ledger[-1].split("\t")[1:3] == [head, w.git(w.pub, "rev-parse", "main")], ledger
+    rc, out = w.tool("ship", "--summary", "tenth")
+    assert rc == 0 and "already released" in out and "SHIP OK" in out, out
+    assert (d / ".git/psxdecomp/ships.tsv").read_text().splitlines() == ledger
 
 
 def _blockers(w: World):

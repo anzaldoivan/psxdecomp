@@ -433,7 +433,7 @@ def test_game_files_cite_no_foreign_ids():
     rules/G41.md by id, and an id here would answer for it. The -private README cites only the game's G12 and G18."""
     ids = re.compile(r"(?<![A-Za-z0-9_-])[GDKPRT]\d+\b")
     for rel in ("scripts/publish.py", "profiles/psx/build.yml", "profiles/psx/image/Dockerfile",
-                "profiles/psx/psxdecomp-readme.yml"):
+                "profiles/psx/psxdecomp-readme.yml", "profiles/psx/split-mode.md"):
         found = ["%d: %s" % (i, l.strip()) for i, l in enumerate((ROOT / rel).read_text().splitlines(), 1) if ids.search(l)]
         assert not found, (rel, found)
     assert set(ids.findall((ROOT / "profiles/psx/private/README.md").read_text())) <= {"G12", "G18"}

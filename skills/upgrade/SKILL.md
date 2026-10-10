@@ -11,7 +11,9 @@ psxrecomp's migrate shape: **audit → plan → apply --dry-run → apply**. `PS
 
 1. `"$PSXD" upgrade audit --repo <repo>` — show the `FAIL`/`WARN` rows.
 2. `"$PSXD" upgrade plan --repo <repo>` — show the numbered actions. `[psxdecomp]` actions are applied by the script;
-   `[manual]` ones (a PA3 or kit update, a pin to decide) are the developer's: give the command, never run it.
+   `[manual]` ones (a PA3 or kit update, a pin to decide) are the developer's: give the command, never run it. In
+   split mode the script also owns `docs/ops/psxdecomp-split.md`, the developer's release card (ship, the push gate,
+   contributor PRs); it rewrites that file whenever it differs.
 3. `"$PSXD" upgrade apply --dry-run --repo <repo>` — the exact writes.
 4. Stop here when `--dry-run` was given. Otherwise ask (AskUserQuestion: `Apply` recommended / `Stop`), then
    `"$PSXD" upgrade apply --repo <repo>` (add `--fetch` to clone `refs/` too).

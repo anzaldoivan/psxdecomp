@@ -168,6 +168,7 @@ expression in a `run:` body is refused, never guessed. It simulates a push to ma
 python3 tools/psxd_publish.py release --summary "what this brings, in your words" [--rev REV] [--ack-new] [--dry-run] [--push]
 ```
 
+`release` is the primitive: release 1 uses it, and [`ship`](#releasing-with-ship) runs it for every later release.
 Developer-only: it refuses in an agent session (`CLAUDECODE`) unless `--dry-run`. It never writes a worktree. It works
 in a bare cache, `.git/psxdecomp/public.git`, which borrows dev's objects and fetches public `main`:
 
@@ -189,6 +190,46 @@ in a bare cache, `.git/psxdecomp/public.git`, which borrows dev's objects and fe
 The squash commit (`PR_TITLE` + `PR_BODY`) keeps the trailers. A public commit counts as a release only when its
 subject starts `Release: `, its `Release-Tree` equals the projection of dev at `Release-Of`, and that `Release-Of`
 was not used before (or, after a purge rewrote dev, its own tree equals `Release-Tree`).
+
+### Releasing with `ship`
+
+```sh
+python3 tools/psxd_publish.py ship --summary "one line, in your words" [--rev REV] [--ack-new] [--dry-run] [--no-wait] [--timeout MIN] [--replace] [--merge-reviewed]
+```
+
+`ship` is every release after the first, start to finish, in one command the developer runs, typically right after
+the phase-end push. It refuses in an agent session (`--dry-run` excepted) and refuses release 1. Each stage prints
+`SHIP <stage> OK|FAIL …`, and nothing reaches public before the first five pass:
+
+1. **state:** REV (default: the dev branch tip) must be `origin/<dev_branch>`, so a release is always a commit -dev
+   has and its CI tested. A release of REV already on public main skips to stage 9; an open `release/<rev10>` PR
+   skips to stage 7. An open release PR of another revision refuses, unless `--replace`: ship closes it at stage 6.
+2. **dev-ci:** every workflow run of -dev at REV (the newest per workflow and event) completed and passed; a job
+   guarded off by its repository condition counts as skipped, not failed. A failure names its jobs; a run in progress
+   is waited for, up to `--timeout` minutes (default 90).
+3. **gate:** `release`'s checks, without a ref: the sync check, the exact projection, the new paths (asked on a TTY,
+   refused off one without `--ack-new`) and preflight.
+4. **build:** `[public].land_check` on an export of the projection: the game's byte check proves the published files
+   build before public sees them. Without `land_check` ship refuses.
+5. **ci:** [`ci-sim --projection`](#ci-sim-the-workflows-on-the-tree-that-will-be-public) for `no-rom`: the public
+   repository's game-free jobs, as `no-rom.yml` writes them, on REV's projection in a clean container. It catches a
+   file public CI needs but the list leaves out, and a job that is green only on a dev checkout. It needs docker, as
+   `land_check` does. `--dry-run` stops here.
+6. **push:** the release branch is pushed (it is public from that moment, which is why every leak check ran first)
+   and its PR opened.
+7. **checks:** ship polls the PR head's check-runs until every `[public].checks` entry has completed (`--no-wait`
+   stops before this), then holds the head to what ship builds (its `Release-Of`, `Release-Tree` and tree, its parent
+   public main) and runs `verify-pr`'s checks on it as the owner's own release PR. A release that changes a workflow
+   stops with the diff command; after the owner's review, `--merge-reviewed` accepts that check.
+8. **merge:** `gh pr merge N --squash --admin --match-head-commit <head>` ([who merges what](#the-public-repo-standard)).
+9. **verify:** public main carries the release of REV with its trailers, every push run at it passed, and each
+   `build <EXE>` run uploaded `<EXE>_report`. ship prints `SHIP OK` with the PR and run URLs and adds one line to
+   `.git/psxdecomp/ships.tsv` (date, REV, public sha, PR, file count; local only).
+
+Rerunning the same command resumes: public's state decides the stage. A red release PR is fixed forward: close nothing
+by hand, fix in dev, push, then `ship --replace`. In a split-mode game, `/psxdecomp:upgrade` writes the operator's
+card (`docs/ops/psxdecomp-split.md`, from `profiles/psx/split-mode.md`): the cadence, each stage's fixes, contributor
+PRs.
 
 ### Import and land (public to dev)
 
@@ -222,8 +263,18 @@ python3 tools/psxd_publish.py hook [--install]
 GitHub enforces nothing on a Free private repository, so dev is guarded on the developer's machine. `hook --install`
 writes `.git/hooks/pre-push` (never over another hook). The hook refuses any push from an agent session (`CLAUDECODE`),
 a push of dev to the public repository (by `[public].url` or the GitHub slug, which also catches an old URL that now
-redirects to it), and a deletion or force-push of the dev branch. `git push --no-verify` skips every hook, which is
-why the agents' deny list refuses it too. That list is `profiles/psx/deny.json`: `/psxdecomp:upgrade` adds its rules
+redirects to it), and a deletion or force-push of the dev branch.
+
+It is also the push gate. On a push of the dev branch to any other remote it builds the projection of the pushed
+commit offline (no fetch; public main as the cache last saw it) and runs the release gate on it:
+
+- **Blocks the push** (`PRE-PUSH FAIL`): a listed path that is denied, a symlink or a gitlink, a check-public
+  failure, or a failing audit. These would leak at the next release.
+- **Warns only** (`PRE-PUSH WARN`): a README lint failure, no audit configured, new public paths, nothing new to
+  release. Otherwise the last line is `PRE-PUSH release-ready: N files, M new`.
+
+The hook file itself never changes; the vendored tool carries the gate. `git push --no-verify` skips every hook: the
+developer's escape hatch for a broken hook, and the reason the agents' deny list refuses it. That list is `profiles/psx/deny.json`: `/psxdecomp:upgrade` adds its rules
 to a game's `.claude/settings.json` `permissions.deny` and never removes one. doctor's `split-guard` row FAILs while the hook is missing, origin is the
 public repository, or a workflow's action is not pinned to a full commit SHA (the public standard requires it, so
 GitHub would not start that job). In split mode the README names `[public].repo`, never dev's origin.
@@ -355,6 +406,7 @@ read-only.
    ([the standard](#the-public-repo-standard): UI only). doctor's `public-standard`, `private-repo` and `split-guard`
    rows must be OK, and `build <EXE>` green on main with the report uploaded. Delete the key pair's local files only
    after that green run. A red first run is fixed forward: release 2, merged as the standard's release PRs are.
+   Release 1 is the only manual release; every later one is [`ship`](#releasing-with-ship).
 6. Back to the decomp: add the two bullets below to the agents' INBOX (uncommitted, the agents take them), check the
    pending files against step 3's hashes, and resume the agents. The next day, check the recomp.board row and
    decomp.dev ([the report contract](#the-report-contract)). The first fork PR goes through `verify-pr`, then the
