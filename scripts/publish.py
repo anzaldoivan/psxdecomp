@@ -2480,6 +2480,9 @@ def push_gate(dev, cfg, sha: str) -> tuple[list[str], list[str], str]:
         elif new:
             warns.append("%d new public path(s) since public main (as last fetched); ship asks you to confirm them: "
                          "%s%s" % (len(new), ", ".join(new[:5]), ", ..." if len(new) > 5 else ""))
+    else:
+        warns.append("no public main in the cache yet, so new paths are not counted (ship or release --dry-run "
+                     "fetches it)")
     return blocks, warns, "release-ready: %d files, %d new" % (len(want), len(new))
 
 
@@ -3924,8 +3927,12 @@ def _public_self_test(check, td: str):
 
         # ---- the push gate: blocks a leak, warns on the rest, offline
         M.rewind(_must(M.gh, "rev-parse", "main~1"))
-        fetch_public(M.cache, str(M.gh))
         base_h = M.head()
+        _git(M.cache, "update-ref", "-d", PUB_REF)                     # never fetched (release 1 left none)
+        b, w, last = pre_push_report(M.dev, dev_url, ["refs/heads/main %s refs/heads/main %s" % (base_h, base_h)])
+        check("gate without a fetched public main says new paths are not counted", b == [] and any(
+            "not counted" in x for x in w), (b, w, last))
+        fetch_public(M.cache, str(M.gh))
 
         def gate(files=None):
             with M.variant(files):
