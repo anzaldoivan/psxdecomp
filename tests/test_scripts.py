@@ -58,3 +58,9 @@ def test_answers_policy_is_the_ai_policy():
     import common
     r = run([PY, ROOT / "scripts/answers.py", "policy"])
     assert r.stdout.strip() == common.AI_POLICY
+
+
+def test_image_layer_audit_self_test():
+    r = run([PY, ROOT / "profiles/psx/image/layer_audit.py", "--self-test"], check=False)
+    assert r.returncode == 0 and "SELF-TEST OK" in r.stdout, r.stdout + r.stderr
+    assert run(["bash", "-n", ROOT / "profiles/psx/image/build.sh"], check=False).returncode == 0

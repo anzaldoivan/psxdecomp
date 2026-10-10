@@ -3,9 +3,10 @@
 # (`[public].image`); the compiler is downloaded at build time by the game's FETCH_COMMAND, pinned by sha256.
 # The pins below are the profile's starting values; the game's own pins win, and psxdecomp pins no compiler.
 # Reproducible: base by digest, apt from a dated snapshot, every download by sha256 or commit, no .pyc (each one stamps
-# its build time). Before publishing: two builds give the same layers, and every layer passes the firewall's refusal
-# set.
-#   docker build --platform linux/amd64 -t ghcr.io/<owner>/<game>-toolchain:<date> -f Dockerfile .
+# its build time). Before publishing: two builds give the same image (build.sh, beside this file), and no layer holds
+# a game file (layer_audit.py).
+#   ./build.sh ghcr.io/<owner>/<game>-toolchain:<date> [--build-arg MASPSX=<the game's pin> ...]
+#   python3 layer_audit.py <its a.tar> --private <the local <game>-private>
 FROM ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3
 
 ARG APT_SNAPSHOT=20260901T000000Z
