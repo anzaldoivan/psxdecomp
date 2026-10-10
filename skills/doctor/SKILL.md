@@ -18,7 +18,8 @@ Report the `FAIL` and `WARN` rows, one line each, with the fix each row names. T
 network: `progress` (when a workflow builds a decomp.dev report: its safety lint, and whether decomp.dev lists the
 repository) and `github` (the repository's security settings through `gh api`; each WARN carries the `gh api` command
 that fixes it, for the developer to run). `--offline` skips both; `--only github` runs just that row. In split mode
-two more use `gh api`: `private-repo` FAILs when `<game>-private` breaks its rules (public, forked, Actions on, a
+`github` checks only that origin, the `-dev`, is private (a FAIL otherwise: dev's history is exposed), and two more
+use `gh api`: `private-repo` FAILs when `<game>-private` breaks its rules (public, forked, Actions on, a
 writable or second deploy key, another collaborator, a `private_rev` it lacks), and `public-standard` WARNs with the
 public repository's drift from the standard (`settings --apply` fixes it, the developer's). For drift in the reference
 library the fix is `"${CLAUDE_PLUGIN_ROOT}/scripts/psxd" fetch_refs --repo .`; for a repository not bootstrapped by

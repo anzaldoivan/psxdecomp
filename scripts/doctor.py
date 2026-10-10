@@ -18,8 +18,9 @@ hygiene (WARN only: unscoped version or game claims and sentences copied between
 only, when a workflow builds a decomp.dev report: its safety lint, and whether decomp.dev lists the repo); github (WARN
 only, through `gh api`, skipped offline or logged out: the repository's security settings, each with the `gh api`
 command that fixes it; doctor never applies one). `--only github` runs just that row, e.g. on psxdecomp itself. In
-split mode, also through `gh api`: private-repo ([public].private_repo against its rules, FAIL on any drift) and
-public-standard (WARN only: the public repository against the standard, the comparison `settings` prints).
+split mode, github checks only that origin (the -dev) is private (FAIL otherwise), and two rows join it through
+`gh api`: private-repo ([public].private_repo against its rules, FAIL on any drift) and public-standard (WARN only: the
+public repository against the standard, the comparison `settings` prints).
 """
 from __future__ import annotations
 
@@ -54,22 +55,24 @@ def check(repo, only=None, offline=False) -> list[tuple[str, str, str]]:
         prog = progress_row(repo, None if offline else decompdev.projects)
         if prog:
             add("progress", *prog)
+    try:
+        cfg = publish.load_public(repo)
+    except publish.Fail:
+        cfg = None                                                      # split-guard reports the malformed table
     if not only or "github" in only:
-        wf = repo / ".github" / "workflows"
-        texts = {p.name: common.read(p) for p in sorted(wf.glob("*.y*ml"))} if wf.is_dir() else {}
-        for st, detail in github_rows(github_slug(repo), None if offline else gh_api, texts):
-            add("github", st, detail)
-    if not only or set(only) & set(SPLIT_ROWS):
-        try:
-            cfg = publish.load_public(repo)
-        except publish.Fail:
-            cfg = None                                                  # split-guard reports the malformed table
         if cfg:
-            api = None if offline else publish.gh_api
-            priv = private_repo_row(cfg, api)
-            if priv:
-                add("private-repo", *priv)
-            add("public-standard", *public_standard_row(cfg, api))
+            add("github", *dev_row(github_slug(repo), None if offline else gh_api, cfg))
+        else:
+            wf = repo / ".github" / "workflows"
+            texts = {p.name: common.read(p) for p in sorted(wf.glob("*.y*ml"))} if wf.is_dir() else {}
+            for st, detail in github_rows(github_slug(repo), None if offline else gh_api, texts):
+                add("github", st, detail)
+    if cfg and (not only or set(only) & set(SPLIT_ROWS)):
+        api = None if offline else publish.gh_api
+        priv = private_repo_row(cfg, api)
+        if priv:
+            add("private-repo", *priv)
+        add("public-standard", *public_standard_row(cfg, api))
     return [r for r in rows if not only or r[0] in only]
 
 
@@ -572,6 +575,26 @@ def github_rows(slug: str | None, api, texts: dict[str, str] | None = None) -> l
 
 # ---- split mode: the -private repository and the public standard (publish.gh_api: GETs only, None on a 404) ------
 
+def dev_row(slug: str | None, api, cfg: dict) -> tuple[str, str]:
+    """Split mode's github row. Origin is the private -dev: GitHub enforces no ruleset on a Free private repository, so
+    github_rows' public hardening doesn't apply there (the pre-push hook guards dev; public-standard checks the public
+    repository). FAIL only when -dev is not private: dev's history would be public."""
+    if not slug:
+        return "OK", "no GitHub origin"
+    if api is None:
+        return "OK", "offline: %s not checked" % slug
+    try:
+        info = api("repos/%s" % slug)
+    except Exception as e:                                              # noqa: BLE001 — logged out, no gh, no network
+        return "OK", "skipped: gh api unavailable (%s)" % str(e)[:80]
+    if info.get("private") is not True:
+        return "FAIL", ("%s is %s: dev's history is exposed — make it private at once (gh repo edit %s --visibility "
+                        "private --accept-visibility-change-consequences), then SECURITY.md's purge path"
+                        % (slug, info.get("visibility"), slug))
+    return "OK", "%s is private (split mode: the hook guards dev; public-standard checks the public %s)" % (
+        slug, cfg["repo"])
+
+
 def private_repo_row(cfg: dict, api) -> tuple[str, str] | None:
     """[public].private_repo against its rules (profiles/psx/private/README.md): private, no fork, Actions off, the
     owner its only collaborator, deploy keys read-only and at most one, private_rev one of its commits, and forking
@@ -941,6 +964,22 @@ def self_test_split() -> bool:
     drift = public_standard_row(cfg, _store_api(store))
     ok &= std[0] == "OK" and drift[0] == "WARN" and "2 drift(s)" in drift[1] and "settings --apply" in drift[1]
     ok &= "by hand: CODEOWNERS" in drift[1] and public_standard_row(cfg, down)[1].startswith("skipped")
+    dev = [dev_row("example/game-dev", lambda p: {"private": True, "visibility": "private"}, cfg),
+           dev_row("example/game-dev", lambda p: {"private": False, "visibility": "public"}, cfg),
+           dev_row("example/game-dev", None, cfg), dev_row(None, None, cfg)]
+
+    def logged_out(path):
+        raise RuntimeError("gh: not logged in")
+    dev.append(dev_row("example/game-dev", logged_out, cfg))
+    ok &= [d[0] for d in dev] == ["OK", "FAIL", "OK", "OK", "OK"] and "exposed" in dev[1][1]
+    ok &= dev[2][1].startswith("offline") and dev[4][1].startswith("skipped")
+    with tempfile.TemporaryDirectory() as td:                           # check(): split mode swaps the github row
+        repo = publish._self_repo(td)
+        (repo / publish.CONFIG_REL).write_text('[public]\nrepo = "example/synthetic-decomp"\n')
+        rows = check(repo, only=["github", "private-repo", "public-standard"], offline=True)
+    ok &= [(r[0], r[1]) for r in rows] == [("github", "OK"), ("public-standard", "OK")]
+    ok &= rows[0][2].startswith("offline: ") and "public-standard" not in rows[0][2]
+    print("  github in split mode: %s" % "; ".join("%s %s" % (d[0], d[1][:50]) for d in dev[:2]))
     print("  private-repo: good %s; %s" % (good[0], "; ".join("%s %s" % (n, g[0]) for n, g in got.items())))
     print("  public-standard: compliant %s; drift %s" % (std[0], drift[1][:90]))
     return ok
