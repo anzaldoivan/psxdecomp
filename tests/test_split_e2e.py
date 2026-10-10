@@ -632,6 +632,20 @@ def _story(w: World, agent: Agent):
     assert w.git(devremote, "rev-parse", "main") == w.git(d, "rev-parse", "main")
     assert "dev-history" not in w.git(w.pub, "for-each-ref")
 
+    # a push from a linked worktree (dc2's checkout is one): git exports GIT_DIR to the hook, and the gate's commands
+    # in its temporary tree must not reach the worktree's index or the repository's config
+    wt = w.root / "dev-wt"
+    w.git(d, "worktree", "add", "-q", "-b", "wt", wt)
+    w.git(wt, "commit", "-q", "--allow-empty", "-m", "router: from a linked worktree")
+    r = subprocess.run(["git", "-C", str(wt), "push", "-q", "backup", "wt:main"], capture_output=True, text=True,
+                       env=w.env)
+    assert r.returncode == 0 and "PRE-PUSH" in r.stdout + r.stderr, r.stdout + r.stderr
+    assert w.git(devremote, "rev-parse", "main") == w.git(wt, "rev-parse", "HEAD")
+    assert w.git(d, "config", "core.bare") == "false"
+    for repo in (d, wt):
+        assert sorted(w.git(repo, "ls-files").splitlines()) == sorted(w.tree(repo, "HEAD")), repo
+    w.git(d, "worktree", "remove", "--force", wt)
+
     # the phase-end push through the gate, then ship end to end: origin (-dev) is a local bare repository for pushes,
     # GitHub a fake gh on PATH that squash-merges into the bare public repository
     origin = w.root / "origin.git"
