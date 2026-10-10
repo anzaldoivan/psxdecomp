@@ -11,6 +11,20 @@
                                           every category's measures from the units' progress_categories; version 2
     publish.py validate REPORT [--categories TSV] [--artifact A] [--version V] [--exe NAME]
                                           a report.json against report.proto, its arithmetic and the firewall
+    publish.py check-public [DIR]         the public tree DIR (default: this repository) against the list:
+                                          FAIL on an unlisted or agent-only file; WARN on an entry matching nothing
+    publish.py release --summary TEXT [--repo DEV] [--rev REV] [--ack-new] [--dry-run] [--push]
+                                          DEV's listed files at REV -> branch release/<sha10> in the public cache, one
+                                          reproducible commit (Release-Of/-Tree/-Base trailers); developer only
+    publish.py import [--repo DEV] [--accept-governance] [--skip SHA ...]
+                                          public contributor commits not yet in DEV -> one import commit each, written
+                                          to the cache only (refs/psxdecomp/import); touches no DEV ref or worktree
+    publish.py land [TIP] [--repo DEV]    fast-forward DEV to the import chain TIP when the gate is idle; developer only
+    publish.py settings [--apply] [--repo DEV]
+                                          the public repository's settings against the standard; --apply fixes
+    publish.py verify-pr N [--merge] [--repo DEV]
+                                          a public PR's required checks, their provenance and its claims; --merge squashes
+    publish.py ci-log FILE                the last 60 lines of a build log that carry no asm, hex dump or instruction
     publish.py --self-test
 
 One file, standard library only, no import from the plugin: S10 and /psxdecomp:upgrade copy it byte for byte into a
@@ -24,14 +38,21 @@ config/check.*.sha, manifest/*.jsonl, the Makefile, and `git remote get-url orig
 from __future__ import annotations
 
 import argparse
+import contextlib
+import copy
+import fnmatch
+import functools
 import glob
+import io
 import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import urllib.parse
 
 # ---- the AI policy (its one home; scripts/common.py re-exports it, the plugin's README carries it verbatim) -------
@@ -93,6 +114,24 @@ DISCS_REL = "config/discs.tsv"
 DISCS_HEAD = ["disc", "serial", "executable", "track", "source"]
 SOURCES = ("redump", "dump")
 
+# ---- the public paths (config/public-paths.txt: what a dev repository publishes to its public repository) ----------
+PUBLIC_PATHS_REL = "config/public-paths.txt"     # per line: `dir/` prefix, else an fnmatch glob (`*` crosses `/`)
+RELEASE_TRAILERS = ("Release-Of", "Release-Tree", "Release-Base")    # in a release commit's body (a squash keeps them)
+IMPORT_TRAILER = "Imported-From"                 # in the dev commit that takes a public commit: the public sha
+CONFIG_REL = "config/psxdecomp.toml"             # its [public] table turns split mode on
+PA3_REL = ".claude/pa3-managed.json"             # `files`: the paths PA3 manages; they never go public
+GOVERNANCE_DEFAULT = ("config/public-paths.txt", "config/psxdecomp.toml", ".github/", "Makefile", "*.mk", "tools/",
+                      ".gitattributes", ".gitignore", "CODEOWNERS", ".github/CODEOWNERS", "LICENSE", "SECURITY.md",
+                      "CONTRIBUTING.md")
+ACTIONS_APP = 15368                              # GitHub Actions' app id: a required check must come from Actions
+TRUSTED_WORKFLOW = ".github/workflows/build.yml"
+PUB_REF = "refs/psxdecomp/public-main"
+# Agent working files never reach the public repository, even when the list names them (a prefix ends in `/`).
+AGENT_DENY = ("CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "HOW_WE_WORK.md", "PROJECT_CONTEXT.md", "GENERATION_PLAN.md",
+              ".claude/", ".claude-state/", ".mcp.json", ".run/", "phase-ends/", "campaign/", "rules/", "templates/",
+              "drafts/", "repro/", "docs/ops/", "docs/retired/", "tools/commit_task.sh", "tools/wave.py",
+              "tools/card.py", "tools/task_log.py")
+
 # ---- objdiff report.proto (encounter/objdiff objdiff-core/protos/report.proto, read 2026-10-02 at eed74b9) -------
 F, U64, U32, STR, BOOL = "float", "uint64", "uint32", "string", "bool"
 MEASURES = {"fuzzy_match_percent": F, "total_code": U64, "matched_code": U64, "matched_code_percent": F,
@@ -143,6 +182,15 @@ def origin_slug(repo) -> str | None:
     r = _git(repo, "remote", "get-url", "origin")
     m = re.search(r"github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", r.stdout.strip()) if r.returncode == 0 else None
     return "%s/%s" % (m[1], m[2]) if m else None
+
+
+def readme_slug(repo) -> str | None:
+    """The slug a README names: [public].repo in split mode (dev's origin is the private `-dev`), else origin's."""
+    try:
+        cfg = load_public(repo)
+    except Fail:
+        cfg = None
+    return cfg["repo"] if cfg else origin_slug(repo)
 
 
 def repo_root(start) -> pathlib.Path:
@@ -317,7 +365,7 @@ class Ctx:
         self.discs_path = pathlib.Path(discs) if discs else self.repo / DISCS_REL
         self.categories, self.categories_errs = load_categories(self.categories_path)
         self.discs, self.discs_errs = load_discs(self.discs_path)
-        self.slug = origin_slug(self.repo)
+        self.slug = readme_slug(self.repo)
 
 
 class RenderError(Exception):
@@ -953,6 +1001,1146 @@ def categorize(report: dict, categories: list[dict]) -> tuple[dict, list[str]]:
     return out, errs
 
 
+# ---- the public tree: check-public, then split mode v2: release (dev -> public cache), import, land, settings -------
+
+class Fail(Exception):
+    """A refusal with its reason: the command prints `<TAG> FAIL <reason>` and exits 1."""
+
+
+def _cmd(tag: str):
+    def deco(fn):
+        @functools.wraps(fn)
+        def run(*a, **k):
+            try:
+                return fn(*a, **k)
+            except Fail as e:
+                _line(tag, "FAIL", str(e))
+                return 1
+        return run
+    return deco
+
+
+def _dev_only(what: str):
+    if os.environ.get("CLAUDECODE"):
+        raise Fail("%s is for the developer, not an agent session (CLAUDECODE is set)" % what)
+
+
+def parse_public_paths(text: str) -> list[str]:
+    """The entries of config/public-paths.txt: `#` comments and blank lines skipped."""
+    return [l.strip() for l in text.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+
+
+def public_match(entry: str, path: str) -> bool:
+    """One entry against a repo-relative path: a `dir/` entry is a prefix, any other is an fnmatch glob."""
+    return path.startswith(entry) if entry.endswith("/") else fnmatch.fnmatchcase(path, entry)
+
+
+@functools.lru_cache(maxsize=8)
+def _matcher(entries: tuple):
+    prefixes = tuple(e for e in entries if e.endswith("/"))
+    globs = [fnmatch.translate(e) for e in entries if not e.endswith("/")]
+    return prefixes, re.compile("|".join(globs)) if globs else None
+
+
+def is_listed(entries, path: str) -> bool:
+    prefixes, rx = _matcher(tuple(entries))
+    return bool(prefixes and path.startswith(prefixes)) or bool(rx and rx.match(path))
+
+
+is_denied = is_listed                                  # the deny set uses the list's syntax
+
+
+def _git_raw(repo, *args, inp: bytes | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(repo)] + list(args), input=inp, capture_output=True)
+
+
+def _must(repo, *args, inp=None, env=None) -> str:
+    r = subprocess.run(["git", "-C", str(repo)] + list(args), input=inp, capture_output=True, text=True, env=env)
+    if r.returncode != 0:
+        raise Fail("git %s: %s" % (" ".join(args[:2]), (r.stderr or r.stdout).strip()[:300]))
+    return r.stdout.strip()
+
+
+def tree_entries(repo, rev: str) -> dict[str, tuple[str, str]] | None:
+    """{path: (mode, blob sha)} of every file in rev, or None when git cannot read it."""
+    r = _git(repo, "ls-tree", "-r", "-z", rev)
+    if r.returncode != 0:
+        return None
+    out = {}
+    for rec in r.stdout.split("\0"):
+        if rec:
+            meta, path = rec.split("\t", 1)
+            mode, _, sha = meta.split()
+            out[path] = (mode, sha)
+    return out
+
+
+def read_blobs(repo, shas: list[str]) -> dict[str, bytes]:
+    """{sha: content} through one `git cat-file --batch`."""
+    r = _git_raw(repo, "cat-file", "--batch", inp=("\n".join(shas) + "\n").encode() if shas else b"")
+    out, buf, pos = {}, r.stdout, 0
+    for sha in shas:
+        end = buf.index(b"\n", pos)
+        size = int(buf[pos:end].split()[2])
+        out[sha] = buf[end + 1:end + 1 + size]
+        pos = end + 1 + size + 1
+    return out
+
+
+def _line(tag: str, level: str, detail: str):
+    print("%s %-4s %s" % (tag, level, detail))
+
+
+# ---- [public] in config/psxdecomp.toml, the deny set, governance -------------------------------------------------
+
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+PUBLIC_STR = ("repo", "url", "dev_branch", "private_repo", "private_rev", "image", "assisted_by")
+PUBLIC_LIST = ("deny", "governance", "checks", "land_check", "audit")
+
+
+def load_public(repo, rev: str | None = None) -> dict | None:
+    """The [public] table (defaults filled) from the worktree, or from `git show rev:` when rev is given; None when
+    split mode is off. A malformed table raises Fail."""
+    if rev:
+        r = _git(repo, "show", "%s:%s" % (rev, CONFIG_REL))
+        text = r.stdout if r.returncode == 0 else None
+    else:
+        text = _read(pathlib.Path(repo) / CONFIG_REL)
+    if text is None:
+        return None
+    try:
+        t = tomllib.loads(text).get("public")
+    except tomllib.TOMLDecodeError as e:
+        raise Fail("%s: %s" % (CONFIG_REL, e))
+    if t is None:
+        return None
+    if not isinstance(t, dict):
+        raise Fail("%s: [public] must be a table" % CONFIG_REL)
+    cfg = {"url": "", "dev_branch": "main", "private_repo": "", "private_rev": "", "image": "", "assisted_by": "",
+           "keyed": {}}
+    cfg.update({k: [] for k in PUBLIC_LIST})
+    bad = []
+    for k, v in t.items():
+        if k in PUBLIC_STR and isinstance(v, str):
+            cfg[k] = v
+        elif k in PUBLIC_LIST and isinstance(v, list) and all(isinstance(x, str) for x in v):
+            cfg[k] = v
+        elif k == "keyed" and isinstance(v, dict):
+            cfg[k] = v
+            bad += ["keyed.%s: the number of key columns, an integer >= 1" % p for p, n in v.items()
+                    if type(n) is not int or n < 1]
+        else:
+            bad.append("%s: unknown key or wrong type" % k)
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", cfg.get("repo", "")):
+        bad.append("repo: required, OWNER/REPO")
+    if cfg["private_rev"] and not HEX40.match(cfg["private_rev"]):
+        bad.append("private_rev: 40 hex")
+    if cfg["image"] and not re.search(r"@sha256:[0-9a-f]{64}$", cfg["image"]):
+        bad.append("image: pinned by digest (@sha256:<64 hex>)")
+    if cfg["assisted_by"] != cfg["assisted_by"].strip() or not cfg["assisted_by"].isprintable():
+        bad.append("assisted_by: one line, no surrounding spaces (e.g. \"Claude Code (Opus 5.5)\")")
+    if bad:
+        raise Fail("%s [public]: %s" % (CONFIG_REL, "; ".join(bad)))
+    cfg["url"] = cfg["url"] or "https://github.com/%s.git" % cfg["repo"]
+    return cfg
+
+
+def _pa3_files(text) -> list[str]:
+    try:
+        files = json.loads(text or "{}").get("files", {})
+    except (ValueError, AttributeError):
+        return []
+    return list(files) if isinstance(files, dict) else []
+
+
+def deny_set(pa3_text, cfg) -> tuple:
+    return tuple(AGENT_DENY) + tuple(_pa3_files(pa3_text)) + tuple((cfg or {}).get("deny", ()))
+
+
+def deny_entries(repo, rev: str) -> tuple:
+    """AGENT_DENY, every path PA3 manages at rev and [public].deny at rev."""
+    r = _git(repo, "show", "%s:%s" % (rev, PA3_REL))
+    try:
+        cfg = load_public(repo, rev)
+    except Fail:
+        cfg = None
+    return deny_set(r.stdout if r.returncode == 0 else None, cfg)
+
+
+def governance(cfg) -> tuple:
+    return tuple((cfg or {}).get("governance") or GOVERNANCE_DEFAULT)
+
+
+def check_paths(paths, entries, deny) -> list[tuple[str, str]]:
+    out = []
+    for p in paths:
+        if is_denied(deny, p):
+            out.append(("FAIL", "%s: never public (agent file, PA3-managed or [public].deny), even when %s lists it"
+                        % (p, PUBLIC_PATHS_REL)))
+        elif not is_listed(entries, p):
+            out.append(("FAIL", "%s: tracked but matched by no entry of %s (default deny)" % (p, PUBLIC_PATHS_REL)))
+    for e in entries:
+        if not any(public_match(e, p) for p in paths):
+            out.append(("WARN", "%s: entry %r matches no tracked file" % (PUBLIC_PATHS_REL, e)))
+    return out
+
+
+def check_public(repo, deny=None) -> list[tuple[str, str]]:
+    """[(FAIL|WARN, detail)] for a public tree: every tracked file is listed and none is denied (the deny set is read
+    from the tree's own .claude/pa3-managed.json and config/psxdecomp.toml unless given)."""
+    repo = pathlib.Path(repo)
+    text = _read(repo / PUBLIC_PATHS_REL)
+    if text is None:
+        return [("FAIL", "%s: missing (default deny: nothing is public without it)" % PUBLIC_PATHS_REL)]
+    r = _git(repo, "ls-files", "-z")
+    if r.returncode != 0:
+        return [("FAIL", "%s: not a git repository" % repo)]
+    if deny is None:
+        try:
+            cfg = load_public(repo)
+        except Fail:
+            cfg = None
+        deny = deny_set(_read(repo / PA3_REL), cfg)
+    return check_paths([p for p in r.stdout.split("\0") if p], parse_public_paths(text), deny)
+
+
+def cmd_check_public(directory) -> int:
+    repo = repo_root(directory)
+    found = check_public(repo)
+    for lv, d in found:
+        _line("PUBLIC", lv, d)
+    fails = sum(f[0] == "FAIL" for f in found)
+    n = len([p for p in _git(repo, "ls-files", "-z").stdout.split("\0") if p])
+    print("PUBLIC CHECK %s (%d file(s), %d warn)" % ("OK" if not fails else "FAIL %d" % fails, n,
+                                                    sum(f[0] == "WARN" for f in found)))
+    return 1 if fails else 0
+
+
+# ---- the public cache: a bare repo that borrows dev's objects; nothing is ever checked out -----------------------
+
+def public_cache(dev) -> pathlib.Path:
+    """<git-common-dir>/psxdecomp/public.git, created on first use, with dev's object store as an alternate."""
+    cache = pathlib.Path(_must(dev, "rev-parse", "--path-format=absolute", "--git-common-dir")) / "psxdecomp" / "public.git"
+    if not cache.is_dir():
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        _must(cache.parent, "init", "--bare", "-q", str(cache))
+    objs = _must(dev, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+    alt = cache / "objects" / "info" / "alternates"
+    alt.parent.mkdir(parents=True, exist_ok=True)
+    if _read(alt) != objs + "\n":
+        alt.write_text(objs + "\n", encoding="utf-8")
+    return cache
+
+
+def fetch_public(cache, url: str) -> str | None:
+    """Public main into the cache (PUB_REF); its sha, or None while the public repository has no main."""
+    ls = _git(cache, "ls-remote", "--heads", url, "refs/heads/main")
+    if ls.returncode != 0:
+        raise Fail("cannot read %s: %s" % (url, ls.stderr.strip()[:200]))
+    if not ls.stdout.strip():
+        _git(cache, "update-ref", "-d", PUB_REF)
+        return None
+    _must(cache, "fetch", "-q", "--no-tags", url, "+refs/heads/main:" + PUB_REF)
+    return _must(cache, "rev-parse", PUB_REF)
+
+
+def write_tree(cache, entries: dict) -> str:
+    """The tree of {path: (mode, blob)} written into the cache through a temporary index (never the cache's own)."""
+    with tempfile.TemporaryDirectory() as td:
+        env = dict(os.environ, GIT_INDEX_FILE=os.path.join(td, "index"))
+        _must(cache, "read-tree", "--empty", env=env)
+        if entries:
+            info = "".join("%s %s\t%s\0" % (m, s, p) for p, (m, s) in sorted(entries.items()))
+            _must(cache, "update-index", "-z", "--index-info", inp=info, env=env)
+        return _must(cache, "write-tree", env=env)
+
+
+def trailers(repo, rev: str, key: str) -> list[str]:
+    r = _git(repo, "log", "-1", "--format=%(trailers:key=" + key + ",valueonly)", rev)
+    return [l.strip() for l in r.stdout.splitlines() if l.strip()] if r.returncode == 0 else []
+
+
+def imported(repo, rev: str) -> set[str]:
+    r = _git(repo, "log", "--format=%(trailers:key=" + IMPORT_TRAILER + ",valueonly)", rev)
+    return {l.strip() for l in r.stdout.splitlines() if l.strip()}
+
+
+def _dev_list(repo, rev: str) -> tuple[list[str] | None, str]:
+    r = _git(repo, "show", "%s:%s" % (rev, PUBLIC_PATHS_REL))
+    return (parse_public_paths(r.stdout) if r.returncode == 0 else None), r.stderr.strip()
+
+
+def projection(cache, dev, rev: str):
+    """(tree sha, {path: (mode, blob)}, problems): dev rev's listed, not denied files, written into the cache."""
+    lst, _ = _dev_list(dev, rev)
+    deny = deny_entries(dev, rev)
+    want, probs = {}, []
+    if lst is None:
+        probs.append("%s: missing at %s" % (PUBLIC_PATHS_REL, rev[:10]))
+    for p, (mode, sha) in sorted((tree_entries(dev, rev) or {}).items()):
+        if not is_listed(lst or [], p):
+            continue
+        if is_denied(deny, p):
+            probs.append("%s: listed but never public (agent file, PA3-managed or [public].deny)" % p)
+        elif mode in ("120000", "160000"):
+            probs.append("%s: a %s is listed (only regular files go public)" % (p, "symlink" if mode == "120000"
+                                                                              else "gitlink"))
+        else:
+            want[p] = (mode, sha)
+    return write_tree(cache, want), want, probs
+
+
+def history(cache, dev, main) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """(releases [(public sha, Release-Of, Release-Tree)], contributor commits) of public main's first-parent
+    history, oldest first. A release has the `Release: ` subject, the Of and Tree trailers, a Tree that is the
+    projection of Of (or, when a purge removed Of from dev, the commit's own tree), and an Of not used before.
+    Commits before the first release are ignored; every other later commit is a contributor's."""
+    rels, contribs, used = [], [], set()
+    if not main:
+        return rels, contribs
+    fmt = "%H%x1f%s%x1f%(trailers:key=Release-Of,valueonly)%x1f%(trailers:key=Release-Tree,valueonly)%x1e"
+    log = _git(cache, "log", "--first-parent", "--reverse", "--format=" + fmt, main)    # not _must: strip() eats \x1f
+    if log.returncode != 0:
+        raise Fail("git log %s: %s" % (main[:10], log.stderr.strip()[:200]))
+    for rec in log.stdout.split("\x1e"):
+        if not rec.strip():
+            continue
+        c, subj, of, tree = [x.strip() for x in rec.lstrip("\n").split("\x1f")]
+        ok = subj.startswith("Release: ") and HEX40.match(of) and HEX40.match(tree) and of not in used
+        if ok:
+            if _git(dev, "cat-file", "-e", of + "^{commit}").returncode == 0:
+                ok = projection(cache, dev, of)[0] == tree
+            else:
+                ok = _must(cache, "rev-parse", c + "^{tree}") == tree
+        if ok:
+            rels.append((c, of, tree))
+            used.add(of)
+        elif rels:
+            contribs.append(c)
+    return rels, contribs
+
+
+def releases(cache, dev, main) -> list[tuple[str, str, str]]:
+    return history(cache, dev, main)[0]
+
+
+def release_body(summary, of, tree, base, assisted=None) -> str:
+    """The summary, then one trailer block: `Assisted-by:` (the Linux kernel's model: named when set, never
+    required) and the three `Release-*` trailers last."""
+    tag = "Assisted-by: %s\n" % assisted if assisted else ""
+    return "%s\n\n%sRelease-Of: %s\nRelease-Tree: %s\nRelease-Base: %s\n" % (summary, tag, of, tree, base or "none")
+
+
+def gh(args, inp=None) -> subprocess.CompletedProcess:
+    """Every `gh` call goes through here (the self-test replaces it)."""
+    try:
+        return subprocess.run(["gh"] + list(args), input=inp, capture_output=True, text=True)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(list(args), 127, "", "gh is not installed")
+
+
+def _split(repo):
+    """(dev root, [public] config, cache, public main sha) with the cache fetched."""
+    dev = repo_root(repo)
+    cfg = load_public(dev)
+    if cfg is None:
+        raise Fail("split mode is off: no [public] in %s" % CONFIG_REL)
+    cache = public_cache(dev)
+    return dev, cfg, cache, fetch_public(cache, cfg["url"])
+
+
+def _identity(dev) -> tuple[str, str]:
+    n, e = (_git(dev, "config", k).stdout.strip() for k in ("user.name", "user.email"))
+    if not (n and e):
+        raise Fail("git config user.name / user.email are not set in %s" % dev)
+    return n, e
+
+
+def _subject(repo, rev: str) -> str:
+    return _git(repo, "log", "-1", "--format=%s", rev).stdout.strip()
+
+
+def _export(cache, tree: str, dest) -> None:
+    r = _git_raw(cache, "archive", "--format=tar", tree)
+    if r.returncode == 0:
+        r = subprocess.run(["tar", "-x", "-C", str(dest)], input=r.stdout, capture_output=True)
+    if r.returncode != 0:
+        raise Fail("cannot export tree %s: %s" % (tree[:10], r.stderr.decode().strip()[:200]))
+
+
+def _tail(r: subprocess.CompletedProcess, n: int = 20) -> str:
+    return "\n".join(((r.stdout or "") + (r.stderr or "")).strip().splitlines()[-n:])
+
+
+def preflight(cache, dev, cfg, tree: str, want: dict, rev: str) -> list[str]:
+    """The release gate, run on the exported projection before any ref is written: FAIL lines."""
+    fails = []
+    lst = _dev_list(cache, tree)[0] or []
+    fails += [d for lv, d in check_paths(sorted(want), lst, deny_entries(dev, rev)) if lv == "FAIL"]
+    with tempfile.TemporaryDirectory() as td:
+        x = pathlib.Path(td) / "tree"
+        x.mkdir()
+        _export(cache, tree, x)
+        _git(x, "init", "-q")
+        _git(x, "remote", "add", "origin", "https://github.com/%s.git" % cfg["repo"])
+        _git(x, "add", "-A", "-f")
+        readme = _read(x / "README.md")
+        if readme is not None:
+            fails += ["README %s: %s" % (ck, d) for lv, ck, d in lint(readme, Ctx(x), release=True) if lv == "FAIL"]
+        default = (x / "tools" / "audit_public.py").is_file()
+        for name in sorted(os.listdir(dev)):                   # ignored hash sources (extracted/...) resolve
+            if name != ".git" and not os.path.lexists(x / name):
+                os.symlink(os.path.join(dev, name), x / name)
+        if cfg["audit"]:
+            argv = [a.replace("{tree}", str(x)).replace("{dev}", str(dev)) for a in cfg["audit"]]
+        elif default:
+            argv = ["python3", "tools/audit_public.py"]
+        else:
+            return fails + ["no tools/audit_public.py in the tree and no [public].audit: nothing audits the release"]
+        r = subprocess.run(argv, cwd=x, capture_output=True, text=True)
+        if r.returncode != 0:
+            fails.append("audit %s exited %d:\n%s" % (" ".join(argv[:2]), r.returncode, _tail(r)))
+    return fails
+
+
+@_cmd("RELEASE")
+def cmd_release(repo=".", rev=None, summary=None, ack_new=False, dry_run=False, push=False) -> int:
+    if not dry_run:
+        _dev_only("release")
+    if not summary or not summary.strip() or "\n" in summary:
+        raise Fail("--summary: one non-empty line, in your own words (it becomes the release's title)")
+    summary = summary.strip()
+    dev, cfg, cache, main = _split(repo)
+    r = _git(dev, "rev-parse", "--verify", "-q", "%s^{commit}" % (rev or "refs/heads/" + cfg["dev_branch"]))
+    if r.returncode != 0:
+        raise Fail("%s: no such commit in %s" % (rev or cfg["dev_branch"], dev))
+    rev = r.stdout.strip()
+    rels, contribs = history(cache, dev, main)
+    seen = imported(dev, rev)
+    pend = [c for c in contribs if c not in seen]
+    if pend:
+        raise Fail("public has %d contributor commit(s) %s lacks:\n%s\nrun import, land it at the phase end, release "
+                   "again" % (len(pend), rev[:10], "\n".join("  %s %s" % (c[:10], _subject(cache, c)) for c in pend)))
+    tree, want, probs = projection(cache, dev, rev)
+    if probs:
+        raise Fail("the projection of %s is not publishable:\n%s" % (rev[:10], "\n".join("  " + p for p in probs)))
+    base = _must(cache, "rev-parse", main + "^{tree}") if main else None
+    if tree == base:
+        print("RELEASE nothing to release: the listed files of %s are already on public" % rev[:10])
+        return 0
+    old = tree_entries(cache, main) if main else {}
+    new = sorted(p for p in want if p not in old)
+    for p in sorted(set(want) | set(old)):
+        if want.get(p) != old.get(p):
+            print("  %s %s" % ("A" if p in new else "D" if p not in want else "M", p))
+    if new and not ack_new:
+        raise Fail("%d new public path(s): review the list above, then rerun with --ack-new" % len(new))
+    bad = preflight(cache, dev, cfg, tree, want, rev)
+    if bad:
+        raise Fail("preflight refused the release:\n%s" % "\n".join("  " + b for b in bad))
+    name, email = _identity(dev)
+    when = _must(dev, "log", "-1", "--format=%cI", rev)
+    env = dict(os.environ, GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=email, GIT_AUTHOR_DATE=when, GIT_COMMITTER_NAME=name,
+               GIT_COMMITTER_EMAIL=email, GIT_COMMITTER_DATE=when)
+    msg = "Release: %s\n\n%s" % (summary, release_body(summary, rev, tree, main, cfg["assisted_by"]))
+    sha = _must(cache, "commit-tree", tree, *(["-p", main] if main else []), inp=msg, env=env)
+    br = "release/" + rev[:10]
+    if dry_run:
+        print("RELEASE dry run: would commit %s on %s (tree %s, %d file(s)); no ref written" % (
+            sha[:10], br, tree[:10], len(want)))
+        return 0
+    ref = "refs/heads/" + br
+    have = _git(cache, "rev-parse", "--verify", "-q", ref).stdout.strip()
+    if have and have != sha:
+        raise Fail("%s exists in the cache at %s, not %s: delete it or release another revision" % (br, have[:10],
+                                                                                                  sha[:10]))
+    _must(cache, "update-ref", ref, sha)
+    body = cache / ("PR_BODY-%s.md" % rev[:10])
+    body.write_text(release_body(summary, rev, tree, main, cfg["assisted_by"]), encoding="utf-8")
+    print("RELEASE %s %s: %d file(s), %d new" % (br, sha[:10], len(want), len(new)))
+    if not main:                        # release 1: no main for a PR to target, so it becomes main, before the rulesets
+        first = "git -C %s push %s %s:refs/heads/main" % (cache, cfg["url"], sha)
+        if not push:
+            print("RELEASE not pushed; public has no main yet, so release 1 becomes main (before settings --apply):\n"
+                  "  %s" % first)
+            return 0
+        _must(cache, "push", "-q", cfg["url"], "%s:refs/heads/main" % sha)
+        print("RELEASE pushed %s as public main (release 1); next: settings --apply" % sha[:10])
+        return 0
+    push_cmd = "git -C %s push %s %s:%s" % (cache, cfg["url"], ref, ref)
+    pr_cmd = ["pr", "create", "--repo", cfg["repo"], "--base", "main", "--head", br, "--title", "Release: " + summary,
+              "--body-file", str(body)]
+    if not push:
+        print("RELEASE not pushed; to open the PR:\n  %s\n  gh %s" % (push_cmd, " ".join(
+            "'%s'" % a if " " in a else a for a in pr_cmd)))
+        return 0
+    r = gh(["pr", "list", "--repo", cfg["repo"], "--state", "open", "--json", "headRefName"])
+    if r.returncode != 0:
+        raise Fail("gh pr list: %s" % (r.stderr.strip() or r.stdout.strip()))
+    try:
+        heads = [x.get("headRefName", "") for x in json.loads(r.stdout or "[]")]
+    except ValueError:
+        raise Fail("gh pr list: not JSON")
+    if any(h.startswith("release/") for h in heads):
+        raise Fail("an open release PR exists (%s): merge or close it first" % ", ".join(
+            h for h in heads if h.startswith("release/")))
+    _must(cache, "push", "-q", cfg["url"], "%s:%s" % (ref, ref))
+    r = gh(pr_cmd)
+    if r.returncode != 0:
+        raise Fail("gh pr create: %s" % (r.stderr.strip() or r.stdout.strip()))
+    print("RELEASE pushed %s; PR: %s" % (br, r.stdout.strip()))
+    return 0
+
+
+# ---- import: public contributor commits -> import commits in the cache -------------------------------------------
+
+def _merge3(cache, ours: str, base: str, theirs: str) -> str | None:
+    blobs = read_blobs(cache, [ours, base, theirs])
+    with tempfile.TemporaryDirectory() as td:
+        names = []
+        for i, s in enumerate((ours, base, theirs)):
+            f = os.path.join(td, str(i))
+            pathlib.Path(f).write_bytes(blobs[s])
+            names.append(f)
+        r = subprocess.run(["git", "merge-file", "-p"] + names, capture_output=True)
+    if r.returncode != 0:
+        return None
+    return _git_raw(cache, "hash-object", "-w", "--stdin", inp=r.stdout).stdout.decode().strip()
+
+
+def keyed_merge(ours: bytes, base: bytes, theirs: bytes, n: int) -> bytes | None:
+    """[public].keyed: a table merged row by row on its first n tab-separated columns, or None to refuse. Comment
+    (`#`) and blank lines are ours; a row changed on one side takes that side (the same change on both is fine); rows
+    new on theirs follow ours, in theirs' order. Refused: a key changed two ways, deleted on one side and changed on
+    the other, a duplicate key, a row of fewer than n columns, or comment lines theirs changed and ours did not
+    change the same way (they would be lost)."""
+    def parse(data):
+        rows, notes, order = {}, [], []
+        text = data.decode("utf-8", "surrogateescape")
+        for line in (text[:-1] if text.endswith("\n") else text).split("\n") if text else []:
+            if not line.strip() or line.startswith("#"):
+                notes.append(line)
+                order.append((None, line))
+                continue
+            cols = line.split("\t")
+            k = tuple(cols[:n])
+            if len(cols) < n or k in rows:
+                return None
+            rows[k] = line
+            order.append((k, line))
+        return rows, notes, order
+    parsed = [parse(x) for x in (ours, base, theirs)]
+    if None in parsed:
+        return None
+    (o, on, oo), (b, bn, _), (t, tn, to) = parsed
+    if tn != bn and tn != on:
+        return None
+    out = {}
+    for k in set(o) | set(b) | set(t):
+        ov, bv, tv = o.get(k), b.get(k), t.get(k)
+        if ov == tv or tv == bv:
+            out[k] = ov
+        elif ov == bv:
+            out[k] = tv
+        else:
+            return None
+    lines = [line if k is None else out[k] for k, line in oo if k is None or out[k] is not None]
+    lines += [out[k] for k, _ in to if k is not None and k not in o and out[k] is not None]
+    return "".join(l + "\n" for l in lines).encode("utf-8", "surrogateescape")
+
+
+def _merge_keyed(cache, ours: str, base: str, theirs: str, n: int) -> str | None:
+    blobs = read_blobs(cache, [ours, base, theirs])
+    merged = keyed_merge(blobs[ours], blobs[base], blobs[theirs], n)
+    if merged is None:
+        return None
+    return _git_raw(cache, "hash-object", "-w", "--stdin", inp=merged).stdout.decode().strip()
+
+
+def _take(cache, cfg, c: str, tip: str, ours: dict, rel_shas: set, accept_gov: bool):
+    """(entries after taking public commit c on top of tip, [reasons it cannot be taken])."""
+    parents = _must(cache, "rev-list", "--parents", "-n", "1", c).split()[1:]
+    if len(parents) > 1:
+        return None, ["%s: a merge commit (the public ruleset allows squash only)" % c[:10]]
+    msg = _must(cache, "log", "-1", "--format=%B", c)
+    m = re.search(r"This reverts commit ([0-9a-f]{40})", msg)
+    if (m and m[1] in rel_shas) or msg.startswith('Revert "Release: '):
+        return None, ["%s: reverts a release (the release is dev's, take the change back in dev)" % c[:10]]
+    base = (tree_entries(cache, parents[0]) or {}) if parents else {}
+    theirs = tree_entries(cache, c) or {}
+    raw = _git(cache, "diff-tree", "-r", "-z", "--no-renames", "--no-commit-id", "--root", c).stdout.split("\0")
+    paths, i = [], 0
+    while i < len(raw):
+        if raw[i].startswith(":") and i + 1 < len(raw):
+            paths.append(raw[i + 1])
+            i += 2
+        else:
+            i += 1
+    deny, gov = deny_entries(cache, tip), governance(cfg)
+    lt, lc = _dev_list(cache, tip)[0] or [], _dev_list(cache, c)[0] or []
+    errs = []
+    for p in paths:
+        t = theirs.get(p)
+        if t and t[0] in ("120000", "160000"):
+            errs.append("%s: a %s (only regular files)" % (p, "symlink" if t[0] == "120000" else "gitlink"))
+        elif is_denied(deny, p):
+            errs.append("%s: denied (agent file, PA3-managed or [public].deny)" % p)
+        elif not (is_listed(lt, p) or is_listed(lc, p)):
+            errs.append("%s: listed by neither dev's list nor the commit's own" % p)
+        elif is_listed(gov, p) and not accept_gov:
+            errs.append("%s: a governance path: read it, then rerun with --accept-governance" % p)
+    if errs:
+        return None, errs
+    new, conflicts = dict(ours), []
+    for p in paths:
+        b, t, o = base.get(p), theirs.get(p), ours.get(p)
+        if o == b:
+            new.pop(p, None) if t is None else new.__setitem__(p, t)
+        elif o == t:
+            continue
+        elif all(x and x[0] in ("100644", "100755") for x in (o, b, t)) and o[0] == t[0]:
+            merged = _merge3(cache, o[1], b[1], t[1])
+            if merged is None and p in cfg["keyed"]:
+                merged = _merge_keyed(cache, o[1], b[1], t[1], cfg["keyed"][p])
+            if merged is None:
+                conflicts.append(p)
+            else:
+                new[p] = (o[0], merged)
+        else:
+            conflicts.append(p)
+    return (new, []) if not conflicts else (None, ["%s: conflicts with dev's own change" % p for p in conflicts])
+
+
+@_cmd("IMPORT")
+def cmd_import(repo=".", accept_governance=False, skip=()) -> int:
+    dev, cfg, cache, main = _split(repo)
+    base = _must(dev, "rev-parse", "--verify", "refs/heads/" + cfg["dev_branch"])
+    rels, contribs = history(cache, dev, main)
+    done = imported(dev, base)
+    pending = [c for c in contribs if c not in done]
+    if not pending:
+        print("IMPORT nothing to import: dev %s holds every public contributor commit" % base[:10])
+        return 0
+    for s in skip:
+        if not any(c.startswith(s) for c in pending):
+            raise Fail("--skip %s: not a pending public commit" % s)
+    name, email = _identity(dev)
+    rel_shas = {r[0] for r in rels}
+    ours, tip, shown = dict(tree_entries(cache, base) or {}), base, []
+    for c in pending:
+        an, ae, ad, cd, subj = _must(cache, "log", "-1", "--format=%an%x1f%ae%x1f%aI%x1f%cI%x1f%s", c).split("\x1f")
+        extra = []
+        if any(c.startswith(s) for s in skip):
+            extra = ["Import-Skipped: by the maintainer"]
+        else:
+            new, errs = _take(cache, cfg, c, tip, ours, rel_shas, accept_governance)
+            if errs:
+                raise Fail("cannot import %s %s:\n%s\nnothing written" % (c[:10], subj, "\n".join("  " + e for e in errs)))
+            ours = new
+        co = ["Co-authored-by: " + v for v in trailers(cache, c, "Co-authored-by")]
+        msg = "Import %s: %s\n\n%s\n" % (cd[:10], subj, "\n".join(["%s: %s" % (IMPORT_TRAILER, c)] + co + extra))
+        env = dict(os.environ, GIT_AUTHOR_NAME=an, GIT_AUTHOR_EMAIL=ae, GIT_AUTHOR_DATE=ad, GIT_COMMITTER_NAME=name,
+                   GIT_COMMITTER_EMAIL=email, GIT_COMMITTER_DATE=cd)
+        tip = _must(cache, "commit-tree", write_tree(cache, ours), "-p", tip, inp=msg, env=env)
+        shown.append("%s Import %s: %s" % (tip[:10], cd[:10], subj))
+    _must(cache, "update-ref", "refs/psxdecomp/import", tip)
+    _must(cache, "update-ref", "refs/psxdecomp/import-base", base)
+    print("\n".join(shown))
+    print("IMPORT ready: %s on %s; land it at the phase end: psxd_publish.py land %s" % (tip, base[:10], tip))
+    return 0
+
+
+# ---- land: the import chain onto dev, only when the gate is idle -------------------------------------------------
+
+def _alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def inbox_pending(text: str) -> list[str]:
+    """The bullets the router has yet to consume, by PA3's own rule (tools/status.py `inbox_pending`, 3.14.2):
+    top-level `- ` lines outside HTML comments, indented lines joined, the template's `<...>` placeholder left out."""
+    out, cur = [], None
+    for raw in re.sub(r"<!--.*?-->", "", text, flags=re.S).split("\n"):
+        line = raw.rstrip("\r")
+        if line.startswith("- "):
+            if cur is not None:
+                out.append(cur)
+            cur = line[2:].strip()
+        elif cur is not None and line[:1] in (" ", "\t") and line.strip() and not line.strip().startswith("- "):
+            cur += " " + line.strip()
+        elif cur is not None:
+            out.append(cur)
+            cur = None
+    if cur is not None:
+        out.append(cur)
+    return [b for b in out if b and not re.match(r"^<.*>$", b)]
+
+
+def land_blockers(dev, cfg, cache, tip) -> list[str]:
+    import fcntl
+    dev, out = pathlib.Path(dev), []
+    if os.environ.get("CLAUDECODE"):
+        out.append("CLAUDECODE is set: land is for the developer, not an agent session")
+    st = _read(dev / ".run/status.json")
+    d = {}
+    if st is not None:
+        try:
+            d = json.loads(st)
+        except ValueError:
+            d = None
+        if not isinstance(d, dict):
+            out.append(".run/status.json is not a JSON object")
+            d = {}
+        elif any(d.get(k) is not None for k in ("task", "kind", "waiting")):
+            out.append(".run/status.json: a task, kind or waiting is set (the router is busy)")
+    sess = d.get("router_session")
+    pidf = dev / ".run/warmer" / ("%s.pid" % sess) if sess else None
+    if pidf and pidf.is_file():
+        try:
+            if _alive(int((_read(pidf) or "").strip())):
+                out.append("warmer %s is alive (%s)" % (sess, pidf.relative_to(dev)))
+        except ValueError:
+            pass
+    for f in sorted(glob.glob(str(dev / ".run/gate/locks/*.lock"))) + [str(dev / ".run/gate/apply.lock")]:
+        if not os.path.exists(f):
+            continue
+        try:
+            fd = os.open(f, os.O_RDONLY)
+        except OSError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            out.append("flock held on %s (the gate is applying)" % os.path.relpath(f, dev))
+        finally:
+            os.close(fd)
+    cur = dev / "phase-ends/current"
+    if inbox_pending(_read(cur / "INBOX.md") or ""):
+        out.append("phase-ends/current/INBOX.md has a pending bullet")
+    out += ["phase-ends/current/%s exists" % n for n in ("REVIEW.md", "REPLAN.md") if (cur / n).exists()]
+    waves = _read(dev / "config/waves.tsv")
+    if waves is not None:
+        rows = [l for l in waves.splitlines() if l.strip() and not l.lstrip().startswith("#")][1:]
+        for l in rows:
+            c = (l.split("\t") + [""] * 13)[:13]
+            if c[3] == "-" or c[5] == "-" or c[11] in ("-", "") or c[12] == "open":
+                out.append("config/waves.tsv: wave %s is not closed, drafted, fleeted and harvested" % c[0])
+    for f in sorted(glob.glob(str(dev / "campaign/harvest/W*.start.json"))):
+        ok = f[:-len(".start.json")] + ".ok"
+        if not os.path.exists(ok):
+            out.append("campaign/harvest/%s has no %s" % (os.path.basename(f), os.path.basename(ok)))
+    br = _git(dev, "branch", "--show-current").stdout.strip()
+    if br != cfg["dev_branch"]:
+        out.append("dev is on %r, not %s" % (br, cfg["dev_branch"]))
+    head = _git(dev, "rev-parse", "HEAD").stdout.strip()
+    ib = _git(cache, "rev-parse", "--verify", "-q", "refs/psxdecomp/import-base").stdout.strip()
+    if head != ib:
+        out.append("HEAD %s is not the import base %s: import again" % (head[:10], ib[:10] or "(none)"))
+    chain = _git(cache, "rev-list", "--first-parent", "--reverse", "%s..%s" % (head, tip)).stdout.split()
+    allc = _git(cache, "rev-list", "%s..%s" % (head, tip)).stdout.split()
+    if not chain or set(chain) != set(allc) or _git(cache, "rev-parse", chain[0] + "^").stdout.strip() != head:
+        out.append("%s is not a first-parent line of commits on HEAD" % tip[:10])
+    elif not all(trailers(cache, c, IMPORT_TRAILER) for c in chain):
+        out.append("a commit of the chain has no %s trailer" % IMPORT_TRAILER)
+    if _git(dev, "status", "--porcelain", "--untracked-files=no").stdout.strip():
+        out.append("dev has uncommitted changes to tracked files (dirty)")
+    if not cfg["land_check"]:
+        out.append("[public].land_check is not set (the byte check of the exported tip)")
+    elif not out:
+        with tempfile.TemporaryDirectory() as td:
+            _export(cache, _must(cache, "rev-parse", tip + "^{tree}"), td)
+            argv = [a.replace("{tree}", td).replace("{tip}", tip) for a in cfg["land_check"]]
+            try:
+                r = subprocess.run(argv, cwd=dev, capture_output=True, text=True)
+            except OSError as e:
+                r = subprocess.CompletedProcess(argv, 127, "", str(e))
+        if r.returncode != 0:
+            out.append("land_check exited %d:\n%s" % (r.returncode, _tail(r)))
+    return out
+
+
+def cmd_land(repo=".", tip=None) -> int:
+    try:
+        dev, cfg, cache, _ = _split(repo)
+        tip = tip or _git(cache, "rev-parse", "--verify", "-q", "refs/psxdecomp/import").stdout.strip()
+        r = _git(cache, "rev-parse", "--verify", "-q", "%s^{commit}" % tip) if tip else None
+        if r is None or r.returncode != 0:
+            raise Fail("no import to land: run import first")
+        tip = r.stdout.strip()
+        blockers = land_blockers(dev, cfg, cache, tip)
+        if blockers:
+            for b in blockers:
+                _line("LAND", "FAIL", b)
+            return 1
+        old = _must(dev, "rev-parse", "HEAD")
+        n = len(_must(cache, "rev-list", "%s..%s" % (old, tip)).split())
+        _must(dev, "fetch", "-q", str(cache), tip)
+        _must(dev, "merge", "--ff-only", "-q", tip)
+    except Fail as e:
+        _line("LAND", "FAIL", str(e))
+        return 1
+    print("LAND OK %s..%s (%d import commit(s))" % (old[:10], tip[:10], n))
+    return 0
+
+
+# ---- settings: the public repository against the standard --------------------------------------------------------
+
+REPO_WANT = {"allow_merge_commit": False, "allow_rebase_merge": False, "allow_squash_merge": True,
+             "squash_merge_commit_title": "PR_TITLE", "squash_merge_commit_message": "PR_BODY",
+             "delete_branch_on_merge": True, "allow_forking": True, "has_wiki": False, "has_projects": False}
+SECURITY_WANT = ("secret_scanning", "secret_scanning_push_protection")
+PR_KEYS = ("required_approving_review_count", "require_code_owner_review", "dismiss_stale_reviews_on_push",
+           "require_last_push_approval", "required_review_thread_resolution")
+BRANCH_POLICY = {"protected_branches": False, "custom_branch_policies": True}
+ADMIN_UI = "turn off 'Allow administrators to bypass configured protection rules' in the environment's settings (UI only)"
+
+
+def ruleset_want(name: str, checks) -> dict:
+    pr = lambda n, owners: {"type": "pull_request", "parameters": {  # noqa: E731
+        "required_approving_review_count": n, "require_code_owner_review": owners, "dismiss_stale_reviews_on_push": False,
+        "require_last_push_approval": False, "required_review_thread_resolution": False,
+        "allowed_merge_methods": ["squash"]}}
+    body = {"name": name, "target": "branch", "enforcement": "active",
+            "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}}
+    if name == "main-integrity":
+        return body | {"bypass_actors": [], "rules": [
+            {"type": "deletion"}, {"type": "non_fast_forward"}, pr(0, False),
+            {"type": "required_status_checks", "parameters": {
+                "strict_required_status_checks_policy": True, "do_not_enforce_on_create": False,
+                "required_status_checks": [{"context": c, "integration_id": ACTIONS_APP} for c in checks]}}]}
+    return body | {"bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "pull_request"}],
+                   "rules": [pr(1, True)]}
+
+
+def ruleset_norm(j: dict) -> dict:
+    rules = []
+    for r in j.get("rules") or []:
+        p, t = r.get("parameters") or {}, r.get("type")
+        if t == "pull_request":
+            p = {k: p.get(k) if k == PR_KEYS[0] else bool(p.get(k)) for k in PR_KEYS} | {
+                "allowed_merge_methods": sorted(p.get("allowed_merge_methods") or [])}
+            p[PR_KEYS[0]] = p[PR_KEYS[0]] or 0
+        elif t == "required_status_checks":
+            p = {"strict_required_status_checks_policy": bool(p.get("strict_required_status_checks_policy")),
+                 "do_not_enforce_on_create": bool(p.get("do_not_enforce_on_create")),
+                 "required_status_checks": sorted(({"context": c.get("context"), "integration_id": c.get("integration_id")}
+                                                   for c in p.get("required_status_checks") or []),
+                                                  key=lambda c: c["context"] or "")}
+        else:
+            p = {}
+        rules.append({"type": t, "parameters": p})
+    cond = (j.get("conditions") or {}).get("ref_name") or {}
+    bypass = [{k: b.get(k) for k in ("actor_id", "actor_type", "bypass_mode")} for b in j.get("bypass_actors") or []]
+    return {"target": j.get("target"), "enforcement": j.get("enforcement"),
+            "bypass_actors": sorted(bypass, key=lambda b: json.dumps(b, sort_keys=True)),
+            "include": sorted(cond.get("include") or []), "exclude": sorted(cond.get("exclude") or []),
+            "rules": sorted(rules, key=lambda r: r["type"] or "")}
+
+
+def settings_drift(cfg: dict, api) -> list[dict]:
+    """[{what, have, want, fix}] where the public repository differs from the standard; `fix` is a (method, path,
+    body) tuple, or None when only the developer can fix it. `api(method, path, body=None)` returns the parsed JSON
+    ({} for an empty success, None for 404). Only GETs are issued."""
+    R, rows = "repos/" + cfg["repo"], []
+
+    def row(what, have, want, fix=None, hint=None):
+        rows.append({"what": what, "have": have, "want": want, "fix": fix, "hint": hint})
+
+    def field(what, path, have, want, fix):
+        if have != want:
+            row(what, have, want, ("PUT", path, fix))
+    repo = api("GET", R) or {}
+    for k, v in REPO_WANT.items():
+        if repo.get(k) != v:
+            row("repo.%s" % k, repo.get(k), v, ("PATCH", R, {k: v}))
+    if repo.get("visibility") != "public":
+        row("repo.visibility", repo.get("visibility"), "public")
+    sa = repo.get("security_and_analysis") or {}
+    for k in SECURITY_WANT:
+        have = (sa.get(k) or {}).get("status")
+        if have != "enabled":
+            row("repo.%s" % k, have, "enabled", ("PATCH", R, {"security_and_analysis": {k: {"status": "enabled"}}}))
+    p = R + "/private-vulnerability-reporting"
+    field("private-vulnerability-reporting", p, bool((api("GET", p) or {}).get("enabled")), True, None)
+    p = R + "/vulnerability-alerts"
+    field("vulnerability-alerts", p, api("GET", p) is not None, True, None)
+    p = R + "/actions/permissions/workflow"
+    j, fix = api("GET", p) or {}, {"default_workflow_permissions": "read", "can_approve_pull_request_reviews": False}
+    for k, v in fix.items():
+        field("workflow.%s" % k, p, j.get(k), v, fix)
+    p = R + "/actions/permissions"
+    j = api("GET", p) or {}
+    fix = {"enabled": True, "allowed_actions": j.get("allowed_actions") or "all", "sha_pinning_required": True}
+    for k in ("enabled", "sha_pinning_required"):
+        field("actions.%s" % k, p, j.get(k), True, fix)
+    p = R + "/actions/permissions/fork-pr-contributor-approval"
+    field("fork-pr-contributor-approval", p, (api("GET", p) or {}).get("approval_policy"), "all_external_contributors",
+          {"approval_policy": "all_external_contributors"})
+    p = R + "/actions/permissions/artifact-and-log-retention"
+    field("artifact-and-log-retention", p, (api("GET", p) or {}).get("days"), 90, {"days": 90})
+    listed = {x.get("name"): x.get("id") for x in api("GET", R + "/rulesets") or []}
+    for name in ("main-integrity", "main-review"):
+        want = ruleset_want(name, cfg["checks"])
+        if name not in listed:
+            row("ruleset %s" % name, "absent", "present", ("POST", R + "/rulesets", want))
+            continue
+        path = "%s/rulesets/%s" % (R, listed[name])
+        have, w = ruleset_norm(api("GET", path) or {}), ruleset_norm(want)
+        diff = [k for k in w if have[k] != w[k]]
+        if diff:
+            row("ruleset %s" % name, {k: have[k] for k in diff}, {k: w[k] for k in diff}, ("PUT", path, want))
+    owner = cfg["repo"].split("/")[0]
+    uid = (api("GET", "users/" + owner) or {}).get("id")
+    for env, reviewers in (("fork-review", True), ("ci", False)):
+        ep = "%s/environments/%s" % (R, env)
+        j = api("GET", ep)
+        body = {"prevent_self_review": False, "deployment_branch_policy": BRANCH_POLICY}
+        body["reviewers"] = [{"type": "User", "id": uid}] if reviewers else []
+        if j is None:
+            row("environment %s" % env, "absent", "present", ("PUT", ep, body))
+        else:
+            rule = next((r for r in j.get("protection_rules") or [] if r.get("type") == "required_reviewers"), {})
+            ids = sorted((x.get("reviewer") or {}).get("id") for x in rule.get("reviewers") or [])
+            if ids != ([uid] if reviewers else []):
+                row("environment %s reviewers" % env, ids, [uid] if reviewers else [], ("PUT", ep, body))
+            if reviewers and bool(rule.get("prevent_self_review")):
+                row("environment %s prevent_self_review" % env, True, False, ("PUT", ep, body))
+            if j.get("deployment_branch_policy") != BRANCH_POLICY:
+                row("environment %s deployment_branch_policy" % env, j.get("deployment_branch_policy"), BRANCH_POLICY,
+                    ("PUT", ep, body))
+            if "can_admins_bypass" in j and j["can_admins_bypass"]:
+                row("environment %s can_admins_bypass" % env, True, False, None, ADMIN_UI)
+        pols = ((api("GET", ep + "/deployment-branch-policies") or {}).get("branch_policies") or []) if j else []
+        names = sorted(x.get("name") for x in pols)
+        if names != ["main"]:
+            row("environment %s branch policies" % env, names, ["main"],
+                ("POST", ep + "/deployment-branch-policies", {"name": "main", "type": "branch"})
+                if "main" not in names else None)
+    if all(api("GET", R + "/actions/secrets/" + s) is None for s in ("PRIVATE_DEPLOY_KEY", "PRIVATE_REPO_TOKEN")):
+        row("secret PRIVATE_DEPLOY_KEY", "absent", "gh secret set PRIVATE_DEPLOY_KEY --repo %s < <key file> (or a "
+            "fine-grained PAT as PRIVATE_REPO_TOKEN, build.yml's `token:`)" % cfg["repo"])
+    if api("GET", R + "/contents/.github/CODEOWNERS") is None:
+        row("CODEOWNERS", "absent", ".github/CODEOWNERS on main (a release carries it)")
+    return rows
+
+
+def gh_api(method: str, path: str, body=None):
+    r = gh(["api", "-X", method, path] + (["--input", "-"] if body is not None else []),
+           json.dumps(body) if body is not None else None)
+    if r.returncode != 0:
+        if "404" in (r.stdout or "") + (r.stderr or ""):
+            return None
+        raise Fail("gh api %s %s: %s" % (method, path, _tail(r, 3)))
+    return json.loads(r.stdout) if (r.stdout or "").strip() else {}
+
+
+def _print_drift(rows):
+    for r in rows:
+        _line("SETTINGS", "DRIFT", "%s: have %s, want %s%s" % (r["what"], r["have"], r["want"],
+                                                              " (%s)" % r["hint"] if r.get("hint") else ""))
+
+
+@_cmd("SETTINGS")
+def cmd_settings(repo=".", apply=False, api=None) -> int:
+    if apply:
+        _dev_only("settings --apply")
+    cfg = load_public(repo_root(repo))
+    if cfg is None:
+        raise Fail("split mode is off: no [public] in %s" % CONFIG_REL)
+    api = api or gh_api
+    rows = settings_drift(cfg, api)
+    if apply and rows:
+        done = set()
+        for r in rows:
+            if r["fix"] and json.dumps(r["fix"], sort_keys=True) not in done:
+                done.add(json.dumps(r["fix"], sort_keys=True))
+                api(*r["fix"])
+        rows = settings_drift(cfg, api)
+    _print_drift(rows)
+    print("SETTINGS OK" if not rows else "SETTINGS DRIFT %d row(s)" % len(rows))
+    return 1 if rows else 0
+
+
+# ---- verify-pr: a public PR before the developer merges it -------------------------------------------------------
+
+def verify_pr(cfg: dict, n: int, api) -> tuple[list[str], list[str], str]:
+    """(failures, warnings, head sha) for public PR n. A `build *` check must come from build.yml run by
+    `pull_request_target` at the PR head; any other required check (the no-rom audit) from a run at the PR head whose
+    workflow file the PR does not change (otherwise the PR certifies itself)."""
+    R, fails, warns = "repos/" + cfg["repo"], [], []
+    pr = api("GET", "%s/pulls/%d" % (R, n))
+    if not pr:
+        return ["PR #%d not found" % n], [], ""
+    head = pr.get("head") or {}
+    H = head.get("sha") or ""
+    fork = (head.get("repo") or {}).get("full_name") != cfg["repo"]
+    if pr.get("state") != "open":
+        fails.append("PR #%d is %s, not open" % (n, pr.get("state")))
+    if (pr.get("base") or {}).get("ref") != "main":
+        fails.append("PR #%d targets %s, not main" % (n, (pr.get("base") or {}).get("ref")))
+    if fork and ((pr.get("title") or "").startswith("Release:") or re.search(r"^Release-[A-Za-z]+:", pr.get("body") or "",
+                                                                             re.M)):
+        fails.append("a fork PR claims to be a release (Release: title or Release-* trailer)")
+    files = [f.get("filename", "") for f in api("GET", "%s/pulls/%d/files?per_page=100" % (R, n)) or []]
+    runs = (api("GET", "%s/commits/%s/check-runs?per_page=100" % (R, H)) or {}).get("check_runs") or []
+    wf = (api("GET", "%s/actions/runs?head_sha=%s&per_page=100" % (R, H)) or {}).get("workflow_runs") or []
+    for name in cfg["checks"]:
+        mine = [r for r in runs if r.get("name") == name]
+        good = [r for r in mine if r.get("status") == "completed" and r.get("conclusion") == "success"
+                and (r.get("app") or {}).get("id") == ACTIONS_APP]
+        if not good:
+            fails.append("check %r: %s" % (name, "not a completed success from GitHub Actions" if mine else "missing"))
+            continue
+        sid = (good[0].get("check_suite") or {}).get("id")
+        w = next((x for x in wf if x.get("check_suite_id") == sid), None) or {}
+        path = (w.get("path") or "none").split("@")[0]
+        if name.startswith("build "):
+            if path != TRUSTED_WORKFLOW or w.get("head_sha") != H or w.get("event") != "pull_request_target":
+                fails.append("check %r comes from %s/%s at %s, not %s/pull_request_target at the PR head" % (
+                    name, path, w.get("event"), (w.get("head_sha") or "none")[:10], TRUSTED_WORKFLOW))
+        elif w.get("head_sha") != H or path in files or path == "none":
+            fails.append("check %r comes from %s at %s: it must run at the PR head from a workflow the PR does not "
+                         "change" % (name, path, (w.get("head_sha") or "none")[:10]))
+    if fork:
+        touched = [f for f in files if f.startswith(".github/") or is_listed(governance(cfg), f)]
+        if touched:
+            warns.append("a fork PR changes governance paths (the code owner reviews them): %s" % ", ".join(touched))
+    return fails, warns, H
+
+
+@_cmd("VERIFY-PR")
+def cmd_verify_pr(repo=".", n=0, merge=False, api=None) -> int:
+    if merge:
+        _dev_only("verify-pr --merge")
+    cfg = load_public(repo_root(repo))
+    if cfg is None:
+        raise Fail("split mode is off: no [public] in %s" % CONFIG_REL)
+    fails, warns, H = verify_pr(cfg, n, api or gh_api)
+    for w in warns:
+        _line("VERIFY-PR", "WARN", w)
+    for f in fails:
+        _line("VERIFY-PR", "FAIL", f)
+    if fails:
+        print("VERIFY-PR FAIL (%d)" % len(fails))
+        return 1
+    print("VERIFY-PR OK #%d %s" % (n, H[:10]))
+    if merge:
+        r = gh(["pr", "merge", str(n), "--repo", cfg["repo"], "--squash", "--match-head-commit", H])
+        if r.returncode != 0:
+            raise Fail("gh pr merge: %s" % _tail(r, 3))
+        print("VERIFY-PR merged #%d" % n)
+    return 0
+
+
+# ---- pre-push: the local guard on dev -----------------------------------------------------------------------------
+
+PRE_PUSH = """#!/bin/sh
+# psxdecomp split mode: refuses a push of dev to the public repository, the deletion or a force-push of the dev
+# branch, and any push from an agent session. Written by `python3 tools/psxd_publish.py hook --install`.
+exec python3 "$(git rev-parse --show-toplevel)/%s" pre-push "$@"
+""" % VENDORED
+ZERO = "0" * 40
+
+
+def url_slug(url: str) -> str | None:
+    m = re.search(r"github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", url.strip())
+    return ("%s/%s" % (m[1], m[2])).lower() if m else None
+
+
+def pre_push_refusals(dev, url: str, lines: list[str]) -> list[str]:
+    """Why git must not push these refs (`<local ref> <local sha> <remote ref> <remote sha>` lines) to url."""
+    out = []
+    if os.environ.get("CLAUDECODE"):
+        out.append("an agent session never pushes (CLAUDECODE is set)")
+    try:
+        cfg = load_public(dev)
+    except Fail as e:
+        return out + [str(e)]
+    if cfg is None:
+        return out
+    pub = {cfg["url"].rstrip("/"), cfg["url"].rstrip("/").removesuffix(".git")}
+    if url.rstrip("/") in pub or url.rstrip("/").removesuffix(".git") in pub or url_slug(url) == cfg["repo"].lower():
+        out.append("%s is the public repository: dev's history never goes there; `release` publishes" % url)
+    main = "refs/heads/" + cfg["dev_branch"]
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 4 or parts[2] != main:
+            continue
+        local, remote = parts[1], parts[3]
+        if local == ZERO:
+            out.append("deleting %s on %s" % (main, url))
+        elif remote != ZERO and _git(dev, "cat-file", "-e", remote + "^{commit}").returncode:
+            out.append("%s on %s is at %s, which dev lacks: fetch and merge first (a force-push would drop it)" % (
+                main, url, remote[:10]))
+        elif remote != ZERO and _git(dev, "merge-base", "--is-ancestor", remote, local).returncode:
+            out.append("a force-push of %s to %s (%s is not an ancestor of %s)" % (main, url, remote[:10], local[:10]))
+    return out
+
+
+def cmd_pre_push(remote: str, url: str, stdin=None) -> int:
+    found = pre_push_refusals(repo_root("."), url or remote, (stdin or sys.stdin).read().splitlines())
+    for f in found:
+        _line("PRE-PUSH", "FAIL", f)
+    return 1 if found else 0
+
+
+def hook_path(dev) -> pathlib.Path:
+    return pathlib.Path(_must(dev, "rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-push"))
+
+
+@_cmd("HOOK")
+def cmd_hook(repo=".", install=False) -> int:
+    """Report (or, --install, write) the pre-push hook; never overwrites another hook."""
+    dev = repo_root(repo)
+    f = hook_path(dev)
+    have = _read(f)
+    if have == PRE_PUSH and os.access(f, os.X_OK):
+        print("HOOK OK %s" % f)
+        return 0
+    if have is not None and have != PRE_PUSH:
+        raise Fail("%s is another hook: merge psxdecomp's into it by hand (see `hook` output of a clean clone)" % f)
+    if not install:
+        raise Fail("%s is missing: rerun with --install" % f)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(PRE_PUSH, encoding="utf-8")
+    f.chmod(0o755)
+    print("HOOK written %s" % f)
+    return 0
+
+
+# ---- ci-log: the public CI's log filter ---------------------------------------------------------------------------
+
+CI_LOG_DROP = re.compile(r"asm/|\.s:|[0-9A-Fa-f]{8,}|\b[a-z]{1,7}(?:\.[a-z]+)?\s+\$\w+|\b[gd]label\b")
+
+
+def ci_log(data: bytes) -> tuple[list[str], int, int, int]:
+    """(the last 60 kept lines cut to 200 chars, withheld, kept, total): a build log without asm, hex or instructions."""
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    kept = [l[:200] for l in lines if not CI_LOG_DROP.search(l)]
+    return kept[-60:], len(lines) - len(kept), len(kept), len(lines)
+
+
+def cmd_ci_log(path) -> int:
+    try:
+        data = pathlib.Path(path).read_bytes()
+    except OSError as e:
+        print("CI-LOG 0 line(s) shown of 0, 0 withheld (%s)" % e)
+        return 0
+    shown, withheld, kept, total = ci_log(data)
+    print("\n".join(shown))
+    print("CI-LOG %d line(s) shown of %d, %d withheld" % (len(shown), total, withheld))
+    return 0
+
+
 # ---- self-test --------------------------------------------------------------------------------------------------
 
 SELF_TSV = ("# id\tparent\tname\tstatus — the synthetic game's categories\nid\tparent\tname\tstatus\n"
@@ -1050,6 +2238,757 @@ def _self_repo(td: str) -> pathlib.Path:
     run("-c", "commit.gpgsign=false", "commit", "-qm", "synthetic")
     return repo
 
+SELF_LIST = "# the public paths\nconfig/public-paths.txt\nLICENSE\nsrc/\ndocs/*.md\n"
+WORLD_LIST = ("# the public paths\nconfig/public-paths.txt\nLICENSE\nREADME.md\nCONTRIBUTING.md\nMakefile\n.gitignore\n"
+              "config/categories.tsv\nconfig/discs.tsv\nconfig/medium.sha1\nconfig/check.*.sha\nconfig/*.mk\ndocs/*.md\n"
+              "src/\n")
+WORLD_PUBLIC = sorted(["config/public-paths.txt", "LICENSE", "README.md", "CONTRIBUTING.md", "Makefile", ".gitignore",
+                       "config/categories.tsv", "config/discs.tsv", "config/medium.sha1", "config/check.PSXD_000.01.sha",
+                       "config/x.mk", "docs/g.md", "docs/setup.md", "src/a.c", "src/b.c"])
+AUDIT_PY = ("import pathlib, sys\n"
+            "bad = [str(p) for p in pathlib.Path('.').rglob('*') if p.is_file() and not p.is_symlink()\n"
+            "       and p.parts[0] != '.git' and b'MARKER-BYTES' in p.read_bytes()]\n"
+            "if bad:\n    print('leak: ' + ', '.join(bad))\nsys.exit(1 if bad else 0)\n")
+A_C = "1\n2\n3\n4\n5\n6\n7\n8\n"
+
+
+def _fake_store(cfg: dict) -> dict:
+    R = "repos/" + cfg["repo"]
+    env = lambda reviewers: {"protection_rules": [  # noqa: E731
+        {"type": "required_reviewers", "prevent_self_review": False,
+         "reviewers": [{"type": "User", "reviewer": {"id": 42}}] if reviewers else []}, {"type": "branch_policy"}],
+        "can_admins_bypass": False, "deployment_branch_policy": dict(BRANCH_POLICY)}
+    pol = lambda: {"branch_policies": [{"id": 1, "name": "main", "type": "branch"}]}  # noqa: E731
+    return {R: {**REPO_WANT, "visibility": "public",
+                "security_and_analysis": {k: {"status": "enabled"} for k in SECURITY_WANT}},
+            R + "/private-vulnerability-reporting": {"enabled": True}, R + "/vulnerability-alerts": {},
+            R + "/actions/permissions/workflow": {"default_workflow_permissions": "read",
+                                                  "can_approve_pull_request_reviews": False},
+            R + "/actions/permissions": {"enabled": True, "allowed_actions": "all", "sha_pinning_required": True},
+            R + "/actions/permissions/fork-pr-contributor-approval": {"approval_policy": "all_external_contributors"},
+            R + "/actions/permissions/artifact-and-log-retention": {"days": 90},
+            R + "/rulesets": [{"id": 1, "name": "main-integrity"}, {"id": 2, "name": "main-review"}],
+            R + "/rulesets/1": ruleset_want("main-integrity", cfg["checks"]) | {"id": 1},
+            R + "/rulesets/2": ruleset_want("main-review", cfg["checks"]) | {"id": 2},
+            "users/example": {"id": 42}, R + "/environments/fork-review": env(True),
+            R + "/environments/ci": env(False), R + "/environments/fork-review/deployment-branch-policies": pol(),
+            R + "/environments/ci/deployment-branch-policies": pol(),
+            R + "/actions/secrets/PRIVATE_DEPLOY_KEY": {"name": "PRIVATE_DEPLOY_KEY"},
+            R + "/contents/.github/CODEOWNERS": {"name": "CODEOWNERS"}}
+
+
+def _fake_api(store: dict, writes: list):
+    def api(method, path, body=None):
+        if method == "GET":
+            return copy.deepcopy(store.get(path))
+        writes.append((method, path, body))
+        if method == "PUT" and "can_admins_bypass" in (body or {}):
+            writes.append(("BAD", path, body))
+        if method == "PATCH":
+            for k, v in body.items():
+                store[path].setdefault(k, {}).update(v) if isinstance(v, dict) else store[path].__setitem__(k, v)
+        elif method == "POST" and path.endswith("/rulesets"):
+            n = len(store[path]) + 1
+            store[path].append({"id": n, "name": body["name"]})
+            store["%s/%d" % (path, n)] = body | {"id": n}
+        elif method == "POST":
+            store.setdefault(path, {"branch_policies": []})["branch_policies"].append(
+                {"id": 9, "name": body["name"], "type": "branch"})
+        elif "/rulesets/" in path:
+            store[path] = body | {"id": int(path.rsplit("/", 1)[1])}
+        elif "/environments/" in path:
+            store[path] = {"protection_rules": [{"type": "required_reviewers", "prevent_self_review": body["prevent_self_review"],
+                                                 "reviewers": [{"type": "User", "reviewer": {"id": r["id"]}}
+                                                               for r in body["reviewers"]]}],
+                           "can_admins_bypass": (store.get(path) or {}).get("can_admins_bypass", False),
+                           "deployment_branch_policy": body["deployment_branch_policy"]}
+        elif body is None:
+            store[path] = {"enabled": True} if "private-vuln" in path else {}
+        else:
+            store[path] = {**(store.get(path) or {}), **body}
+        return {}
+    return api
+
+
+def _pr_store(cfg, fork=False, event="pull_request_target", path=TRUSTED_WORKFLOW, H="a" * 40, conclusion="success",
+              title="Fix a", body="", files=("src/a.c",)):
+    R = "repos/" + cfg["repo"]
+    runs = [{"name": n, "status": "completed", "conclusion": conclusion, "app": {"id": ACTIONS_APP},
+             "check_suite": {"id": 100 + i}} for i, n in enumerate(cfg["checks"])]
+    wf = [{"id": 900 + i, "check_suite_id": 100 + i, "head_sha": H, "path": path if n.startswith("build ") else
+           ".github/workflows/no-rom.yml", "event": event if n.startswith("build ") else "pull_request"}
+          for i, n in enumerate(cfg["checks"])]
+    return {R + "/pulls/7": {"state": "open", "base": {"ref": "main"}, "title": title, "body": body,
+                             "head": {"sha": H, "repo": {"full_name": "fork/synthetic-decomp" if fork else cfg["repo"]}}},
+            "%s/commits/%s/check-runs?per_page=100" % (R, H): {"check_runs": runs},
+            "%s/actions/runs?head_sha=%s&per_page=100" % (R, H): {"workflow_runs": wf},
+            R + "/pulls/7/files?per_page=100": [{"filename": f} for f in files]}
+
+
+def _public_self_test(check, td: str):
+    """check-public, release, import, land, settings and verify-pr on throwaway repositories: nothing real is touched."""
+    root = pathlib.Path(td)
+    saved, real_gh, real_load = dict(os.environ), gh, load_public
+    os.environ.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t.invalid", GIT_COMMITTER_NAME="t",
+                      GIT_COMMITTER_EMAIL="t@t.invalid", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    g = lambda repo, *a: _git(repo, "-c", "commit.gpgsign=false", *a)  # noqa: E731
+    tick = [0]
+    calls, prs = [], []
+
+    def clock():
+        tick[0] += 1
+        os.environ.update(GIT_AUTHOR_DATE="2026-03-%02dT10:00:%02d+00:00" % (1 + tick[0] // 50, tick[0] % 50))
+        os.environ["GIT_COMMITTER_DATE"] = os.environ["GIT_AUTHOR_DATE"]
+
+    def agent(on):
+        os.environ.pop("CLAUDECODE", None)
+        if on:
+            os.environ["CLAUDECODE"] = "1"
+
+    def call(fn, *a, **k):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = fn(*a, **k)
+        return rc, buf.getvalue()
+
+    def put(repo, files: dict):
+        for rel, body in files.items():
+            f = pathlib.Path(repo) / rel
+            if body is None:
+                f.unlink()
+                continue
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(body, encoding="utf-8")
+
+    def commit(repo, msg, *extra):
+        clock()
+        g(repo, "add", "-A")
+        return g(repo, "commit", "-qm", msg, *extra)
+
+    def tracked(repo):
+        return sorted(p for p in _git(repo, "ls-files", "-z").stdout.split("\0") if p)
+
+    def fake_gh(args, inp=None):
+        a = list(args)
+        calls.append(a)
+        if a[:2] == ["pr", "list"]:
+            out = json.dumps([{"headRefName": h} for h in prs])
+        elif a[:2] == ["pr", "create"]:
+            out = "https://example.invalid/pull/1\n"
+        elif a[:2] == ["pr", "merge"]:
+            out = ""
+        else:
+            return subprocess.CompletedProcess(a, 1, "", "unexpected gh " + " ".join(a))
+        return subprocess.CompletedProcess(a, 0, out, "")
+
+    @contextlib.contextmanager
+    def with_cfg(**over):
+        globals()["load_public"] = lambda repo, rev=None: (lambda c: None if c is None else c | over)(real_load(repo, rev))
+        try:
+            yield
+        finally:
+            globals()["load_public"] = real_load
+
+    class World:
+        """A dev repository, the bare 'GitHub' public repository, a working clone of it for contributors."""
+
+        def __init__(self, name):
+            self.root = root / name
+            self.dev, self.gh, self.wc = self.root / "dev", self.root / "gh.git", self.root / "wc"
+            self.dev.mkdir(parents=True)
+            self.gh.mkdir()
+            for r, bare in ((self.dev, []), (self.gh, ["--bare"])):
+                g(r, "init", "-q", *bare)
+                g(r, "symbolic-ref", "HEAD", "refs/heads/main")
+            g(self.dev, "config", "user.name", "Dev")
+            g(self.dev, "config", "user.email", "dev@x.invalid")
+            g(self.dev, "remote", "add", "origin", "https://github.com/example/synthetic-decomp.git")
+            (self.root / "audit.py").write_text(AUDIT_PY, encoding="utf-8")
+            put(self.dev, {PUBLIC_PATHS_REL: WORLD_LIST, "LICENSE": "lic\n", "src/a.c": A_C, "src/b.c": "b1\n",
+                           "docs/g.md": "g1\n", "docs/setup.md": "# Setup\n", "docs/priv.txt": "p\n",
+                           "CONTRIBUTING.md": "# C\n", "CLAUDE.md": "agents\n", "phase-ends/x.md": "private\n",
+                           "internal/n.c": "n\n", ".claude/pa3-managed.json": '{"files": {"tools/pa3_tool.py": "h"}}',
+                           "tools/pa3_tool.py": "t\n", "config/categories.tsv": SELF_TSV, "config/discs.tsv": SELF_DISCS,
+                           "config/medium.sha1": SELF_MEDIUM, "config/check.PSXD_000.01.sha": SELF_CHECK,
+                           "Makefile": SELF_MAKE, "config/x.mk": "format:\n\techo f\n", ".gitignore": "/disks/\n",
+                           CONFIG_REL: self.toml()})
+            put(self.dev, {"README.md": render(SELF_README, Ctx(self.dev))})
+            commit(self.dev, "dev 1")
+            self.cache = public_cache(self.dev)
+            self.d1 = self.head()
+
+        def toml(self, **over):
+            c = dict(repo="example/synthetic-decomp", url=str(self.gh), dev_branch="main", deny=["internal/"],
+                     checks=["build PSXD_000.01", "public-clean audit (no game bytes)"],
+                     image="ghcr.io/example/psx-toolchain@sha256:" + "a" * 64, private_repo="example/synthetic-private",
+                     private_rev="b" * 40, land_check=["true"],
+                     audit=[sys.executable, str(self.root / "audit.py")]) | over
+            return "[public]\n" + "".join("%s = %s\n" % (k, json.dumps(v)) for k, v in c.items())
+
+        def head(self):
+            return _git(self.dev, "rev-parse", "HEAD").stdout.strip()
+
+        def rel(self, **k):
+            return call(cmd_release, str(self.dev), **k)
+
+        def imp(self, **k):
+            return call(cmd_import, str(self.dev), **k)
+
+        def land(self):
+            return call(cmd_land, str(self.dev))
+
+        def branches(self):
+            return _git(self.cache, "for-each-ref", "--format=%(refname)", "refs/heads/release/").stdout.split()
+
+        def state(self):
+            return history(self.cache, self.dev, fetch_public(self.cache, str(self.gh)))
+
+        def ref(self, name):
+            return _git(self.cache, "rev-parse", "-q", "--verify", name).stdout.strip()
+
+        @contextlib.contextmanager
+        def variant(self, files=None, mut=None, add=True):
+            """One throwaway dev commit, undone afterwards."""
+            put(self.dev, files or {})
+            if mut:
+                mut()
+            if add:
+                commit(self.dev, "variant")
+            else:
+                clock()
+                g(self.dev, "commit", "-qm", "variant")
+            try:
+                yield
+            finally:
+                g(self.dev, "reset", "-q", "--hard", "HEAD~1")
+
+        def sync(self):
+            if not (self.wc / ".git").exists():
+                _must(self.root, "clone", "-q", str(self.gh), str(self.wc))
+                g(self.wc, "config", "user.name", "Wc")
+                g(self.wc, "config", "user.email", "wc@x.invalid")
+            g(self.wc, "fetch", "-q", "origin")
+            if g(self.wc, "rev-parse", "-q", "--verify", "origin/main").returncode == 0:
+                _must(self.wc, "checkout", "-q", "-B", "main", "origin/main")
+
+        def contrib(self, files, msg, mut=None, author="Con Tributor <con@x.invalid>"):
+            self.sync()
+            put(self.wc, files)
+            if mut:
+                mut(self.wc)
+            clock()
+            g(self.wc, "add", "-A")
+            _must(self.wc, "-c", "commit.gpgsign=false", "commit", "-qm", msg, "--author", author)
+            _must(self.wc, "push", "-q", "origin", "HEAD:main")
+            return _must(self.wc, "rev-parse", "HEAD")
+
+        def squash(self, br, n):
+            """GitHub's squash merge of a release PR: PR title + body as the commit message."""
+            self.sync()
+            _must(self.wc, "fetch", "-q", str(self.cache), "refs/heads/" + br)
+            subj, _, rest = _must(self.wc, "log", "-1", "--format=%B", "FETCH_HEAD").partition("\n\n")
+            born = g(self.wc, "rev-parse", "-q", "--verify", "HEAD").returncode == 0
+            _must(self.wc, "merge", "--squash", "-q", "FETCH_HEAD") if born else _must(
+                self.wc, "reset", "-q", "--hard", "FETCH_HEAD")
+            clock()
+            _must(self.wc, "-c", "commit.gpgsign=false", "commit", "-q", *([] if born else ["--amend"]), "-m",
+                  "%s (#%d)\n\n%s" % (subj, n, rest))
+            _must(self.wc, "push", "-q", "origin", "HEAD:main")
+            return _must(self.wc, "rev-parse", "HEAD")
+
+        def rewind(self, sha):
+            self.sync()
+            _must(self.wc, "push", "-q", "-f", "origin", "%s:refs/heads/main" % sha)
+
+    try:
+        # ---- check-public: a clean tree passes; each negative control FAILs (or WARNs) on the named path
+        chk = root / "chk"
+        chk.mkdir()
+        g(chk, "init", "-q")
+        put(chk, {PUBLIC_PATHS_REL: SELF_LIST, "LICENSE": "x\n", "src/a.c": "a\n", "docs/g.md": "g\n"})
+        g(chk, "add", "-A")
+        check("public clean passes", check_public(chk) == [], check_public(chk))
+        put(chk, {"notes.txt": "n\n"})
+        g(chk, "add", "-A")
+        check("public unlisted FAILs", [(a, b.split(":")[0]) for a, b in check_public(chk)] == [("FAIL", "notes.txt")],
+              check_public(chk))
+        g(chk, "rm", "-qf", "notes.txt")
+        put(chk, {PUBLIC_PATHS_REL: SELF_LIST + ".claude/\n", ".claude/x": "x\n"})
+        g(chk, "add", "-A")
+        check("public listed agent path FAILs", any(a == "FAIL" and b.startswith(".claude/x")
+                                                           for a, b in check_public(chk)), check_public(chk))
+        put(chk, {PUBLIC_PATHS_REL: SELF_LIST + "tools/*.py\n", ".claude/x": None})
+        g(chk, "add", "-A")
+        check("public dead entry WARNs", [a for a, b in check_public(chk)] == ["WARN"], check_public(chk))
+        check("public CLI exit codes", call(cmd_check_public, str(chk))[0] == 0, call(cmd_check_public, str(chk)))
+        (chk / PUBLIC_PATHS_REL).unlink()
+        check("public missing list FAILs", [a for a, b in check_public(chk)] == ["FAIL"], check_public(chk))
+        check("public CLI exit 1", call(cmd_check_public, str(chk))[0] == 1)
+        check("match: prefix, glob, miss", is_listed(["src/"], "src/a/b.c") and is_listed(["docs/*.md"], "docs/a/b.md")
+              and not is_listed(["docs/*.md"], "docs/b.txt") and not is_listed([], "x"))
+        c2 = root / "chk2"
+        c2.mkdir()
+        g(c2, "init", "-q")
+        put(c2, {PUBLIC_PATHS_REL: SELF_LIST + "tools/x.py\n", "tools/x.py": "x\n", "src/a.c": "a\n", "docs/g.md": "g\n",
+                 PA3_REL: '{"files": {"tools/x.py": "h"}}'})
+        g(c2, "add", "-A")
+        found = check_public(c2)
+        check("public PA3-managed path FAILs", ("FAIL", "tools/x.py") in [(a, b.split(":")[0]) for a, b in found]
+              and not any(b.startswith("src/a.c") for a, b in found), found)
+        put(c2, {CONFIG_REL: '[public]\nrepo = "o/r"\ndeny = ["docs/"]\n'})
+        g(c2, "add", "-A")
+        check("public [public].deny path FAILs", ("FAIL", "docs/g.md") in [(a, b.split(":")[0]) for a, b in
+                                                                         check_public(c2)], check_public(c2))
+        bad = root / "badcfg"
+        bad.mkdir()
+        put(bad, {CONFIG_REL: '[public]\nrepo = 3\n'})
+        try:
+            load_public(bad)
+            check("config: bad table is an error", False)
+        except Fail as e:
+            check("config: bad table is an error", "repo" in str(e), e)
+        check("config: missing table is off", load_public(chk) is None)
+        put(bad, {CONFIG_REL: '[public]\nrepo = "o/r"\nkeyed = {"config/u.tsv" = "2"}\n'})
+        try:
+            load_public(bad)
+            check("config: a keyed column count must be an integer", False)
+        except Fail as e:
+            check("config: a keyed column count must be an integer", "keyed.config/u.tsv" in str(e), e)
+        put(bad, {CONFIG_REL: '[public]\nrepo = "o/r"\nkeyed = {"config/u.tsv" = 2}\n'})
+        check("config: keyed parses", load_public(bad)["keyed"] == {"config/u.tsv": 2})
+        KB = "# units\n# alias\tstart\tunit\tend\na\t1\tu1\nb\t2\tu2\n"
+
+        def km(o, t, b=KB, n=2):
+            r = keyed_merge(o.encode(), b.encode(), t.encode(), n)
+            return None if r is None else r.decode()
+        check("keyed: a different-alias append on each side merges, ours first",
+              km(KB + "a\t3\tu3\n", KB + "c\t9\tu9\n") == KB + "a\t3\tu3\nc\t9\tu9\n")
+        narrow = KB.replace("a\t1\tu1\n", "a\t1\tu1\t4\n")
+        check("keyed: a row narrowed on one side merges", km(narrow, KB + "c\t9\tu9\n") == narrow + "c\t9\tu9\n"
+              and km(KB + "c\t9\tu9\n", narrow) == narrow + "c\t9\tu9\n")
+        check("keyed: the same change on both sides merges", km(narrow, narrow) == narrow)
+        check("keyed: the same key changed two ways refuses", km(narrow, KB.replace("u1\n", "u1\t5\n")) is None)
+        check("keyed: deleted on one side, changed on the other refuses", km(KB.replace("a\t1\tu1\n", ""), narrow) is None)
+        check("keyed: a key added two ways refuses", km(KB + "c\t9\tx\n", KB + "c\t9\ty\n") is None)
+        check("keyed: a deletion on one side merges", km(KB.replace("b\t2\tu2\n", ""), KB + "c\t9\tu9\n") ==
+              "# units\n# alias\tstart\tunit\tend\na\t1\tu1\nc\t9\tu9\n")
+        check("keyed: their comment edit refuses", km(KB + "a\t3\tu3\n", KB.replace("# units", "# units!")) is None)
+        check("keyed: a duplicate key or a short row refuses", km(KB + "a\t1\tdup\n", KB) is None and
+              km(KB + "z\n", KB) is None)
+        put(bad, {CONFIG_REL: '[public]\nrepo = "o/r"\nassisted_by = "Claude\\nSigned-off-by: x"\n'})
+        try:
+            load_public(bad)
+            check("config: a multi-line assisted_by is an error", False)
+        except Fail as e:
+            check("config: a multi-line assisted_by is an error", "assisted_by" in str(e), e)
+
+        # ---- the main world: dev, public, a contributor
+        globals()["gh"] = fake_gh
+        agent(True)                                              # the shell of an agent session, as in CI and here
+        M = World("m")
+        rc, out = M.rel(summary="first", ack_new=True)
+        check("release refused as agent", rc == 1 and "CLAUDECODE" in out and not M.branches(), out)
+        rc, out = M.rel(summary="first", ack_new=True, dry_run=True)
+        check("dry-run allowed as agent", rc == 0 and "no ref written" in out and not M.branches(), out)
+        check("dry-run lists the listed files", "  A src/a.c" in out and "CLAUDE.md" not in out
+              and "phase-ends" not in out, out)
+        agent(False)
+        off = root / "off"
+        off.mkdir()
+        _self_repo(str(off))
+        rc, out = call(cmd_release, str(off), summary="x")
+        check("split mode off refuses", rc == 1 and "split mode is off" in out, out)
+        rc, out = M.rel(summary="first")
+        check("new paths refused w/o --ack-new", rc == 1 and "--ack-new" in out and not M.branches(), out)
+        rc, out = M.rel(summary=" ", ack_new=True)
+        check("summary required", rc == 1 and "--summary" in out and not M.branches(), out)
+        rc, out = M.rel(summary="x", rev="nosuchrev", ack_new=True)
+        check("release bad rev FAILs", rc == 1 and "no such commit" in out, out)
+
+        def refuses(label, word, files=None, mut=None, add=True, **kw):
+            with M.variant(files, mut, add):
+                rc, out = M.rel(summary="first", ack_new=True, **kw)
+            check(label, rc == 1 and word in out and not M.branches(), out)
+        refuses("listed symlink refuses", "symlink", mut=lambda: os.symlink("a.c", M.dev / "src" / "l"))
+        refuses("listed gitlink refuses", "gitlink", add=False,
+                mut=lambda: g(M.dev, "update-index", "--add", "--cacheinfo", "160000,%s,src/mod" % M.d1))
+        refuses("listed CLAUDE.md refuses", "CLAUDE.md", {PUBLIC_PATHS_REL: WORLD_LIST + "CLAUDE.md\n"})
+        refuses("listed [public].deny refuses", "internal/n.c", {PUBLIC_PATHS_REL: WORLD_LIST + "internal/\n"})
+        refuses("listed PA3 path refuses", "tools/pa3_tool.py", {PUBLIC_PATHS_REL: WORLD_LIST + "tools/pa3_tool.py\n"})
+        refuses("audit marker refuses, no ref", "audit", {"src/leak.c": "MARKER-BYTES\n"})
+        refuses("README linking unlisted path", "docs/priv.txt",
+                {"README.md": (M.dev / "README.md").read_text() + "\nSee [p](docs/priv.txt).\n"})
+        with with_cfg(audit=[]):
+            rc, out = M.rel(summary="first", ack_new=True)
+        check("no audit configured refuses", rc == 1 and "tools/audit_public.py" in out and not M.branches(), out)
+
+        rc, out = M.rel(summary="first", ack_new=True)
+        br = "release/" + M.d1[:10]
+        rsha = M.ref("refs/heads/" + br)
+        check("release 1 unpushed: prints the push to main", rc == 0 and rsha != "" and
+              "%s:refs/heads/main" % rsha in out and "gh pr" not in out, out)
+        _git(M.cache, "update-ref", "-d", "refs/heads/" + br)
+        rc, out = M.rel(summary="first", ack_new=True)
+        check("same inputs, same commit sha", rc == 0 and M.ref("refs/heads/" + br) == rsha, out)
+        rc, out = M.rel(summary="first", ack_new=True)
+        check("a rerun reuses the branch", rc == 0 and M.ref("refs/heads/" + br) == rsha, out)
+        msg = _must(M.cache, "log", "-1", "--format=%B", rsha).splitlines()
+        check("message ends with the three trailers", [l.split(":")[0] for l in msg[-3:]] == list(RELEASE_TRAILERS)
+              and msg[-1] == "Release-Base: none" and msg[0] == "Release: first", msg)
+        check("no [public].assisted_by, no Assisted-by", not any(l.startswith("Assisted-by") for l in msg), msg)
+        tagged = release_body("s", "a" * 40, "b" * 40, None, "Claude Code (Opus 5.5)")
+        parsed = _must(M.cache, "interpret-trailers", "--parse", inp=tagged).splitlines()
+        check("Assisted-by heads the trailer block, Release-* stay last", [l.split(":")[0] for l in parsed] == [
+            "Assisted-by"] + list(RELEASE_TRAILERS) and parsed[0] == "Assisted-by: Claude Code (Opus 5.5)", parsed)
+        src = _read(pathlib.Path(__file__))
+        check("no checkbox disclosure is left", src is not None and ("AI use " + "disclosed") not in src)
+        check("release 1 is the exact projection", sorted(tree_entries(M.cache, rsha)) == WORLD_PUBLIC,
+              sorted(tree_entries(M.cache, rsha)))
+        prs[:] = ["release/old"]
+        rc, out = M.rel(summary="first", ack_new=True, push=True)
+        check("release 1 --push writes public main, no PR", rc == 0 and _must(M.gh, "rev-parse", "main") == rsha
+              and not [c for c in calls if c[:1] == ["pr"]] and g(M.gh, "branch", "--list", "release/*").stdout.strip()
+              == "", (out, calls))
+        prs.clear()
+        s1 = rsha
+        rels, contribs = M.state()
+        check("the real release is recognized", len(rels) == 1 and rels[0][1:] == (M.d1, _must(
+            M.cache, "rev-parse", rsha + "^{tree}")) and contribs == [] and rels[0][0] == rsha, rels)
+        rc, out = M.rel(summary="first")
+        check("release again: nothing to release", rc == 0 and "nothing to release" in out, out)
+
+        # ---- imports refused (each rewinds public main to the release squash)
+        def refused(label, word, files, msg="x", mut=None, rewind=True, **kw):
+            before = M.ref("refs/psxdecomp/import")
+            c = M.contrib(files, msg, mut)
+            rc, out = M.imp(**kw)
+            check(label, rc == 1 and word in out and "nothing written" in out and M.ref("refs/psxdecomp/import") == before,
+                  out)
+            if rewind:
+                M.rewind(s1)
+            return c
+        refused("denied CLAUDE.md refused", "CLAUDE.md: denied", {"CLAUDE.md": "x\n"})
+        refused("PA3-managed path refused", "tools/pa3_tool.py: denied", {"tools/pa3_tool.py": "y\n"})
+        refused("[public].deny path refused", "internal/n.c: denied", {"internal/n.c": "z\n"})
+        refused("unlisted path refused", "notes.txt: listed by neither", {"notes.txt": "n\n"})
+        refused("imported symlink refused", "src/l: a symlink", {}, mut=lambda wc: os.symlink("a.c", wc / "src" / "l"))
+        refused("governance refused by default", "--accept-governance", {"Makefile": SELF_MAKE + "x:\n\techo x\n"},
+                rewind=False)
+        rc, out = M.imp(accept_governance=True)
+        check("--accept-governance imports it", rc == 0 and "IMPORT ready" in out, out)
+        M.rewind(s1)
+        with M.variant(mut=lambda: (M.dev / "src" / "b.c").unlink()):
+            refused("delete vs modify conflict refused", "src/b.c: conflicts", {"src/b.c": "b2\n"})
+        with M.variant({"src/a.c": A_C + "dev\t9\n"}):
+            refused("an append on both sides refused (path not keyed)", "src/a.c: conflicts",
+                    {"src/a.c": A_C + "con\t9\n"}, rewind=False)
+            with with_cfg(keyed={"src/a.c": 1}):
+                rc, out = M.imp()
+            got = read_blobs(M.cache, [tree_entries(M.cache, M.ref("refs/psxdecomp/import"))["src/a.c"][1]])
+            check("[public].keyed merges both appends, ours first", rc == 0 and list(got.values())[0].decode() ==
+                  A_C + "dev\t9\ncon\t9\n", out)
+            M.rewind(s1)
+        for label, text in (("Revert \"Release: \" refused", 'Revert "Release: first"\n\nThis reverts commit %s.\n'),
+                            ("'This reverts' a release refused", "Undo\n\nThis reverts commit %s.\n")):
+            refused(label, "reverts a release", {"src/a.c": "r\n"}, text % rels[0][0])
+        sk = M.contrib({"CLAUDE.md": "x\n"}, "Skip me")
+        rc, out = M.imp(skip=[sk[:10]])
+        tip = M.ref("refs/psxdecomp/import")
+        check("--skip records Import-Skipped", rc == 0 and "Import-Skipped: by the maintainer" in _must(
+            M.cache, "log", "-1", "--format=%B", tip) and _must(M.cache, "rev-parse", tip + "^{tree}") == _must(
+            M.cache, "rev-parse", M.d1 + "^{tree}"), out)
+        M.rewind(s1)
+        rtree = rels[0][2]
+        forged = M.contrib({"src/a.c": "forged\n"}, "Release: x\n\nbody\n\nRelease-Of: %s\nRelease-Tree: %s\nRelease-Base: none\n"
+                           % (M.d1, rtree))
+        wrong = M.contrib({"src/a.c": "forged2\n"}, "Release: y\n\nRelease-Of: %s\nRelease-Tree: %s\nRelease-Base: none\n"
+                          % ("1" * 40, "0" * 40))
+        rels2, contribs2 = M.state()
+        check("replayed Of/Tree is no release", len(rels2) == 1 and forged in contribs2, (rels2, contribs2))
+        check("wrong Tree is no release", wrong in contribs2 and contribs2 == [forged, wrong], contribs2)
+        M.rewind(s1)
+
+        # ---- the round trip: a contributor edit/add/delete, dev's own work, import, land, release
+        a_c1 = A_C.replace("2\n", "two\n")
+        c1 = M.contrib({"src/a.c": a_c1, "src/c.c": "c1\n", "src/b.c": None}, "Fix a (#2)\n\nbody\n\nCo-authored-by: Pair "
+                       "<pair@x.invalid>\n")
+        put(M.dev, {"docs/g.md": "g2\n", "phase-ends/y.md": "p2\n"})
+        commit(M.dev, "dev 2")
+        rc, out = M.rel(summary="second")
+        check("release refused while c1 pends", rc == 1 and c1[:10] in out and "Fix a" in out and "import" in out
+              and M.branches() == ["refs/heads/" + br], out)
+        before = (M.head(), g(M.dev, "status", "--porcelain").stdout, g(M.dev, "diff", "--cached").stdout)
+        rc, out = M.imp()
+        after = (M.head(), g(M.dev, "status", "--porcelain").stdout, g(M.dev, "diff", "--cached").stdout)
+        tip, base = M.ref("refs/psxdecomp/import"), M.ref("refs/psxdecomp/import-base")
+        check("import leaves HEAD, index, worktree", rc == 0 and before == after and after[1:] == ("", "")
+              and base == M.head(), (out, before, after))
+        check("author is the contributor", _must(M.cache, "log", "-1", "--format=%an <%ae>", tip) ==
+              "Con Tributor <con@x.invalid>" and _must(M.cache, "log", "-1", "--format=%cn", tip) == "Dev"
+              and re.fullmatch(r"Import \d{4}-\d{2}-\d{2}: Fix a \(#2\)", _subject(M.cache, tip)), out)
+        body = _must(M.cache, "log", "-1", "--format=%B", tip)
+        check("Imported-From and Co-authored-by", "Imported-From: " + c1 in body and
+              body.rstrip().endswith("Co-authored-by: Pair <pair@x.invalid>"), body)
+        names = _must(M.cache, "diff", "--name-only", base, tip).split()
+        check("imports the listed src/ change", names == ["src/a.c", "src/b.c", "src/c.c"] and "src/b.c" not in
+              tree_entries(M.cache, tip), names)
+        rc, out = M.imp()
+        check("import is deterministic", rc == 0 and M.ref("refs/psxdecomp/import") == tip, out)
+        agent(True)
+        h = M.head()
+        rc, out = M.land()
+        check("land refused as agent", rc == 1 and "CLAUDECODE" in out and M.head() == h, out)
+        agent(False)
+
+        dev_url, ref = "https://github.com/example/synthetic-decomp-dev.git", "refs/heads/main"
+        ff = ["%s %s %s %s" % (ref, h, ref, M.d1)]
+        check("pre-push: a fast-forward to -dev passes", pre_push_refusals(M.dev, dev_url, ff) == [],
+              pre_push_refusals(M.dev, dev_url, ff))
+        for label, url, lines, word in (
+                ("the public slug", "git@github.com:Example/synthetic-decomp.git", ff, "public repository"),
+                ("the public url", str(M.gh), ff, "public repository"),
+                ("deleting main", dev_url, ["(delete) %s %s %s" % (ZERO, ref, h)], "deleting"),
+                ("a force-push", dev_url, ["%s %s %s %s" % (ref, M.d1, ref, h)], "force-push"),
+                ("an unknown remote tip", dev_url, ["%s %s %s %s" % (ref, h, ref, "e" * 40)], "fetch")):
+            got = pre_push_refusals(M.dev, url, lines)
+            check("pre-push refuses %s" % label, any(word in x for x in got), got)
+        agent(True)
+        got = pre_push_refusals(M.dev, dev_url, ff)
+        agent(False)
+        check("pre-push refuses any push from an agent session", any("CLAUDECODE" in x for x in got), got)
+        hp = hook_path(M.dev)
+        r1, r2, r3 = call(cmd_hook, str(M.dev)), call(cmd_hook, str(M.dev), install=True), call(cmd_hook, str(M.dev))
+        check("hook: missing FAILs, --install writes it, then OK", r1[0] == 1 and r2[0] == 0 and r3[0] == 0 and
+              os.access(hp, os.X_OK) and _read(hp) == PRE_PUSH, (r1, r2, r3))
+        hp.write_text("#!/bin/sh\nexit 0\n")
+        rc, out = call(cmd_hook, str(M.dev), install=True)
+        check("hook: another hook is never overwritten", rc == 1 and "another hook" in out and
+              _read(hp) == "#!/bin/sh\nexit 0\n", out)
+        hp.unlink()
+
+        def no_land(label, word, setup, undo=lambda: None):
+            setup()
+            rc, out = M.land()
+            undo()
+            check(label, rc == 1 and word in out and M.head() == h, out)
+        run = M.dev / ".run"
+        no_land("status task set refuses", "status.json", lambda: put(run, {"status.json": json.dumps(
+            {"task": "fixture-task", "kind": None, "waiting": None})}), lambda: shutil.rmtree(run))
+        no_land("live warmer refuses", "warmer r1", lambda: put(run, {
+            "status.json": json.dumps({"task": None, "kind": None, "waiting": None, "router_session": "r1"}),
+            "warmer/r1.pid": str(os.getpid())}), lambda: shutil.rmtree(run))
+        import fcntl
+        put(run, {"gate/locks/a.lock": ""})
+        fd = os.open(str(run / "gate/locks/a.lock"), os.O_RDONLY)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        no_land("held flock refuses", "flock", lambda: None, lambda: (os.close(fd), shutil.rmtree(run)))
+        cur = M.dev / "phase-ends/current"
+        no_land("INBOX bullet refuses", "INBOX.md", lambda: put(cur, {"INBOX.md": "# in\n- item\n"}),
+                lambda: shutil.rmtree(cur))
+        tmpl = "# INBOX\n\n<!-- Freeform bullets.\n- an example inside the comment -->\n\n- <note, or question>\n"
+        check("INBOX: the template's placeholder and commented bullets are not pending (PA3's rule)",
+              inbox_pending(tmpl) == [] and inbox_pending(tmpl + "- fix X\n  and Y\n") == ["fix X and Y"],
+              inbox_pending(tmpl))
+        no_land("REVIEW.md refuses", "REVIEW.md", lambda: put(cur, {"REVIEW.md": "r\n"}), lambda: shutil.rmtree(cur))
+        row = ["W1", "x", "x", "-", "x", "d", "x", "x", "x", "x", "x", "f", "done"]
+        no_land("open wave refuses", "waves.tsv", lambda: put(M.dev, {"config/waves.tsv": "# w\nid\n%s\n" % "\t".join(row)}),
+                lambda: (M.dev / "config/waves.tsv").unlink())
+        no_land("harvest without .ok refuses", "W1.start.json", lambda: put(M.dev, {"campaign/harvest/W1.start.json": "{}"}),
+                lambda: shutil.rmtree(M.dev / "campaign"))
+        no_land("HEAD moved refuses", "import base", lambda: (clock(), g(M.dev, "commit", "--allow-empty", "-qm", "m")),
+                lambda: g(M.dev, "reset", "-q", "--hard", "HEAD~1"))
+        no_land("dirty tracked file refuses", "dirty", lambda: put(M.dev, {"LICENSE": "changed\n"}),
+                lambda: g(M.dev, "checkout", "--", "LICENSE"))
+        with with_cfg(land_check=["false"]):
+            rc, out = M.land()
+        check("failing land_check refuses", rc == 1 and "land_check exited 1" in out and M.head() == h, out)
+        with with_cfg(land_check=[]):
+            rc, out = M.land()
+        check("missing land_check refuses", rc == 1 and "land_check is not set" in out and M.head() == h, out)
+        rc, out = M.land()
+        check("idle land fast-forwards", rc == 0 and "LAND OK" in out and "1 import commit(s)" in out
+              and M.head() == tip, out)
+        with M.variant({PUBLIC_PATHS_REL: WORLD_LIST.replace("src/\n", "src/a.c\nsrc/b.c\n")}):
+            rc, out = M.rel(summary="x", ack_new=True, dry_run=True)
+        check("a path left the list: D", "  D src/c.c" in out, out)
+        pre2, br2 = _must(M.gh, "rev-parse", "main"), "release/" + M.head()[:10]
+        prs[:] = ["release/old"]
+        with with_cfg(assisted_by="Claude Code (Opus 5.5)"):
+            rc, out = M.rel(summary="second", push=True)
+        check("release 2 --push refused, open PR", rc == 1 and "open release PR" in out
+              and g(M.gh, "branch", "--list", "release/*").stdout.strip() == "", out)
+        prs.clear()
+        calls.clear()
+        with with_cfg(assisted_by="Claude Code (Opus 5.5)"):
+            rc, out = M.rel(summary="second", push=True)
+        create = next((c for c in calls if c[:2] == ["pr", "create"]), [])
+        check("release 2 goes back to the PR path", rc == 0 and g(M.gh, "rev-parse", "-q", "--verify", br2).returncode
+              == 0 and create[create.index("--base") + 1:][:1] == ["main"] and br2 in create and "Release-Tree:" in (
+                  _read(create[create.index("--body-file") + 1]) or "") and _must(M.gh, "rev-parse", "main") == pre2,
+              out)
+        r2 = M.ref("refs/heads/" + br2)
+        check("[public].assisted_by becomes the release's Assisted-by", trailers(M.cache, r2, "Assisted-by") == [
+            "Claude Code (Opus 5.5)"] and "Assisted-by: Claude Code (Opus 5.5)" in (
+                _read(M.cache / ("PR_BODY-%s.md" % M.head()[:10])) or ""), trailers(M.cache, r2, "Assisted-by"))
+        main1 = M.ref(PUB_REF)
+        check("land, then a release passes the sync check", rc == 0 and r2 != "", out)
+        t2 = tree_entries(M.cache, r2)
+        check("round trip: release 2 is dev's work only", _must(M.cache, "diff", "--name-only", main1, r2).split() ==
+              ["docs/g.md"] and "src/c.c" in t2 and "src/b.c" not in t2 and "phase-ends/y.md" not in t2, t2)
+
+        # ---- a contributor commit merged while the release PR is open is imported by commit afterwards
+        a_c2 = a_c1.replace("1\n", "ONE\n", 1)
+        c2 = M.contrib({"src/a.c": a_c2}, "Tweak a (#3)")
+        M.squash("release/" + M.head()[:10], 4)
+        put(M.dev, {"src/a.c": a_c1.replace("7\n", "dev7\n")})
+        commit(M.dev, "dev 3")
+        rels3, contribs3 = M.state()
+        rc, out = M.rel(summary="third")
+        check("the squashed Assisted-by release is recognized", trailers(M.cache, rels3[-1][0], "Assisted-by") == [
+            "Claude Code (Opus 5.5)"] and _subject(M.cache, rels3[-1][0]) == "Release: second (#4)"
+              if len(rels3) == 2 else False, rels3)
+        check("release refused, names c2 only", len(rels3) == 2 and rc == 1 and c2[:10] in out and c1[:10] not in out, out)
+        rc, out = M.imp()
+        merged = read_blobs(M.cache, [tree_entries(M.cache, M.ref("refs/psxdecomp/import"))["src/a.c"][1]])
+        check("import merges 3-way with dev's edit", rc == 0 and list(merged.values())[0].decode() ==
+              a_c2.replace("7\n", "dev7\n"), out)
+        rc, out = M.land()
+        check("land the second import", rc == 0 and "LAND OK" in out, out)
+        rc, out = M.rel(summary="third")
+        b3 = "release/" + M.head()[:10]
+        check("round trip: release 3 is dev's edit only", rc == 0 and _must(M.cache, "diff", "--name-only", M.ref(PUB_REF),
+                                                                           M.ref("refs/heads/" + b3)).split() == ["src/a.c"], out)
+        M.squash(b3, 5)
+        rc, out = M.rel(summary="third")
+        check("round trip converges: nothing to release", rc == 0 and "nothing to release" in out, out)
+
+        # ---- dev history rewritten (a purge); the release is still recognized by its tree
+        P = World("purge")
+        rc, out = P.rel(summary="first", ack_new=True)
+        P.squash("release/" + P.d1[:10], 1)
+        clock()
+        g(P.dev, "commit", "--amend", "-qm", "rewritten")
+        g(P.dev, "reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all")
+        g(P.dev, "gc", "-q", "--prune=now")
+        rels4, contribs4 = P.state()
+        check("purged Release-Of recognized by tree", g(P.dev, "cat-file", "-e", P.d1 + "^{commit}").returncode != 0
+              and len(rels4) == 1 and rels4[0][1] == P.d1 and contribs4 == [], (rels4, out))
+
+        # ---- settings
+        cfg = load_public(M.dev)
+        store = _fake_store(cfg)
+        check("compliant repo: no drift", settings_drift(cfg, _fake_api(store, [])) == [],
+              settings_drift(cfg, _fake_api(store, [])))
+        R = "repos/" + cfg["repo"]
+
+        def setv(path, *keys_value):
+            def f(s):
+                d = s[path]
+                for k in keys_value[:-2]:
+                    d = d[k]
+                d[keys_value[-2]] = keys_value[-1]
+            return f
+        rule = lambda path, t: lambda s: next(r for r in s[path]["rules"] if r["type"] == t)["parameters"]  # noqa: E731
+        muts = [
+            ("merge commit allowed", setv(R, "allow_merge_commit", True), "allow_merge_commit"),
+            ("no push protection", setv(R, "security_and_analysis", "secret_scanning_push_protection", "status", "disabled"),
+             "push_protection"),
+            ("ruleset bypass actor", lambda s: s[R + "/rulesets/1"].update(bypass_actors=[
+                {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]), "main-integrity"),
+            ("missing required check", lambda s: rule(R + "/rulesets/1", "required_status_checks")(s)[
+                "required_status_checks"].pop(), "main-integrity"),
+            ("strict off", lambda s: rule(R + "/rulesets/1", "required_status_checks")(s).update(
+                strict_required_status_checks_policy=False), "main-integrity"),
+            ("rebase allowed", lambda s: rule(R + "/rulesets/2", "pull_request")(s).update(
+                allowed_merge_methods=["squash", "rebase"]), "main-review"),
+            ("wrong reviewer", lambda s: s[R + "/environments/fork-review"]["protection_rules"][0]["reviewers"][0][
+                "reviewer"].update(id=7), "fork-review reviewers"),
+            ("ci has reviewers", lambda s: s[R + "/environments/ci"]["protection_rules"][0].update(reviewers=[
+                {"type": "User", "reviewer": {"id": 42}}]), "ci reviewers"),
+            ("ci branch policy missing", lambda s: s.update({R + "/environments/ci/deployment-branch-policies": {
+                "branch_policies": []}}), "ci branch policies"),
+            ("policy first_time_contributors", setv(R + "/actions/permissions/fork-pr-contributor-approval",
+                                                    "approval_policy", "first_time_contributors"), "fork-pr"),
+            ("retention 30", setv(R + "/actions/permissions/artifact-and-log-retention", "days", 30), "retention"),
+            ("sha pinning off", setv(R + "/actions/permissions", "sha_pinning_required", False), "sha_pinning"),
+            ("vulnerability alerts off", lambda s: s.pop(R + "/vulnerability-alerts"), "vulnerability-alerts"),
+            ("ruleset absent", lambda s: s.update({R + "/rulesets": [{"id": 1, "name": "main-integrity"}]}),
+             "ruleset main-review")]
+        for label, mut, word in muts:
+            s = _fake_store(cfg)
+            mut(s)
+            rows = settings_drift(cfg, _fake_api(s, []))
+            check("%s: one drift row" % label, len(rows) == 1 and word in rows[0]["what"] and rows[0]["fix"], rows)
+        s = _fake_store(cfg)
+        s.pop(R + "/actions/secrets/PRIVATE_DEPLOY_KEY")
+        rows = settings_drift(cfg, _fake_api(s, []))
+        check("missing secret: row, no fix", len(rows) == 1 and rows[0]["fix"] is None
+              and "gh secret set PRIVATE_DEPLOY_KEY" in rows[0]["want"], rows)
+        s[R + "/actions/secrets/PRIVATE_REPO_TOKEN"] = {"name": "PRIVATE_REPO_TOKEN"}
+        check("a PAT secret in place of the deploy key: no drift", settings_drift(cfg, _fake_api(s, [])) == [])
+        s = _fake_store(cfg)
+        s[R + "/environments/ci"]["can_admins_bypass"] = True
+        rows = settings_drift(cfg, _fake_api(s, []))
+        check("admin bypass: row, UI hint, no fix", len(rows) == 1 and rows[0]["fix"] is None and "UI only"
+              in rows[0]["hint"], rows)
+        s = _fake_store(cfg)
+        del s[R + "/environments/ci"]["can_admins_bypass"]
+        check("absent can_admins_bypass is not compared", settings_drift(cfg, _fake_api(s, [])) == [])
+        s, writes = _fake_store(cfg), []
+        for _, mut, _ in muts:
+            mut(s)
+        rc, out = call(cmd_settings, str(M.dev), api=_fake_api(s, writes))
+        check("settings reports drift, exit 1", rc == 1 and "SETTINGS DRIFT" in out and not writes, out)
+        agent(True)
+        rc, out = call(cmd_settings, str(M.dev), apply=True, api=_fake_api(s, writes))
+        check("settings --apply refused as agent", rc == 1 and "CLAUDECODE" in out and not writes, out)
+        agent(False)
+        rc, out = call(cmd_settings, str(M.dev), apply=True, api=_fake_api(s, writes))
+        check("--apply fixes every fixable row", rc == 0 and "SETTINGS OK" in out and writes
+              and not [w for w in writes if w[0] == "BAD"], out)
+        s["repos/example/synthetic-decomp/environments/ci"]["can_admins_bypass"] = True
+        s.pop(R + "/actions/secrets/PRIVATE_DEPLOY_KEY")
+        writes.clear()
+        rc, out = call(cmd_settings, str(M.dev), apply=True, api=_fake_api(s, writes))
+        check("--apply still exits 1 on unfixable", rc == 1 and out.count("DRIFT") >= 2 and not writes, out)
+
+        # ---- verify-pr
+        def verify(label, ok, word="", merge=False, **kw):
+            st = _pr_store(cfg, **kw.pop("store", {}))
+            for f in kw.pop("edit", []):
+                f(st)
+            rc, out = call(cmd_verify_pr, str(M.dev), n=7, merge=merge, api=_fake_api(st, []))
+            check(label, (rc == 0) == ok and (word in out) and ("VERIFY-PR OK #7" in out) == ok, out)
+        PR7 = R + "/pulls/7"
+        verify("same-repo release PR passes", True)
+        verify("fork PR passes", True, store={"fork": True})
+        verify("same-repo pull_request event fails", False, "pull_request_target", store={"event": "pull_request"})
+        verify("forged check from evil.yml fails", False, "evil.yml", store={
+            "fork": True, "event": "pull_request", "path": ".github/workflows/evil.yml"})
+        verify("stale head sha fails", False, "missing", edit=[lambda s: s[PR7]["head"].update(sha="b" * 40)])
+        verify("failed conclusion fails", False, "not a completed success", store={"conclusion": "failure"})
+        verify("missing check fails", False, "missing", edit=[lambda s: s["%s/commits/%s/check-runs?per_page=100" % (
+            R, "a" * 40)]["check_runs"].pop()])
+        verify("fork PR titled Release: fails", False, "claims to be a release", store={"fork": True,
+                                                                                         "title": "Release: x"})
+        verify("fork PR with Release-* trailer fails", False, "claims to be a release", store={
+            "fork": True, "body": "x\n\nRelease-Of: " + "a" * 40})
+        verify("fork PR touching .github/ warns", True, "WARN", store={"fork": True, "files": (".github/x.yml",)})
+        verify("audit check from a workflow the PR changes fails", False, "does not change", store={
+            "fork": True, "files": (".github/workflows/no-rom.yml",)})
+        calls.clear()
+        verify("--merge squashes at the head sha", True, "merged", merge=True)
+        check("merge call is pinned to the head", any(c[:2] == ["pr", "merge"] and "--match-head-commit" in c
+                                                          and "a" * 40 in c for c in calls), calls)
+        agent(True)
+        calls.clear()
+        verify("verify-pr --merge refused as agent", False, "CLAUDECODE", merge=True)
+        check("no merge call as agent", not [c for c in calls if c[:2] == ["pr", "merge"]], calls)
+    finally:
+        globals()["gh"], globals()["load_public"] = real_gh, real_load
+        os.environ.clear()
+        os.environ.update(saved)
+
 
 def self_test() -> int:
     ok = True
@@ -1128,6 +3067,11 @@ def self_test() -> int:
               "<code>ovl</code>: 2 overlays" in text and text.index("| `sdk` |") < text.index("| `ovl.title` |"),
               text[:300])
         check("render is idempotent", render(text, ctx) == text)
+        (repo / CONFIG_REL).write_text('[public]\nrepo = "example/synthetic-public"\n', encoding="utf-8")
+        check("split mode: the README names [public].repo, not dev's origin",
+              Ctx(repo).slug == "example/synthetic-public" and "decomp.dev/example/synthetic-public" in render(
+                  SELF_README, Ctx(repo)), Ctx(repo).slug)
+        (repo / CONFIG_REL).unlink()
         named = make_targets_named("make -j 8 -C . -f Makefile build; echo done && make check|tee x  # make sure")
         check("make targets named", named == ["build", "check"], named)
         (repo / "dumps").mkdir()
@@ -1186,6 +3130,12 @@ def self_test() -> int:
         check("history removed id", any("'ovl.stage1'" in e for e in history_errors(repo, removed)[0]))
         check("history renamed id", any("'ovl.stage1'" in e for e in history_errors(repo, renamed)[0]))
         check("history retired id", history_errors(repo, retired)[0] == [])
+    shown, withheld, kept, total = ci_log(("asm/f.s:12: Error: bad opcode\n0x80012345 deadbeef 00112233\naddiu $sp, $sp, -24\n"
+                                           "glabel func_80010000\nmake: *** [build] Error 1\n" + "x" * 300 + "\n").encode())
+    check("ci-log withholds asm, hex, instructions", shown == ["make: *** [build] Error 1", "x" * 200]
+          and (withheld, kept, total) == (4, 2, 6), shown)
+    with tempfile.TemporaryDirectory() as td:
+        _public_self_test(check, td)
     print("publish %s" % ("SELF-TEST OK" if ok else "SELF-TEST FAILED"))
     return 0 if ok else 1
 
@@ -1223,6 +3173,34 @@ def main(argv=None) -> int:
     va.add_argument("--artifact")
     va.add_argument("--version")
     va.add_argument("--exe")
+    cp = sub.add_parser("check-public")
+    cp.add_argument("dir", nargs="?", default=".")
+    rl = sub.add_parser("release")
+    rl.add_argument("--summary", help="the release's title, in your own words (one line)")
+    rl.add_argument("--rev", help="the dev revision (default: [public].dev_branch's tip)")
+    rl.add_argument("--ack-new", action="store_true", help="allow paths public does not have yet")
+    rl.add_argument("--dry-run", action="store_true", help="the checks and the list; no ref is written")
+    rl.add_argument("--push", action="store_true", help="push the branch and open the PR")
+    im = sub.add_parser("import")
+    im.add_argument("--accept-governance", action="store_true")
+    im.add_argument("--skip", action="append", default=[], metavar="SHA", help="a public commit dev must never take")
+    ld = sub.add_parser("land")
+    ld.add_argument("tip", nargs="?")
+    st = sub.add_parser("settings")
+    st.add_argument("--apply", action="store_true")
+    vp = sub.add_parser("verify-pr")
+    vp.add_argument("pr", type=int)
+    vp.add_argument("--merge", action="store_true")
+    for p in (rl, im, ld, st, vp):
+        p.add_argument("--repo", default=".", help="the dev repository (default: this one)")
+    cl = sub.add_parser("ci-log")
+    cl.add_argument("file")
+    pp = sub.add_parser("pre-push", help="git's pre-push hook calls this (stdin: the refs)")
+    pp.add_argument("remote")
+    pp.add_argument("url", nargs="?", default="")
+    hk = sub.add_parser("hook")
+    hk.add_argument("--install", action="store_true")
+    hk.add_argument("--repo", default=".")
     a = ap.parse_args(argv)
     if a.self_test:
         return self_test()
@@ -1298,6 +3276,24 @@ def main(argv=None) -> int:
             print("REPORT ERROR %s" % e)
         print("REPORT %s (%d error%s)" % ("OK" if not errs else "FAIL", len(errs), "" if len(errs) == 1 else "s"))
         return 1 if errs else 0
+    if a.cmd == "check-public":
+        return cmd_check_public(a.dir)
+    if a.cmd == "release":
+        return cmd_release(a.repo, a.rev, a.summary, a.ack_new, a.dry_run, a.push)
+    if a.cmd == "import":
+        return cmd_import(a.repo, a.accept_governance, a.skip)
+    if a.cmd == "land":
+        return cmd_land(a.repo, a.tip)
+    if a.cmd == "settings":
+        return cmd_settings(a.repo, a.apply)
+    if a.cmd == "verify-pr":
+        return cmd_verify_pr(a.repo, a.pr, a.merge)
+    if a.cmd == "ci-log":
+        return cmd_ci_log(a.file)
+    if a.cmd == "pre-push":
+        return cmd_pre_push(a.remote, a.url)
+    if a.cmd == "hook":
+        return cmd_hook(a.repo, a.install)
     ap.print_help()
     return 2
 

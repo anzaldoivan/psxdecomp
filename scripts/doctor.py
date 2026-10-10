@@ -9,7 +9,8 @@ Checks: the bootstrap record (config/psxdecomp.toml); PA3's version against comp
 machine's PA3 against the pin, and pa.json `"upgrade": "ask"`); the kit's install record; the README (FAIL without the
 AI policy block; a README on the standard, docs/PUBLISHING.md, is linted and FAILs on a lint failure; an older one
 WARNs); publish-tool (WARN only: tools/psxd_publish.py and its workflow are the plugin's); categories (when
-config/categories.tsv exists: its rules, and no published id gone); the interpreter pa.json names exists on
+config/categories.tsv exists: its rules, and no published id gone); split-guard (split mode only: origin is not the
+public repository and the pre-push hook is in place); the interpreter pa.json names exists on
 this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
 PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
@@ -50,7 +51,9 @@ def check(repo, only=None, offline=False) -> list[tuple[str, str, str]]:
         if prog:
             add("progress", *prog)
     if not only or "github" in only:
-        for st, detail in github_rows(github_slug(repo), None if offline else gh_api):
+        wf = repo / ".github" / "workflows"
+        texts = {p.name: common.read(p) for p in sorted(wf.glob("*.y*ml"))} if wf.is_dir() else {}
+        for st, detail in github_rows(github_slug(repo), None if offline else gh_api, texts):
             add("github", st, detail)
     return [r for r in rows if not only or r[0] in only]
 
@@ -90,6 +93,9 @@ def base_rows(repo: pathlib.Path, add):
     readme = repo / "README.md"
     add("readme", *readme_row(common.read(readme) if readme.is_file() else None, repo))
     add("publish-tool", *publish_tool_row(repo))
+    guard = split_guard_row(repo)
+    if guard:
+        add("split-guard", *guard)
     cats = categories_row(repo)
     if cats:
         add("categories", *cats)
@@ -190,6 +196,25 @@ def publish_tool_row(repo: pathlib.Path) -> tuple[str, str]:
     return "OK", "%s and %s are psxdecomp %s's" % (publish.VENDORED, publish.WORKFLOW, common.plugin_version())
 
 
+def split_guard_row(repo: pathlib.Path) -> tuple[str, str] | None:
+    """Split mode only: origin is not the public repository, and the pre-push hook is psxdecomp's."""
+    try:
+        cfg = publish.load_public(repo)
+    except publish.Fail as e:
+        return "FAIL", str(e)
+    if cfg is None:
+        return None
+    bad = []
+    if (github_slug(repo) or "").lower() == cfg["repo"].lower():
+        bad.append("origin is the public %s: point it at the private -dev" % cfg["repo"])
+    hook = publish.hook_path(repo)
+    if publish._read(hook) != publish.PRE_PUSH or not os.access(hook, os.X_OK):
+        bad.append("no psxdecomp pre-push hook (python3 %s hook --install)" % publish.VENDORED)
+    if bad:
+        return "FAIL", "; ".join(bad)
+    return "OK", "origin %s, not the public %s; pre-push hook in place" % (github_slug(repo), cfg["repo"])
+
+
 def categories_row(repo: pathlib.Path) -> tuple[str, str] | None:
     """config/categories.tsv's rules and its freeze (no committed id gone); None before the first publish."""
     rows, errs = publish.load_categories(repo / publish.CATEGORIES_REL)
@@ -259,10 +284,14 @@ def sdk_row(psyq: dict | None, repo: pathlib.Path, byo: str | None) -> tuple[str
 # ---- progress: a decomp.dev report workflow --------------------------------------------------------------------
 # decomp.dev reads an objdiff report.json from an artifact named <version>_report. The safety lint is text-level (the
 # scripts are stdlib only): a report job needs no ROM and no secret; a byte-match job that pulls a private ROM image
-# (container.credentials) runs only for this repository's own branches and never uploads build output.
+# (container.credentials) never uploads build output, and on fork PRs either runs gated to this repository's own
+# branches, or pulls the image with GITHUB_TOKEN, which a fork PR has, under the repository's approval setting for
+# external contributors (the github row checks it).
 REPORT_HINT = re.compile(r"_report\b|objdiff-cli\s+report|report\.json")
 FORK_GATE = re.compile(r"github\.event\.pull_request\.head\.repo\.full_name\s*==\s*github\.repository")
 SHA256 = re.compile(r"\b[0-9a-f]{64}\b")
+TOKEN_PASSWORD = re.compile(r"password:\s*\$\{\{\s*(secrets\.GITHUB_TOKEN|github\.token)\s*\}\}")
+ON_PRS = re.compile(r"^\s*pull_request\s*:|^on:.*\bpull_request\b|^\s*-\s*pull_request\s*$", re.M)
 
 
 def _blocks(lines: list[str], start: int, indent: int) -> int:
@@ -312,18 +341,73 @@ def _uploads(job: str) -> list[tuple[str, str]]:
     return out
 
 
+# Split mode's public build.yml (profiles/psx/build.yml): `pull_request_target` is its point, so it is held to the
+# invariants that make it safe instead of being refused (docs/PUBLISHING.md, Split mode).
+SPLIT_KEYS = {"ssh-key": "PRIVATE_DEPLOY_KEY", "token": "PRIVATE_REPO_TOKEN"}    # the deploy key, or a fine-grained PAT
+GUARD = re.compile(r"^    if: github\.repository == '[^']+'\s*(#.*)?$", re.M)
+
+
+def lint_split_build(text: str) -> list[str]:
+    """Findings against the invariants of a split-mode public build.yml ([] when it holds every one)."""
+    found = []
+    on = text.split("\npermissions:", 1)[0].split("\non:", 1)[-1]
+    events = re.findall(r"^  ([\w-]+):", on, re.M)
+    if events != ["push", "pull_request_target"] or not re.search(r"^    branches: \[main\]$", on, re.M):
+        found.append("triggers %s: exactly push (branches: [main]) and pull_request_target" % events)
+    perms = re.findall(r"^permissions:\n((?:  .*\n)+)", text, re.M)
+    if perms != ["  contents: read\n"] or re.search(r"^ +permissions:", text, re.M):
+        found.append("permissions: only a top-level `contents: read`")
+    if re.search(r"actions/cache|^\s+cache(-[\w-]+)?:", text, re.M):
+        found.append("a cache: no cache of game files or build output, ever")
+    for bad in ("always()", "failure()", "cancelled()", "continue-on-error"):
+        if bad in text:
+            found.append("%s: a failed or cancelled run must never go on" % bad)
+    jobs = _jobs(text)
+    for job, body in jobs.items():
+        ifs = re.findall(r"^    if:.*$", body, re.M)
+        if len(ifs) != 1 or not GUARD.match(ifs[0]):
+            found.append("%s: the job's only condition is the repository guard (a skipped job passes a required "
+                         "check)" % job)
+        if not re.search(r"^    environment: .*'fork-review'", body, re.M):
+            found.append("%s: fork PRs must wait in the fork-review environment" % job)
+    secrets = re.findall(r"^(.*)\bsecrets\.(\w+)", text, re.M)
+    m = re.match(r"^\s+([\w-]+): \$\{\{ $", secrets[0][0]) if len(secrets) == 1 else None
+    if not m or SPLIT_KEYS.get(m.group(1)) != secrets[0][1]:
+        found.append("secrets: only `ssh-key: ${{ secrets.PRIVATE_DEPLOY_KEY }}` (or `token: ${{ secrets.PRIVATE_REPO_TOKEN"
+                     " }}`) in the private checkout")
+    checkouts = len(re.findall(r"uses: actions/checkout@", text))
+    if checkouts != len(re.findall(r"^\s+persist-credentials: false$", text, re.M)):
+        found.append("every checkout sets persist-credentials: false")
+    lines = text.splitlines()
+    for i, l in enumerate(lines):
+        if re.match(r"^\s+(- )?run: ", l) or re.match(r"^\s+(- )?run: [|>]", l):
+            block = lines[i:_blocks(lines, i, len(l) - len(l.lstrip()))]
+            if any("${{" in x for x in block):
+                found.append("line %d: an expression inside run: (script injection): pass it through env" % (i + 1))
+    for l in re.findall(r"docker run[^\n]*", text):
+        if " -d " in l and "--network none" not in l:
+            found.append("a PR-code container with network after the game files are staged: --network none")
+    up = re.search(r"^      - name: Upload report\n        if: (.*)$", text, re.M)
+    if not up or not up[1].startswith("success() && "):
+        found.append("the report upload must be gated on success()")
+    return found
+
+
 def lint_workflows(texts: dict[str, str]) -> list[str]:
     """Safety findings over the workflows that build a decomp.dev report (empty when none does)."""
     found = []
     reporting = {n: t for n, t in texts.items() if REPORT_HINT.search(t)}
     for name, text in sorted(reporting.items()):
+        if any(k in text for k in SPLIT_KEYS.values()):
+            found += ["%s: %s" % (name, f) for f in lint_split_build(text)]
+            continue
         if re.search(r"^\s*pull_request_target\s*:|\bpull_request_target\b", text, re.M):
             found.append("%s: pull_request_target runs fork code with secrets: use pull_request" % name)
         if re.search(r"write-all|:\s*write\b", text):
             found.append("%s: a write permission: the report needs `permissions: contents: read`" % name)
         elif not re.search(r"^permissions:", text, re.M):
             found.append("%s: no top-level `permissions:` (set `contents: read`)" % name)
-        prs = re.search(r"^\s*pull_request\s*:|^on:.*\bpull_request\b|^\s*-\s*pull_request\s*$", text, re.M)
+        prs = ON_PRS.search(text)
         for job, body in _jobs(text).items():
             rom = re.search(r"^\s+container:", body, re.M) and re.search(r"^\s+credentials:", body, re.M)
             ups = _uploads(body)
@@ -338,8 +422,10 @@ def lint_workflows(texts: dict[str, str]) -> list[str]:
                         found.append("%s/%s: the report artifact uploads %r: upload only report.json"
                                      % (name, job, path))
             if rom:
-                if prs and not FORK_GATE.search(body):
-                    found.append("%s/%s: the ROM image job runs on fork PRs: gate it with `if: "
+                if prs and not FORK_GATE.search(body) and not TOKEN_PASSWORD.search(body):
+                    found.append("%s/%s: the ROM image job runs on fork PRs with a secret they never get (the job "
+                                 "breaks for them): pull the image with GITHUB_TOKEN and `packages: read` (the "
+                                 "package grants the repository access), or gate it with `if: "
                                  "github.event.pull_request.head.repo.full_name == github.repository`" % (name, job))
             elif re.search(r"secrets\.(?!GITHUB_TOKEN\b)\w+", body):
                 found.append("%s/%s: a ROM-free job reads a secret (it needs none)" % (name, job))
@@ -347,6 +433,14 @@ def lint_workflows(texts: dict[str, str]) -> list[str]:
                                                     text) and SHA256.search(text)):
             found.append("%s: objdiff-cli is not pinned by version and sha256" % name)
     return found
+
+
+def ungated_token_rom(texts: dict[str, str]) -> list[str]:
+    """`workflow/job` of each ROM image job that runs on PRs, pulls with GITHUB_TOKEN and has no fork gate."""
+    return ["%s/%s" % (name, job) for name, text in sorted(texts.items()) if ON_PRS.search(text)
+            for job, body in _jobs(text).items()
+            if re.search(r"^\s+container:", body, re.M) and TOKEN_PASSWORD.search(body)
+            and not FORK_GATE.search(body)]
 
 
 def github_slug(repo: pathlib.Path) -> str | None:
@@ -387,8 +481,9 @@ def gh_api(path: str):
     return json.loads(r.stdout)
 
 
-def github_rows(slug: str | None, api) -> list[tuple[str, str]]:
-    """[(status, detail)]: one OK row, or one WARN per setting with the exact `gh api` fix; [] when skipped."""
+def github_rows(slug: str | None, api, texts: dict[str, str] | None = None) -> list[tuple[str, str]]:
+    """[(status, detail)]: one OK row, or one WARN per setting with the exact `gh api` fix; [] when skipped.
+    `texts` (the repo's workflows) lets the fork-approval check demand the strict policy for an ungated GITHUB_TOKEN job."""
     if not slug:
         return []
     if api is None:
@@ -416,7 +511,13 @@ def github_rows(slug: str | None, api) -> list[tuple[str, str]]:
         warns.append("actions are not required to be pinned to a full commit SHA — fix: gh api -X PUT "
                      "%s/actions/permissions -F enabled=true -f allowed_actions=%s -F sha_pinning_required=true"
                      % (R, perms.get("allowed_actions") or "all"))
-    if (get("actions/permissions/fork-pr-contributor-approval") or {}).get("approval_policy") in (None, "none"):
+    policy = (get("actions/permissions/fork-pr-contributor-approval") or {}).get("approval_policy")
+    tww = ungated_token_rom(texts or {})
+    if tww and policy != "all_external_contributors":
+        warns.append("%s pull(s) the private image on fork PRs: approval must cover all external contributors — fix: "
+                     "gh api -X PUT %s/actions/permissions/fork-pr-contributor-approval "
+                     "-f approval_policy=all_external_contributors" % (", ".join(tww), R))
+    elif policy in (None, "none"):
         warns.append("fork PRs run workflows without approval — fix: gh api -X PUT "
                      "%s/actions/permissions/fork-pr-contributor-approval "
                      "-f approval_policy=first_time_contributors" % R)
@@ -517,6 +618,17 @@ def self_test() -> int:
         std = publish.render(publish.SELF_README, publish.Ctx(repo))
         rm += [readme_row(std, repo), readme_row(std.replace("## Progress", "## Status"), repo)]
         tool = publish_tool_row(repo)
+        guard = [split_guard_row(repo)]
+        (repo / publish.CONFIG_REL).write_text('[public]\nrepo = "example/synthetic-decomp"\n')
+        guard.append(split_guard_row(repo))
+        common.git(repo, "remote", "set-url", "origin", "https://github.com/example/synthetic-decomp-dev.git")
+        with contextlib.redirect_stdout(io.StringIO()):
+            publish.cmd_hook(str(repo), install=True)
+        guard.append(split_guard_row(repo))
+        print("  split-guard: %s" % "; ".join("%s %s" % (g[0], g[1]) if g else "none" for g in guard))
+        ok &= guard[0] is None and guard[1][0] == "FAIL" and "origin is the public" in guard[1][1] and "hook" in guard[1][1]
+        ok &= guard[2][0] == "OK"
+        (repo / publish.CONFIG_REL).unlink()
         cats = categories_row(repo)
         (repo / publish.CATEGORIES_REL).write_text(publish.SELF_TSV.replace("ovl.stage1\tovl\tStage 1\tactive\n", ""))
         cats_gone = categories_row(repo)
@@ -580,6 +692,12 @@ def self_test_progress() -> bool:
         "uploads build/": (upload_build, ["uploads build/"]),
         "ungated ROM image": (good.replace("    if: github.event_name == 'push' || github.event.pull_request.head.repo"
                                            ".full_name == github.repository\n", ""), ["runs on fork PRs"]),
+        "ungated GITHUB_TOKEN ROM job": (good.replace("secrets.ROM_IMAGE_TOKEN", "secrets.GITHUB_TOKEN")
+                                               .replace("    if: github.event_name == 'push' || github.event."
+                                                        "pull_request.head.repo.full_name == github.repository\n", ""),
+                                               []),
+        "ungated PAT ROM job": (good.replace("    if: github.event_name == 'push' || github.event.pull_request.head.repo"
+                                             ".full_name == github.repository\n", ""), ["a secret they never get"]),
         "secret in report job": (good.replace("      - run: ./objdiff-cli", "      - run: echo ${{ secrets.X }}\n"
                                               "      - run: ./objdiff-cli"), ["reads a secret"]),
         "artifact name": (good.replace("name: us_report", "name: progress"), ["decomp.dev reads <version>_report"]),
@@ -607,7 +725,15 @@ def self_test_progress() -> bool:
     return ok
 
 
-def _dc2_like(sha_pinning: bool):
+def build_template() -> str:
+    """profiles/psx/build.yml with sample values in its {{...}} placeholders."""
+    vals = dict(REPO="example/game", EXES='"SLUS_000.00"', FETCH_COMMAND="make toolchain",
+                BUILD_COMMAND="make split build", REPORT_COMMAND="python3 tools/progress_units.py > report.json")
+    return re.sub(r"\{\{([A-Z_]+)\}\}", lambda m: vals[m[1]],
+                  common.read(common.PLUGIN_ROOT / "profiles" / "psx" / "build.yml"))
+
+
+def _dc2_like(sha_pinning: bool, policy: str = "first_time_contributors"):
     """Canned gh api responses shaped like DC2's real ones (read 2026-10-02)."""
     R = "repos/example/game"
     d = {R: {"default_branch": "main", "security_and_analysis": {
@@ -616,7 +742,7 @@ def _dc2_like(sha_pinning: bool):
          R + "/actions/permissions": {"enabled": True, "allowed_actions": "all", "sha_pinning_required": sha_pinning},
          R + "/actions/permissions/workflow": {"default_workflow_permissions": "read",
                                                "can_approve_pull_request_reviews": False},
-         R + "/actions/permissions/fork-pr-contributor-approval": {"approval_policy": "first_time_contributors"},
+         R + "/actions/permissions/fork-pr-contributor-approval": {"approval_policy": policy},
          R + "/rulesets": [{"id": 1, "name": "main", "target": "branch"}, {"id": 2, "name": "tags", "target": "tag"}],
          R + "/rulesets/1": {"id": 1, "target": "branch", "enforcement": "active",
                              "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
@@ -640,8 +766,17 @@ def self_test_github() -> bool:
     def down(path):
         raise RuntimeError("gh: not logged in")
     skipped = github_rows("example/game", down)
+    tww = {"build.yml": GOOD_WORKFLOW.replace("secrets.ROM_IMAGE_TOKEN", "secrets.GITHUB_TOKEN").replace(
+        "    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository\n",
+        "")}
+    ok = ungated_token_rom(tww) == ["build.yml/match"] and ungated_token_rom({"p.yml": GOOD_WORKFLOW}) == []
+    loose = github_rows("example/game", _dc2_like(True), tww)                   # first_time_contributors: too weak
+    strict = github_rows("example/game", _dc2_like(True, "all_external_contributors"), tww)
+    ok &= (len(loose) == 1 and loose[0][0] == "WARN" and "approval_policy=all_external_contributors" in loose[0][1]
+           and "build.yml/match" in loose[0][1] and [s for s, _ in strict] == ["OK"])
+    ok &= not lint_workflows({"build.yml": build_template()})               # the public CI template lints clean
     print("  github (DC2-shaped, sha pinning off): %s" % "; ".join("%s %s" % (s, d[:60]) for s, d in warn))
-    return (len(warn) == 1 and warn[0][0] == "WARN" and "sha_pinning_required=true" in warn[0][1]
+    return ok and (len(warn) == 1 and warn[0][0] == "WARN" and "sha_pinning_required=true" in warn[0][1]
             and "gh api -X PUT repos/example/game/actions/permissions" in warn[0][1]
             and [s for s, _ in clean] == ["OK"] and skipped[0][0] == "OK" and "skipped" in skipped[0][1]
             and github_rows(None, down) == [] and github_rows("example/game", None)[0][1].startswith("offline"))

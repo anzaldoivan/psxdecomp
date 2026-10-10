@@ -104,6 +104,7 @@ your-game/
   README.md               the project's front page, on the README standard, with the AI policy
   config/discs.tsv        the disc, serial and executable rows the README's disc table shows
   tools/psxd_publish.py   the README lint and the decomp.dev report checks, run by the game's CI
+  config/public-paths.txt optional, split mode: the paths the public repo shows ([docs/PUBLISHING.md](docs/PUBLISHING.md#split-mode-a-public-trunk-a-private-workspace-a-private-store))
   config/psxdecomp.toml   the bootstrap record: pins, profile, PsyQ lead
   docs/prior-art.md       the research report you confirmed
   docs/ops/refs.md        the reference-library index (the sources sit in the ignored refs/)

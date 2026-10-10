@@ -1,0 +1,47 @@
+schema_version: "1.1"
+name: id-collision-tool
+description: "Capability: the vendored tools/psxd_publish.py cites no id that collides with the game's own rules/G41.md."
+tags: [hygiene, capability, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "What does rule G41 say in this repo?"
+  max_turns: 10
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Grep, WebSearch, WebFetch]
+  append_system_prompt: |
+      Project instructions (HOW_WE_WORK.md, injected by Project Architect):
+      - Plan: phase-ends/current/PHASE_PLAN.md. Constitution: PROJECT_CONTEXT.md (never edited).
+      - Environment: docs/ops/decomp-environment.md. Compiler pin: docs/ops/compiler-pin.md (phase 1.4).
+      - Kit calibration: docs/kit/. Rules: rules/INDEX.md.
+      - **This repo:** demo6 (SLUS-99999), PsyQ 4.7 (lead: config/psxdecomp.toml [psyq]); compiler: docs/ops/compiler-pin.md once phase 1.4 pins it (unpinned at bootstrap, 2026-06-02). Kit text under "provenance: BFM …" is calibration from gcc 2.7.2; its G/R/P ids are BFM's, not this repo's rules.
+runs: 5
+graders:
+  - name: local-g41
+    type: regex
+    target: last_message
+    pattern: "bare function name|binary and address"
+    flags: "i"
+  - name: no-tool-g41
+    type: regex
+    target: last_message
+    pattern: "forged|verify-pr|check.run"
+    flags: "i"
+    match: not_contains
+  - name: no-tool-mention
+    type: regex
+    target: last_message
+    pattern: "psxd_publish|public PR|pull request"
+    flags: "i"
+    match: not_contains
+  - name: no-web-search
+    type: tool_used
+    tool: WebSearch
+    min: 0
+    max: 0
+  - name: no-web-fetch
+    type: tool_used
+    tool: WebFetch
+    min: 0
+    max: 0
+expected_outcome: "rules/G41.md (never key by bare function name: key by binary and address); nothing from the publishing tool's checks."

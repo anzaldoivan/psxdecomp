@@ -117,7 +117,7 @@ def test_eval_cases():
             assert (case.parent / sc).is_file()
     assert {"no-autofire", "interview-first", "answers-path", "refs-grep", "refs-grep-ignored", "refuse-nonpsx",
             "backtest-x6", "backtest-x5", "backtest-dc2", "backtest-bfm", "poisoned-grep", "poisoned-grep-raw", "unpinned-candidate",
-            "kit-calibration-scope", "id-collision", "restart-handoff", "psyq-question"} <= names
+            "kit-calibration-scope", "id-collision", "id-collision-tool", "restart-handoff", "psyq-question"} <= names
 
 
 def _passes(g, text):
@@ -271,7 +271,7 @@ def test_upstream_proposals():
     text = (ROOT / "docs/ECOSYSTEM.md").read_text().split("## Proposed to upstreams", 1)[1].split("\n## ", 1)[0]
     rows = [[c.strip() for c in l.strip("|").split("|")] for l in text.splitlines() if re.match(r"^\| [A-Z]\d+ \|", l)]
     assert len(rows) >= 10
-    states = ("proposed", "sent", "accepted", "declined", "deferred")
+    states = ("proposed", "sent", "accepted", "declined", "deferred", "superseded")
     for r in rows:
         assert len(r) == 5 and r[1] and r[2], r[0]
         assert r[3] in {"kit", "mmx6", "PA3", "DC2", "BFM"}, (r[0], r[3])
@@ -388,3 +388,51 @@ def test_publish_is_vendorable():
     uses = re.findall(r"uses:\s*(\S+)", wf)
     assert uses and all(re.search(r"@[0-9a-f]{40}$", u) for u in uses), uses
     assert "tools/psxd_publish.py lint README.md" in wf and "--history" in wf and "fetch-depth: 0" in wf
+
+
+def test_split_build_invariants():
+    """The public build.yml pins every action to a full commit SHA and holds every invariant doctor lints:
+    push + pull_request_target only, contents: read, no cache, no always()/failure()/continue-on-error, the job's only
+    condition the repository guard, fork PRs in the fork-review environment, the deploy key only in the private
+    checkout, no expression inside run:, the build without network, the upload gated on success(). Each planted
+    violation is caught (a negative control per invariant)."""
+    import doctor
+    text = (ROOT / "profiles/psx/build.yml").read_text()
+    uses = re.findall(r"uses:\s*(\S+)", text)
+    assert uses and all(re.search(r"@[0-9a-f]{40}$", u) for u in uses), uses
+    assert not (ROOT / "profiles/psx/psxdecomp-release.yml").exists()        # no PAT release workflow
+    good = doctor.build_template()
+    assert doctor.lint_workflows({"build.yml": good}) == []
+    planted = {
+        "cache": good.replace("      - name: Stage", "      - uses: actions/cache@x\n      - name: Stage"),
+        "always()": good.replace("if: success() &&", "if: always() &&"),
+        "continue-on-error": good.replace("    timeout-minutes: 60", "    timeout-minutes: 60\n    continue-on-error: true"),
+        "triggers": good.replace("  pull_request_target:", "  pull_request_target:\n  pull_request:"),
+        "job condition": good.replace("    if: github.repository == 'example/game'", "    if: github.event_name == 'push'"),
+        "fork-review": good.replace("'fork-review'", "'ci'"),
+        "secrets": good.replace("    env:\n", "    env:\n      K: ${{ secrets.OTHER }}\n"),
+        "persist-credentials": good.replace("          persist-credentials: false\n", "", 1),
+        "expression inside run": good.replace("run: mv .psxd-private", "run: echo ${{ github.head_ref }}; mv .psxd-private"),
+        "network": good.replace("docker run -d --network none", "docker run -d"),
+        "permissions": good.replace("  contents: read\n", "  contents: read\n  pull-requests: write\n", 1),
+    }
+    for name, text in planted.items():
+        assert text != good, name
+        assert doctor.lint_split_build(text), name
+    pat = good.replace("ssh-key: ${{ secrets.PRIVATE_DEPLOY_KEY }}", "token: ${{ secrets.PRIVATE_REPO_TOKEN }}")
+    assert pat != good and doctor.lint_split_build(pat) == []                # a fine-grained PAT in its place
+    for wrong in ("token: ${{ secrets.PRIVATE_DEPLOY_KEY }}", "ssh-key: ${{ secrets.PRIVATE_REPO_TOKEN }}"):
+        assert doctor.lint_split_build(good.replace("ssh-key: ${{ secrets.PRIVATE_DEPLOY_KEY }}", wrong)), wrong
+
+
+def test_game_files_cite_no_foreign_ids():
+    """The files psxdecomp writes into a game cite no bare rule-like id (G41, D5, T2, ...): a game greps its own
+    rules/G41.md by id, and an id here would answer for it. The -private README cites only the game's G12 and G18."""
+    ids = re.compile(r"(?<![A-Za-z0-9_-])[GDKPRT]\d+\b")
+    for rel in ("scripts/publish.py", "profiles/psx/build.yml", "profiles/psx/image/Dockerfile",
+                "profiles/psx/psxdecomp-readme.yml"):
+        found = ["%d: %s" % (i, l.strip()) for i, l in enumerate((ROOT / rel).read_text().splitlines(), 1) if ids.search(l)]
+        assert not found, (rel, found)
+    assert set(ids.findall((ROOT / "profiles/psx/private/README.md").read_text())) <= {"G12", "G18"}
+    assert ids.search("see G41.") and ids.search("(D5)") and not ids.search("sha-G41x") and not ids.search("20260901T000000Z")
+

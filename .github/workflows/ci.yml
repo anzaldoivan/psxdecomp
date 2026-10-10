@@ -57,7 +57,7 @@ jobs:
       - run: pip install pytest pyyaml
       - name: Tier 1 — PA3 cloned at its pin; the kit from compat.toml [kit].repo + sha, digest-checked
         # The kit is fetched shallow and sparse at compat.toml [kit].sha and digest-checked; the cache above keeps it.
-        run: pytest -q -rs tests/test_pipeline.py
+        run: pytest -q -rs tests/test_pipeline.py tests/test_split_e2e.py
 
   tier1b-smoke:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

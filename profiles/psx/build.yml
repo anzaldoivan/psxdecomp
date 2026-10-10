@@ -1,0 +1,138 @@
+# .github/workflows/build.yml — the byte check of every change to the PUBLIC repository, and its decomp.dev report
+# (TEMPLATE; /psxdecomp:upgrade fills what it knows and writes the file only when absent). Placeholders: {{REPO}} (the
+# public OWNER/NAME, `[public].repo`), {{EXES}} (the boot executables, quoted, comma-separated: one required check
+# `build <EXE>` each), {{FETCH_COMMAND}} (fetches the compiler by pinned sha256, as the game's recipe does; runs with
+# network and without game files), {{BUILD_COMMAND}} (e.g. `make split build`), {{REPORT_COMMAND}} (the game's report
+# generator, Phase 9; writes report.json for $EXE).
+#
+# The toolchain image is public (pulled by digest); the game files come from the private `<game>-private` through the
+# read-only deploy key PRIVATE_DEPLOY_KEY, a secret a fork's workflow never receives. Every PR runs this file as it is
+# on main; its invariants are in psxdecomp's docs/PUBLISHING.md (Split mode), and psxdecomp's doctor lints them.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.exe }}
+    if: github.repository == '{{REPO}}'          # never in <game>-dev, which carries this file too
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && 'fork-review' || 'ci' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        exe: [{{EXES}}]
+    env:
+      EXE: ${{ matrix.exe }}
+      FORK: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+      TEST_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+    steps:
+      # The code under test: the PR's merge commit (its first parent must be the base: the ruleset keeps PRs up to date)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TEST_SHA }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      # Trusted inputs, read before any PR code runs. A fork PR's [public] and tools come from the base; a same-repo PR
+      # (a release) is tested with its own [public], so a new image or private_rev is proven before it merges.
+      - name: Trusted config and tools
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = pull_request_target ] && [ "$(git rev-parse HEAD^1)" != "$BASE_SHA" ]; then
+            echo "::error::the merge commit is not on the current base: update the branch"; exit 1
+          fi
+          rev=$TEST_SHA; [ "$FORK" = true ] && rev=$BASE_SHA
+          git show "$rev:config/psxdecomp.toml" > "$RUNNER_TEMP/psxdecomp.toml"
+          git show "$BASE_SHA:tools/psxd_publish.py" > "$RUNNER_TEMP/psxd_publish.py"
+          python3 -I - "$RUNNER_TEMP/psxdecomp.toml" >> "$GITHUB_ENV" <<'EOF'
+          import re, sys, tomllib
+          pub = tomllib.load(open(sys.argv[1], "rb")).get("public", {})
+          shapes = {"image": r"[a-z0-9][a-z0-9./_-]*@sha256:[0-9a-f]{64}",
+                    "private_repo": r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", "private_rev": r"[0-9a-f]{40}"}
+          for key, shape in shapes.items():
+              if not re.fullmatch(shape, str(pub.get(key, ""))):
+                  sys.exit("[public].%s in config/psxdecomp.toml: %r is not valid" % (key, pub.get(key)))
+              print("%s=%s" % (key.upper(), pub[key]))
+          EOF
+          python3 -I "$RUNNER_TEMP/psxd_publish.py" check-public .
+          git ls-files -z > "$RUNNER_TEMP/tracked.z"
+          mkdir "$RUNNER_TEMP/work"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/work"
+
+      # The game files: before any PR code runs, then out of the workspace. The key is not persisted.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          ref: ${{ env.PRIVATE_REV }}
+          ssh-key: ${{ secrets.PRIVATE_DEPLOY_KEY }}
+          path: .psxd-private
+          persist-credentials: false
+      - name: Move the game files out of the workspace
+        run: mv .psxd-private "$RUNNER_TEMP/private"
+
+      # PR code from here on runs only in containers on $RUNNER_TEMP/work (no .git, no game files yet, network on)
+      - name: Fetch the toolchain (pinned sha256)
+        run: docker run --rm -v "$RUNNER_TEMP/work:/work" -w /work "$IMAGE" sh -c '{{FETCH_COMMAND}}'
+
+      - name: Stage the build's inputs
+        run: |
+          python3 -I - "$RUNNER_TEMP/private/inputs" "$RUNNER_TEMP/work" <<'EOF'
+          import os, pathlib, shutil, sys
+          src, work = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]).resolve()
+          for f in sorted(p for p in src.rglob("*") if p.is_file()):
+              dest = work / f.relative_to(src)
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              if dest.is_symlink() or not str(dest.parent.resolve()).startswith(str(work) + os.sep):
+                  sys.exit("refused: %s leaves the work tree" % f.relative_to(src))
+              shutil.copyfile(f, dest)
+          EOF
+
+      # No network; nothing the container prints reaches the log: it writes build.log, and only a filtered summary is shown
+      - name: Build
+        run: |
+          set -euo pipefail
+          tr '\0' '\n' < "$RUNNER_TEMP/tracked.z" > "$RUNNER_TEMP/work/.psxd-tracked"
+          id=$(docker run -d --network none -e EXE -v "$RUNNER_TEMP/work:/work" -w /work "$IMAGE" sh -c \
+            '{ xargs python3 tools/audit_public.py --paths < .psxd-tracked && {{BUILD_COMMAND}}; } > build.log 2>&1')
+          rc=$(docker wait "$id"); docker rm "$id" > /dev/null
+          python3 -I "$RUNNER_TEMP/psxd_publish.py" ci-log "$RUNNER_TEMP/work/build.log"
+          exit "$rc"
+
+      # Against the private repository's list, never the PR's copy
+      - name: Byte check
+        working-directory: ${{ runner.temp }}/work
+        run: sha1sum --strict --quiet -c "$RUNNER_TEMP/private/check/$EXE.sha1"
+
+      # Phase 9 decides the generator. The report steps start with config/categories.tsv; before it the job is the byte
+      # check alone. The report is validated by the base's tools (no game bytes, the arithmetic, the artifact name).
+      - name: Report
+        id: report
+        run: |
+          set -euo pipefail
+          if [ ! -f "$RUNNER_TEMP/work/config/categories.tsv" ]; then echo "make=no" >> "$GITHUB_OUTPUT"; exit 0; fi
+          id=$(docker run -d --network none -e EXE -v "$RUNNER_TEMP/work:/work" -w /work "$IMAGE" sh -c \
+            '{{REPORT_COMMAND}} > report.log 2>&1')
+          rc=$(docker wait "$id"); docker rm "$id" > /dev/null
+          python3 -I "$RUNNER_TEMP/psxd_publish.py" ci-log "$RUNNER_TEMP/work/report.log"
+          [ "$rc" = 0 ]
+          python3 -I "$RUNNER_TEMP/psxd_publish.py" validate "$RUNNER_TEMP/work/report.json" \
+            --categories "$RUNNER_TEMP/work/config/categories.tsv" --artifact "${EXE}_report" --exe "$EXE"
+          echo "make=yes" >> "$GITHUB_OUTPUT"
+
+      # decomp.dev ingests main's push runs and comments on PRs from their runs. Only a fully green run uploads.
+      - name: Upload report
+        if: success() && steps.report.outputs.make == 'yes'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.exe }}_report
+          path: ${{ runner.temp }}/work/report.json
+          if-no-files-found: error
