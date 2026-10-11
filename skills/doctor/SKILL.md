@@ -17,8 +17,9 @@ about the machine; otherwise just:
 Report the `FAIL` and `WARN` rows, one line each, with the fix each row names. Two rows are WARN only and use the
 network: `progress` (when a workflow builds a decomp.dev report: its safety lint, and whether decomp.dev lists the
 repository, in split mode the public `[public].repo`) and `github` (the repository's security settings through `gh api`;
-each WARN carries the `gh api` command that fixes it, for the developer to run). `--offline` skips both; `--only github`
-runs just that row. In split mode `github` checks only that origin, the `-dev`, is private (a FAIL otherwise: dev's
+each WARN carries the `gh api` command that fixes it, for the developer to run). `--offline` skips both (their rows
+say `SKIP`: a check that did not run is never `OK`, and the last line counts them); `--only github` runs just that row.
+In split mode `github` checks only that origin, the `-dev`, is private (a FAIL otherwise: dev's
 history is exposed), and two more use `gh api`: `private-repo` FAILs when `<game>-private` breaks its rules (public,
 forked, Actions on, a writable or second deploy key, another collaborator, a `private_rev` it lacks), and
 `public-standard` WARNs with the public repository's drift from the standard (`settings --apply` fixes it, the

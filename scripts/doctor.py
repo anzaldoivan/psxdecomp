@@ -2,7 +2,9 @@
 """doctor.py — is this game repository healthy against the current psxdecomp pins? Read-only.
 
     doctor.py [--repo DIR] [--json] [--only ROW[,ROW]] [--offline]
-                                           one row per check: OK / WARN / FAIL; exit 1 on any FAIL
+                                           one row per check: OK / WARN / FAIL / SKIP; exit 1 on any FAIL
+                                           SKIP: the check did not run (offline, logged out); it is counted in the
+                                           last line and never reported as OK
     doctor.py --self-test
 
 Checks: the bootstrap record (config/psxdecomp.toml); PA3's version against compat.toml; pa3-drift (WARN only: the
@@ -510,7 +512,7 @@ def progress_row(repo: pathlib.Path, fetch) -> tuple[str, str] | None:
         except Exception as e:                                          # noqa: BLE001 — a WARN row, never a crash
             listed, note = None, "decomp.dev unreachable (%s)" % str(e)[:80]
     detail = "; ".join(found + [note])
-    return ("WARN" if found or listed is False else "OK"), detail
+    return ("WARN" if found or listed is False else "SKIP" if listed is None else "OK"), detail
 
 
 # ---- github: the repository's security settings (read through gh api; doctor never writes) -----------------------
@@ -530,11 +532,11 @@ def github_rows(slug: str | None, api, texts: dict[str, str] | None = None) -> l
     if not slug:
         return []
     if api is None:
-        return [("OK", "offline: %s settings not checked" % slug)]
+        return [("SKIP", "offline: %s settings not checked" % slug)]
     try:
         info = api("repos/%s" % slug)
     except Exception as e:                                              # noqa: BLE001 — logged out, no gh, no network
-        return [("OK", "skipped: gh api unavailable (%s)" % str(e)[:80])]
+        return [("SKIP", "skipped: gh api unavailable (%s)" % str(e)[:80])]
     R = "repos/" + slug
     warns = []
 
@@ -607,11 +609,11 @@ def dev_row(slug: str | None, api, cfg: dict) -> tuple[str, str]:
     if not slug:
         return "OK", "no GitHub origin"
     if api is None:
-        return "OK", "offline: %s not checked" % slug
+        return "SKIP", "offline: %s not checked" % slug
     try:
         info = api("repos/%s" % slug)
     except Exception as e:                                              # noqa: BLE001 — logged out, no gh, no network
-        return "OK", "skipped: gh api unavailable (%s)" % str(e)[:80]
+        return "SKIP", "skipped: gh api unavailable (%s)" % str(e)[:80]
     if info.get("private") is not True:
         return "FAIL", ("%s is %s: dev's history is exposed — make it private at once (gh repo edit %s --visibility "
                         "private --accept-visibility-change-consequences), then SECURITY.md's purge path"
@@ -627,13 +629,13 @@ def dev_ci_row(slug: str | None, api, checks: list[str]) -> tuple[str, str] | No
     if not slug:
         return None
     if api is None:
-        return "OK", "offline: %s runs not checked" % slug
+        return "SKIP", "offline: %s runs not checked" % slug
     R = "repos/" + slug
     try:
         branch = api(R)["default_branch"]
         runs = api("%s/actions/runs?branch=%s&event=push&status=completed&per_page=50" % (R, branch))["workflow_runs"]
     except Exception as e:                                              # noqa: BLE001 — logged out, no gh, no network
-        return "OK", "skipped: gh api unavailable (%s)" % str(e)[:80]
+        return "SKIP", "skipped: gh api unavailable (%s)" % str(e)[:80]
     latest = {}
     for r in runs:                                                      # newest first
         latest.setdefault(r.get("workflow_id"), r)
@@ -666,12 +668,12 @@ def private_repo_row(cfg: dict, api) -> tuple[str, str] | None:
     if not P:
         return None
     if api is None:
-        return "OK", "offline: %s not checked" % P
+        return "SKIP", "offline: %s not checked" % P
     R = "repos/" + P
     try:
         info = api("GET", R)
     except Exception as e:                                              # noqa: BLE001 — logged out, no gh, no network
-        return "OK", "skipped: gh api unavailable (%s)" % str(e)[:80]
+        return "SKIP", "skipped: gh api unavailable (%s)" % str(e)[:80]
     if info is None:
         return "FAIL", "%s not found: create it (docs/PUBLISHING.md, Cutover order, step 2)" % P
     bad, notes = [], []
@@ -722,11 +724,11 @@ def public_standard_row(cfg: dict, api) -> tuple[str, str]:
     """The public repository against the standard, read-only (publish.settings_drift, the comparison `settings`
     prints). WARN only: before release 1 every row drifts; cutover step 5 ends with it OK."""
     if api is None:
-        return "OK", "offline: %s settings not checked" % cfg["repo"]
+        return "SKIP", "offline: %s settings not checked" % cfg["repo"]
     try:
         rows = publish.settings_drift(cfg, api)
     except Exception as e:                                              # noqa: BLE001 — logged out, no gh, no network
-        return "OK", "skipped: gh api unavailable (%s)" % str(e)[:80]
+        return "SKIP", "skipped: gh api unavailable (%s)" % str(e)[:80]
     if not rows:
         return "OK", "%s is on the public-repo standard" % cfg["repo"]
     hand = [r["what"] for r in rows if not r["fix"]]
@@ -740,7 +742,7 @@ def main(argv=None) -> int:
     ap.add_argument("--repo", default=".")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--only", help="comma-separated row names (e.g. github, progress)")
-    ap.add_argument("--offline", action="store_true", help="no network: the progress and github rows say skipped")
+    ap.add_argument("--offline", action="store_true", help="no network: the progress and github rows say SKIP")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args(argv)
     if a.self_test:
@@ -752,7 +754,9 @@ def main(argv=None) -> int:
         for r in rows:
             print("DOCTOR %-12s %-4s %s" % r)
     fails = sum(r[1] == "FAIL" for r in rows)
-    print("DOCTOR %s (%d warn)" % ("OK" if not fails else "FAIL %d" % fails, sum(r[1] == "WARN" for r in rows)))
+    skips = sum(r[1] == "SKIP" for r in rows)
+    print("DOCTOR %s (%d warn%s)" % ("OK" if not fails else "FAIL %d" % fails, sum(r[1] == "WARN" for r in rows),
+                                     ", %d not run" % skips if skips else ""))
     return 1 if fails else 0
 
 
@@ -827,6 +831,7 @@ def self_test() -> int:
     ok &= self_test_progress()
     ok &= self_test_github()
     ok &= self_test_split()
+    ok &= self_test_summary()
     return common.self_test_banner("doctor", ok)
 
 
@@ -910,7 +915,7 @@ def self_test_progress() -> bool:
         a, b = progress_row(repo, lambda: listed), progress_row(repo, lambda: [])
         c = progress_row(repo, None)
         print("  progress row: listed %s; unlisted %s; offline %s" % (a[0], b[0], c[0]))
-        ok &= a[0] == "OK" and "commit 1234567" in a[1] and b[0] == "WARN" and "/manage/new" in b[1] and c[0] == "OK"
+        ok &= a[0] == "OK" and "commit 1234567" in a[1] and b[0] == "WARN" and "/manage/new" in b[1] and c[0] == "SKIP"
         common.git(repo, "remote", "set-url", "origin", "https://github.com/example/game-a-decomp-dev.git")
         d = progress_row(repo, lambda: listed)                         # split mode, [public] off: the -dev origin
         (repo / publish.CONFIG_REL).parent.mkdir(parents=True, exist_ok=True)
@@ -974,7 +979,7 @@ def self_test_github() -> bool:
     print("  github (DC2-shaped, sha pinning off): %s" % "; ".join("%s %s" % (s, d[:60]) for s, d in warn))
     return ok and (len(warn) == 1 and warn[0][0] == "WARN" and "sha_pinning_required=true" in warn[0][1]
             and "gh api -X PUT repos/example/game/actions/permissions" in warn[0][1]
-            and [s for s, _ in clean] == ["OK"] and skipped[0][0] == "OK" and "skipped" in skipped[0][1]
+            and [s for s, _ in clean] == ["OK"] and skipped[0][0] == "SKIP" and "skipped" in skipped[0][1]
             and github_rows(None, down) == [] and github_rows("example/game", None)[0][1].startswith("offline"))
 
 
@@ -1049,7 +1054,7 @@ def self_test_split() -> bool:
     def logged_out(path):
         raise RuntimeError("gh: not logged in")
     dev.append(dev_row("example/game-dev", logged_out, cfg))
-    ok &= [d[0] for d in dev] == ["OK", "FAIL", "OK", "OK", "OK"] and "exposed" in dev[1][1]
+    ok &= [d[0] for d in dev] == ["OK", "FAIL", "SKIP", "OK", "SKIP"] and "exposed" in dev[1][1]
     ok &= dev[2][1].startswith("offline") and dev[4][1].startswith("skipped")
     D = "repos/example/game-dev"                                        # dev-ci: shaped like mmx5-dev's red no-rom
 
@@ -1066,18 +1071,46 @@ def self_test_split() -> bool:
           dev_ci_row("example/game-dev", ci_api("failure", jobs), ["compile-only"]),
           dev_ci_row("example/game-dev", None, []), dev_ci_row("example/game-dev", logged_out, []),
           dev_ci_row(None, None, [])]
-    ok &= [c and c[0] for c in ci] == ["OK", "WARN", "FAIL", "OK", "OK", None]
+    ok &= [c and c[0] for c in ci] == ["OK", "WARN", "FAIL", "SKIP", "SKIP", None]
     ok &= "no-rom at f096ef4 (compile-only)" in ci[1][1] and "required on the public repository: compile-only" in ci[2][1]
     print("  dev-ci: %s" % "; ".join("%s %s" % (c[0], c[1][:60]) for c in ci[:3]))
     with tempfile.TemporaryDirectory() as td:                           # check(): split mode swaps the github row
         repo = publish._self_repo(td)
         (repo / publish.CONFIG_REL).write_text('[public]\nrepo = "example/synthetic-decomp"\n')
         rows = check(repo, only=["github", "private-repo", "public-standard"], offline=True)
-    ok &= [(r[0], r[1]) for r in rows] == [("github", "OK"), ("public-standard", "OK")]
+    ok &= [(r[0], r[1]) for r in rows] == [("github", "SKIP"), ("public-standard", "SKIP")]
     ok &= rows[0][2].startswith("offline: ") and "public-standard" not in rows[0][2]
     print("  github in split mode: %s" % "; ".join("%s %s" % (d[0], d[1][:50]) for d in dev[:2]))
     print("  private-repo: good %s; %s" % (good[0], "; ".join("%s %s" % (n, g[0]) for n, g in got.items())))
     print("  public-standard: compliant %s; drift %s" % (std[0], drift[1][:90]))
+    return ok
+
+
+def self_test_summary() -> bool:
+    """main() itself: SKIP rows alone exit 0 and are counted in the last line; a FAIL row still exits 1; --json says SKIP."""
+    import contextlib
+    import io
+
+    def run(*argv):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = main(list(argv))
+        return rc, buf.getvalue()
+    ok = True
+    with tempfile.TemporaryDirectory() as td:
+        repo = publish._self_repo(td)
+        (repo / publish.CONFIG_REL).write_text('[public]\nrepo = "example/synthetic-decomp"\n')
+        rc, out = run("--repo", str(repo), "--offline", "--only", "github,public-standard")
+        ok &= rc == 0 and out.splitlines()[-1] == "DOCTOR OK (0 warn, 2 not run)" and " SKIP " in out
+        rc, out = run("--repo", str(repo), "--offline", "--only", "github,public-standard", "--json")
+        ok &= rc == 0 and out.count('"status": "SKIP"') == 2
+    with tempfile.TemporaryDirectory() as td:
+        common.git(td, "init", "--quiet")
+        rc, out = run("--repo", td, "--offline", "--only", "github")       # no origin, nothing skipped: no suffix
+        ok &= rc == 0 and out.splitlines()[-1] == "DOCTOR OK (0 warn)"
+        rc, out = run("--repo", td, "--offline", "--only", "pa3,github")
+        ok &= rc == 1 and out.splitlines()[-1].startswith("DOCTOR FAIL 1")
+    print("  main(): skips exit 0 and are counted; a FAIL exits 1")
     return ok
 
 

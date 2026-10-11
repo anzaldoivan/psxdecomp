@@ -14,8 +14,8 @@
 4. Tier 3: `/psxdecomp:new` on one real game with your own dump, in an empty folder, stopped at PA3's first planner
    draft. Check `tools/audit_public.py` exits 0 on the tree and 1 on the planted fixture, `config/psxdecomp.toml` holds
    the pins, and `docs/ops/refs.md` lists every fetched source with its class.
-5. GitHub settings: `python3 scripts/doctor.py --repo . --only github` must print no WARN (each WARN names the
-   `gh api` command that fixes it; run it yourself, doctor never does).
+5. GitHub settings: `python3 scripts/doctor.py --repo . --only github` must print no WARN and no SKIP (each WARN
+   names the `gh api` command that fixes it; run it yourself, doctor never does).
 6. Bump `.claude-plugin/plugin.json` `version`; tag `vX.Y.Z`. Never push from an agent session. Pushing the tag runs
    `.github/workflows/release.yml`: it checks the tag against the manifest, reruns tiers 0 and 1, and drafts the
    release; paste the tier 2 and tier 3 results into its notes before publishing it.
