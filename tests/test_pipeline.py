@@ -192,16 +192,20 @@ def test_scoped_outputs(game):
     assert conv.count("- **C conventions:** `CONTRIBUTING.md`") == 1 and "## Names, types and formatting" in \
         (game / "CONTRIBUTING.md").read_text()
     assert ("docs/prior-art.md" in conv) == (game / "docs/prior-art.md").is_file()   # never a pointer to a missing file
+    drafting = (game / "docs/ops/drafting.md").read_text()                  # the profile's one measured drafting rule
+    assert "`docs/ops/drafting.md`" in conv and drafting == (ROOT / "profiles/psx/drafting.md").read_text()
+    assert drafting.count("\n- **") == 1 and len(drafting.splitlines()) <= 25      # one rule; a second needs its number
     env = next(l for l in (game / "docs/ops/decomp-environment.md").read_text().splitlines()
                if l.startswith("| Candidate compiler family"))
     assert env.split("|")[2].strip().startswith("Candidate (S4"), env
     for rel in ("docs/ops/refs.md", "docs/prior-art.md", "config/psxdecomp.toml", "config/psxdecomp.profile.toml",
-                "config/refs.toml"):
+                "config/refs.toml", "docs/ops/drafting.md"):
         if (game / rel).is_file():
             assert fetch_refs.lint_file(game / rel) == [], rel
     # one home: no sentence psxdecomp writes (the index, its config records, its HOW_WE_WORK lines) is copied elsewhere
     import install
-    ours = ("docs/ops/refs.md", "config/psxdecomp.toml", "config/psxdecomp.profile.toml", "config/refs.toml")
+    ours = ("docs/ops/refs.md", "config/psxdecomp.toml", "config/psxdecomp.profile.toml", "config/refs.toml",
+            "docs/ops/drafting.md")
     mine = lambda l: l.startswith((install.SCOPE_MARK, install.CONV_MARK, install.REFS_RULE[:20]))  # noqa: E731
     written = {s for rel in ours if (game / rel).is_file()
                for _, s in fetch_refs.sentences((game / rel).read_text(), toml=rel.endswith(".toml"))}

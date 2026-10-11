@@ -518,13 +518,15 @@ def insert_in_section(text: str, heading: str, line: str) -> str:
 
 SCOPE_MARK = "- **This repo:**"
 CONV_MARK = "- **C conventions:**"
+DRAFTING = "docs/ops/drafting.md"
 
 
 def conventions_line(c: Ctx) -> str:
     """One pointer, not a copy: the C rules live in CONTRIBUTING.md (the kit's), other projects' in the prior-art table."""
     prior = "; what prior-art projects require, and the decision: `docs/prior-art.md`" \
         if c.p("docs/prior-art.md").exists() else ""
-    return "%s `CONTRIBUTING.md` (names on evidence, one definition per type, `// !FAKE:`, `make format`)%s." % (CONV_MARK, prior)
+    return ("%s `CONTRIBUTING.md` (names on evidence, one definition per type, `// !FAKE:`, `make format`); for a "
+            "drafter's brief, the rule that measured: `%s`%s." % (CONV_MARK, DRAFTING, prior))
 
 
 def psyq_record(medium: dict | None) -> tuple[list[str], str]:
@@ -577,10 +579,11 @@ def s10_handoff(c: Ctx) -> str:
     # written once: a re-run on a later day leaves the record alone (/psxdecomp:upgrade is what rewrites it)
     for rel, body in ((RECORD, "\n".join(rec)),
                       ("config/psxdecomp.profile.toml", common.read(common.PLUGIN_ROOT / "profiles/psx/profile.toml")),
-                      ("docs/ops/host-recipe.md", common.read(common.PLUGIN_ROOT / ("profiles/psx/hosts/%s.md" % recipe)))):
+                      ("docs/ops/host-recipe.md", common.read(common.PLUGIN_ROOT / ("profiles/psx/hosts/%s.md" % recipe))),
+                      (DRAFTING, common.read(common.PLUGIN_ROOT / "profiles/psx/drafting.md"))):
         if not c.p(rel).exists():
             c.write(rel, body)
-    paths = [RECORD, "config/psxdecomp.profile.toml", "docs/ops/host-recipe.md"]
+    paths = [RECORD, "config/psxdecomp.profile.toml", "docs/ops/host-recipe.md", DRAFTING]
     pa_src = c.boot("prior-art.md")
     if pa_src.is_file() and not c.p("docs/prior-art.md").exists():
         c.write("docs/prior-art.md", common.read(pa_src))

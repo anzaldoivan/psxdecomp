@@ -62,6 +62,7 @@ docs/knowledge-corpus.md
 docs/ops/INDEX.md
 docs/ops/decomp-environment.md
 docs/ops/disassembler-mcp.md
+docs/ops/drafting.md
 docs/ops/host-recipe.md
 docs/ops/refs.md
 docs/project-architect.md
