@@ -36,7 +36,8 @@ QUESTIONS = {
     5: ("At which point of a fresh bootstrap do the profile's deny rules reach the game's `.claude/settings.json`? "
         "Answer in at most five lines.",
         [r"\bS10\b|(?i:handoff)"],
-        [r"(?<!not )\bonly\b[^.\n]*upgrade", r"\b(?:not|never)\b[^.\n]*\b(?:bootstrap|S10|handoff)"]),
+        [r"(?<!not )\bonly\b[^.\n]*upgrade", r"(?i)\b(?:not|never|nowhere|no step)\b[^.\n]*\b(?:bootstrap|S10|handoff)",
+         r"(?i)\bbootstrap\b[^.\n]{0,40}\b(?:never|does not|doesn't)\b"]),
 }
 TOKENS = ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens")
 NAME = re.compile(r"^(with|without)-([\w.-]+)-q(\d+)-r(\d+)\.json$")
@@ -92,7 +93,7 @@ def self_test() -> int:
             5: "At S10, the handoff; `/psxdecomp:upgrade apply` adds them to older games."}
     bad = {1: "Run pytest.", 2: "In README.md.", 3: "It uses gcc 2.7.2 with aspsx 2.56; each game pins its own in 1.4.",
            4: "The row says OK when the check could not run; the exit code is unchanged.",
-           5: "Never during the bootstrap (S0 to S10): `upgrade apply` writes them later."}
+           5: "Nowhere in a fresh bootstrap (S0-S10), as far as I can find: `scripts/upgrade.py` writes them later."}
     ok = all(score(q, t) for q, t in good.items()) and not any(score(q, t) for q, t in bad.items())
     with tempfile.TemporaryDirectory() as td:
         d = pathlib.Path(td)
