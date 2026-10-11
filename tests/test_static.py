@@ -304,6 +304,19 @@ def test_upstream_proposals():
     assert len({r[0] for r in rows}) == len(rows)
 
 
+def test_conventions_reach_the_gate():
+    """S3 asks a prior-art repository's conventions, the report has a row with a decision, the S4 gate shows it."""
+    ref = ROOT / "skills/new/reference"
+    scout = (ROOT / "agents/scout-repo.md").read_text()
+    assert '"conventions"' in scout and "AI policy" in scout and "by path and line only" in scout
+    assert 'brief the scout with "conventions"' in (ref / "investigate.md").read_text()
+    table = (ref / "report-template.md").read_text().split("## Conventions and contribution rules seen")[1]
+    head = table.strip().splitlines()[0]
+    assert head.count("|") == 6 and "AI policy" in head and head.rstrip(" |").endswith("Decision"), head
+    gate = (ref / "gate.md").read_text()
+    assert "conventions table" in gate and "contribute there under its rules, or stay separate" in gate
+
+
 def test_ai_policy_and_install_hints():
     """The AI policy has one home (common.AI_POLICY): the README carries its block verbatim, and S10 puts the same
     block in every game README. Every host recipe a game repo receives carries install commands."""

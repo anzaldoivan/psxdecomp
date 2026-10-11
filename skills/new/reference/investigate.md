@@ -55,6 +55,9 @@ For each repository lead that would change a decision (a toolchain pin, an addre
 `scout-repo` agent: a shallow clone into `.run/bootstrap/clones/<name>` (ignored), facts read from its tree (build
 files, licence file, symbol counts), report to `.run/bootstrap/research/repo-<name>.md`. With `--deep`, every
 repository lead gets one. Never copy code or text from a clone into anything that will be committed.
+For an **existing** or **siblings** repository, brief the scout with "conventions" too: what that project writes down
+and enforces decides whether work can ever go there (scope: PR threads of five decompilations, 2026-10-11: 56 of 70
+stated refusals were about the change or the process, not the C). Its rows go to the report's conventions table.
 
 ## Outputs (you write these from the agents' reports)
 

@@ -4,7 +4,9 @@ Nothing installs before this stage ends. Present, in this order, compactly:
 
 1. **The medium** — one line from `medium.json` (boot exe, serial, PsyQ version and stamp count, track 01 SHA-1, and
    the Redump match if any).
-2. **The prior-art report** — `prior-art.draft.md`'s table (leads, licence, class, status, how to verify).
+2. **The prior-art report** — `prior-art.draft.md`'s table (leads, licence, class, status, how to verify) and its
+   conventions table. When a community decompilation of this game exists, its conventions and AI policy are one
+   explicit decision: contribute there under its rules, or stay separate and say why.
 3. **The drafted answers** — the 13 keys, one line each.
 4. **The reference library** — the 4 core sources fetched at S9, the rows added to the profile's defaults (class,
    tier, what they cover), and any new `[[trap]]`.

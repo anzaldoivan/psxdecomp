@@ -24,6 +24,15 @@ Classes: `adapt` · `copyleft` (adapt only into a licence-compatible repo) · `f
 | L1 | Compiler: <triple> (a sibling's pin) | owner/repo@<sha> | lead | Verify: the 1.4 ladder runs it first; a probe matches or refutes | 1.4 |
 | L2 | SDK: PsyQ <v> — <n> `Ps` stamps | own bytes (S2) | consistent-with-bytes | `medium.json psyq`; ghidra_psx_ldr's detection at import is the final word | 1.2 |
 
+## Conventions and contribution rules seen
+
+| Source@sha | What exists (path) | Enforced by | AI policy (path:line) | Decision |
+|---|---|---|---|---|
+| owner/repo@<sha> | `docs/STYLE.md`, `.clang-format` | CI on a pull request: format | `CONTRIBUTING.md:13` | adopt / adapt / not adopted, because … |
+
+Paths and lines only, never the documents' text. A project's style is its own decision: projects state opposite
+rules, so nothing here is adopted by default.
+
 ## Upstream revisions read
 
 `owner/repo` `<short sha>` (<date>) · …
