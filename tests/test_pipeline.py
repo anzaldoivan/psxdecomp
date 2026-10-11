@@ -1,11 +1,13 @@
 """Tier 1: the deterministic installer on the homebrew fixture (S0, S2, S5-S10 from canned answers)."""
+import functools
 import json
 import os
+import re
 import shutil
 
 import pytest
 
-from conftest import PY, ROOT, bootstrap, run, tree
+from conftest import PY, ROOT, bootstrap, check_golden, hook_stdout, run, tree
 
 import common
 
@@ -26,6 +28,24 @@ def test_golden_tree(game):
         GOLDEN.write_text("\n".join(got) + "\n")
     want = GOLDEN.read_text().splitlines()
     assert got == want, "tree differs from tests/golden/fixture-tree.txt (PSXDECOMP_UPDATE_GOLDEN=1 after a pin bump)"
+
+
+def test_always_loaded_bytes(game):
+    """Tier 4a: the bytes a session in the bootstrapped repo loads first (CLAUDE.md, the card, settings, agents,
+    skills, rules without `paths:`, the hook's stdout) as a golden file; agent and skill files count whole. The
+    interpreter path, its version, the host line and the bootstrap date are this machine's and this day's, so they
+    count as tokens."""
+    files = ["CLAUDE.md", "HOW_WE_WORK.md", ".claude/settings.json"]
+    files += [p.relative_to(game).as_posix() for g in (".claude/agents/*.md", ".claude/skills/*/SKILL.md")
+              for p in game.glob(g)]
+    files += [p.relative_to(game).as_posix() for p in game.glob(".claude/rules/*.md") if "\npaths:" not in p.read_text()]
+    subs = ((r"/\S*?/python[\d.]*( \(\d+\.\d+\.\d+\))?", "<PY>"), (r"(?m)^- OS / shells: .*$", "- OS / shells: <HOST>"),
+            (r"bootstrap, \d{4}-\d\d-\d\d", "bootstrap, <DATE>"))
+    norm = lambda t: functools.reduce(lambda acc, s: re.sub(s[0], s[1], acc), subs, t)
+    items = {f: norm((game / f).read_text()) for f in files}
+    assert len((game / "CLAUDE.md").read_text().splitlines()) < 200
+    items["hook:SessionStart"] = hook_stdout(game)
+    check_golden(ROOT / "tests" / "golden" / "always-loaded-fixture.txt", items)
 
 
 def test_clean_tree_and_commits(game):

@@ -1,8 +1,10 @@
 """Shared fixtures. Tier 1 needs the pinned PA3 (cloned from GitHub, or $PSXDECOMP_PA3_SOURCE) and the kit:
 $PSXDECOMP_KIT, else compat.toml [kit].repo + sha cloned by common.resolve_kit (digest-checked). Without either, the
 pipeline tests skip with that reason."""
+import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -73,3 +75,25 @@ def bootstrap(tc, target, *extra, check=True):
 
 def tree(repo):
     return run(["git", "-C", repo, "ls-files"]).stdout.splitlines()
+
+
+def front(text, *keys):
+    """The single-line frontmatter values of `keys`, joined (a skill's listing text is description + when_to_use)."""
+    block = text.split("---")[1]
+    return "\n".join(m.group(1) for k in keys for m in [re.search(r"^%s:\s*(.*)$" % k, block, re.M)] if m)
+
+
+def hook_stdout(cwd):
+    """What the plugin's SessionStart hook, as hooks/hooks.json registers it, adds to a session started in cwd."""
+    cmd = json.loads((ROOT / "hooks/hooks.json").read_text())["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    return subprocess.run(["sh", "-c", cmd], cwd=cwd, input="{}", capture_output=True, text=True,
+                          env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))).stdout
+
+
+def check_golden(path, items):
+    """items = {name: text}. One golden line per item, `<utf-8 bytes> <name>`, sorted by name; PSXDECOMP_UPDATE_GOLDEN=1
+    rewrites the file (a deliberate change to what a session loads first)."""
+    got = ["%d %s" % (len(t.encode()), n) for n, t in sorted(items.items())]
+    if os.environ.get("PSXDECOMP_UPDATE_GOLDEN"):
+        path.write_text("\n".join(got) + "\n")
+    assert got == path.read_text().splitlines(), "bytes differ from %s (PSXDECOMP_UPDATE_GOLDEN=1 if intended)" % path

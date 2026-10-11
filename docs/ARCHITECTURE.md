@@ -78,5 +78,6 @@ anything else; `--force-untested` proceeds and records a deviation in the game r
 | 1c | every push | split mode end to end on the fixture (`tests/test_split_e2e.py`) |
 | 2 | manual / pre-release | `claude plugin eval . --ablation none --runs 1` — regex, `tool_used`, `tool_order`, `file_exists` graders only; tag `hygiene` (5 runs, pass^5) proves an agent grepping a poisoned game repo answers the current pin, not stale or kit text, with one `llm` grader on the short answer |
 | 3 | per release | `/psxdecomp:new` on a real game with your own dump, stopped at PA3's first planner draft |
+| 4a | every push | with tiers 0 and 1: the bytes a session loads before it does anything (the plugin's `AGENTS.md`, agent descriptions, hook and any skill Claude may invoke on its own; the fixture repo's `CLAUDE.md`, card, settings, agents, skills and hook) match `tests/golden/always-loaded*.txt`, so growth is a reviewed diff |
 
 Tier 1 fetches the kit at its `compat.toml` pin (cached by the pins in CI); `$PSXDECOMP_KIT` substitutes a local copy.

@@ -8,7 +8,7 @@ import tomllib
 
 import pytest
 
-from conftest import PY, ROOT, run
+from conftest import PY, ROOT, check_golden, front, hook_stdout, run
 
 import answers
 import fetch_refs
@@ -263,6 +263,22 @@ def test_agents_md_size():
     text = (ROOT / "AGENTS.md").read_text()
     assert len(text.splitlines()) <= 50 and len(text.encode()) <= 4096, (len(text.splitlines()), len(text.encode()))
     assert (ROOT / "CLAUDE.md").read_text().strip() == "@AGENTS.md"
+
+
+def test_always_loaded_bytes(tmp_path):
+    """Tier 4a: the bytes a session loads before it does anything (AGENTS.md and CLAUDE.md, the listing text of each
+    skill Claude may invoke on its own, each agent's description, the SessionStart hook's stdout in an empty folder)
+    are a golden file: growth is a reviewed diff. An invocation-only skill's description is not in context, so it has
+    no line. The listing cap is Claude Code's 1,536 characters."""
+    items = {n: (ROOT / n).read_text() for n in ("AGENTS.md", "CLAUDE.md")}
+    for p in (ROOT / "skills").glob("*/SKILL.md"):
+        if front(p.read_text(), "disable-model-invocation") != "true":
+            items["skill:" + p.parent.name] = front(p.read_text(), "description", "when_to_use")
+    for p in (ROOT / "agents").glob("*.md"):
+        items["agent:" + p.stem] = front(p.read_text(), "description")
+    items["hook:SessionStart"] = hook_stdout(tmp_path)
+    assert all(len(t) <= 1536 for n, t in items.items() if n.startswith("skill:")), items
+    check_golden(ROOT / "tests" / "golden" / "always-loaded.txt", items)
 
 
 def test_upstream_proposals():
