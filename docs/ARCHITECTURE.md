@@ -80,5 +80,6 @@ anything else; `--force-untested` proceeds and records a deviation in the game r
 | 3 | per release | `/psxdecomp:new` on a real game with your own dump, stopped at PA3's first planner draft |
 | 4a | every push | with tiers 0 and 1: the bytes a session loads before it does anything (the plugin's `AGENTS.md`, agent descriptions, hook and any skill Claude may invoke on its own; the fixture repo's `CLAUDE.md`, card, settings, agents, skills and hook) match `tests/golden/always-loaded*.txt`, so growth is a reviewed diff |
 | 4b | manual / pre-release | `BASE=<revision> tools/ab_agents.sh` runs the working tree against that revision on fixed questions and scores correctness, cost and tokens; kept while at least as correct at no more than +20% cost |
+| 5a | weekly | the C corpus (`fixtures/c-corpus/run.sh`): our own small functions compiled with two candidate compilers in a fixture-owned image layer; every truth matches itself, every mutant fails, every fake twin (pin, `goto`, offset cast, own type, other symbol, bare address) matches and is flagged, no truth is flagged. Its host half (the lint and the mutation rule) runs with tier 0 |
 
 Tier 1 fetches the kit at its `compat.toml` pin (cached by the pins in CI); `$PSXDECOMP_KIT` substitutes a local copy.

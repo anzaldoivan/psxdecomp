@@ -1,5 +1,6 @@
 """Every script's --self-test (each carries its own negative controls)."""
 import subprocess
+import sys
 
 import pytest
 
@@ -35,6 +36,33 @@ def test_ab_score_self_test():
     """The AGENTS.md A/B scorer (tools/, not installed): good and bad canned answers, the +20% cost rule."""
     r = run([PY, ROOT / "tools/ab_score.py", "--self-test"], check=False)
     assert r.returncode == 0 and "SELF-TEST OK" in r.stdout, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("script", ["lint", "corpus"])
+def test_c_corpus_self_test(script):
+    """Tier 5a's host half (fixtures/c-corpus, not installed): the lint's kinds and the mutation rule, no compiler."""
+    r = run([PY, ROOT / "fixtures/c-corpus" / ("%s.py" % script), "--self-test"], check=False)
+    assert r.returncode == 0 and "SELF-TEST OK" in r.stdout, r.stdout + r.stderr
+
+
+def test_c_corpus_truths_are_clean_and_twins_are_flagged():
+    """Every truth: the three header lines, a ctx.h, no lint finding. Every twin of a lint kind is flagged as it."""
+    sys.path.insert(0, str(ROOT / "fixtures/c-corpus"))
+    import lint
+    truths = sorted((ROOT / "fixtures/c-corpus/truth").iterdir())
+    assert len(truths) >= 30
+    canaries = set()
+    for d in truths:
+        text = (d / "truth.c").read_text()
+        head = text.split("#include", 1)[0]
+        assert all(("// %s: " % k) in head for k in ("class", "func", "canary")), d.name
+        assert (d / "ctx.h").is_file() and lint.findings(text) == [], (d.name, lint.findings(text))
+        canary = head.split("// canary: ", 1)[1].split()[0]
+        assert canary not in canaries and canary not in (d / "ctx.h").read_text(), d.name
+        canaries.add(canary)
+        for twin in d.glob("twin.*.c"):
+            kind = twin.name.split(".")[1]
+            assert kind == "symbol" or kind in [f[0] for f in lint.findings(twin.read_text())], twin
 
 
 def test_resume_hook(tmp_path):

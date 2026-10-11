@@ -6,7 +6,7 @@
 - Tier 1: `pytest -q tests/test_pipeline.py`. It fetches the kit at its `compat.toml` pin; `PSXDECOMP_KIT` points it
   at a local copy instead. CI runs it the same way.
 - CI (`.github/workflows/ci.yml`) runs tier 0 on Linux and macOS with Python 3.12 and 3.14, tier 1 on Linux, and
-  tier 1b weekly. Actions are pinned to commit SHAs; Dependabot bumps them monthly.
+  tiers 1b and 5a weekly. Actions are pinned to commit SHAs; Dependabot bumps them monthly.
 - Every script has a `--self-test`; tier 0 runs them all.
 
 The tiers, and what each one proves, are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#testing-tiers).
