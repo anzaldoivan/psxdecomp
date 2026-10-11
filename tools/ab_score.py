@@ -36,8 +36,8 @@ QUESTIONS = {
     5: ("At which point of a fresh bootstrap do the profile's deny rules reach the game's `.claude/settings.json`? "
         "Answer in at most five lines.",
         [r"\bS10\b|(?i:handoff)"],
-        [r"(?<!not )\bonly\b[^.\n]*upgrade", r"(?i)\b(?:not|never|nowhere|no step)\b[^.\n]*\b(?:bootstrap|S10|handoff)",
-         r"(?i)\bbootstrap\b[^.\n]{0,40}\b(?:never|does not|doesn't)\b"]),
+        [r"(?i)\b(?:not|never|nowhere|no step)\b[^.\n]*\b(?:bootstrap|S10|handoff)",
+         r"(?i)\bbootstrap\b[^.\n]{0,40}\b(?:never|does not|doesn't|don't)\b"]),
 }
 TOKENS = ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens")
 NAME = re.compile(r"^(with|without)-([\w.-]+)-q(\d+)-r(\d+)\.json$")
