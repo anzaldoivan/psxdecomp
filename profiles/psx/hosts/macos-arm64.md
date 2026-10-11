@@ -7,9 +7,10 @@ container with the source in a named volume.
   resolves the interpreter per machine and writes it into `.claude/pa.json`).
 - **Docker Desktop**, context `desktop-linux`, amd64 emulation on (`--platform linux/amd64`): the old cc1 builds are
   static i386 ELF binaries.
-- **One tree, a disposable copy:** a named volume holds a copy of the tracked + untracked-non-ignored files, refreshed
-  by a `sync` before each run; outputs come back by name only; no bind mount of a host path; firewall paths never leave
-  the container. (mmx6's `tools/docker/mx.sh build|sync|pull|disc|run` is the reference shape as of 2026-10-01; phase 1.0 builds it.)
+- **One tree, a disposable copy:** a named volume holds a copy of the tracked and the untracked, not ignored files.
+  A `sync` refreshes it before each run. Outputs come back by name only. No host path is bind-mounted. Firewall
+  paths never leave the container. The reference shape as of 2026-10-01 is mmx6's
+  `tools/docker/mx.sh build|sync|pull|disc|run`; phase 1.0 builds it.
 - **The dump** is loaded once into its own read-only volume (`disc`), top-level `*.cue`/`*.bin` only.
 - **Oracles on the host:** Ghidra + ghidra_psx_ldr + an MCP server (static); PCSX-Redux with Lua (runtime).
 

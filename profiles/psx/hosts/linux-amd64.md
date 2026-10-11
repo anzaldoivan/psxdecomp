@@ -1,9 +1,11 @@
 # Host recipe — Linux amd64
 
-The BFM arrangement (provenance: BFM-decomp's host, 2026-10-01; WSL2 Ubuntu counts): one clone on a native filesystem (ext4, never a Windows mount); Claude Code,
-Ghidra and the build toolchain on the same host. Docker is optional here: the old cc1 builds run natively when the
-i386 runtime is installed (`dpkg --add-architecture i386`), but a container keeps the toolchain pinned and is the
-recommended default so the CI and the host build agree.
+The BFM arrangement (provenance: BFM-decomp's host, 2026-10-01; WSL2 Ubuntu counts):
+
+- One clone on a native filesystem (ext4, never a Windows mount).
+- Claude Code, Ghidra and the build toolchain on the same host.
+- Docker is optional. The old cc1 builds run natively with the i386 runtime (`dpkg --add-architecture i386`).
+- Build in a container by default: it keeps the toolchain pinned, so the CI and the host build agree.
 
 - Python >= 3.12 for the PA3 hooks (resolved per machine).
 - binutils-mipsel-linux-gnu, cpp-mipsel-linux-gnu, splat64 in a venv; or the profile container.
@@ -11,8 +13,8 @@ recommended default so the CI and the host build agree.
 
 ## Install
 
-Checked 2026-10-02 against the distributions' own package indexes (`apt-cache policy` in clean Ubuntu 22.04, 24.04 and
-26.04 and Debian 12 and 13 images) and the Homebrew formulae API.
+Checked 2026-10-02 against the distributions' own package indexes and the Homebrew formulae API. The indexes:
+`apt-cache policy` in clean Ubuntu 22.04, 24.04 and 26.04 and Debian 12 and 13 images.
 
 | Tool | Debian/Ubuntu (apt) | Homebrew on Linux | Notes |
 |---|---|---|---|
@@ -44,15 +46,17 @@ No package manager supplies PsyQ: `docs/ops/refs.md`, psyq-sdk row.
 
 ## WSL
 
-Use **WSL 2** (Ubuntu from `wsl --install`). WSL 1 cannot run the toolchain: it has no 32-bit ELF support (the old cc1
-is i386), Docker Desktop requires WSL 2, Homebrew supports WSL 2 only, and Claude Code on WSL 1 runs without its
-sandbox.
+Use **WSL 2** (Ubuntu from `wsl --install`). WSL 1 cannot run the toolchain:
+
+- It has no 32-bit ELF support, and the old cc1 is i386.
+- Docker Desktop and Homebrew need WSL 2.
+- Claude Code on WSL 1 runs without its sandbox.
 
 - **The repository lives in the Linux filesystem** (`~/…`), never under `/mnt/c`: bind mounts and file watching are far
   slower there (Docker's WSL guidance).
-- **Docker:** Docker Desktop for Windows with its WSL 2 backend and WSL integration turned on for the distribution; or
-  `docker.io` inside the distribution, which needs systemd (on by default for Ubuntu from `wsl --install`; otherwise
-  `[boot] systemd=true` in `/etc/wsl.conf`, then `wsl --shutdown`).
+- **Docker:** use Docker Desktop for Windows with its WSL 2 backend, and turn WSL integration on for the distribution.
+  Or use `docker.io` inside the distribution: it needs systemd, which Ubuntu from `wsl --install` has on. Otherwise
+  set `[boot] systemd=true` in `/etc/wsl.conf`, then run `wsl --shutdown`.
 - **Claude Code** installs and runs inside the WSL terminal (the Linux installer above), not from PowerShell.
 - **Line endings:** `git config core.autocrlf false` in the clone. A game's `tools/psxd_publish.py` is the plugin's
   file byte for byte, and a CRLF conversion breaks that without a visible diff.

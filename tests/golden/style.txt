@@ -10,10 +10,6 @@
 8 docs/RELEASING.md
 1 docs/assets/README.md
 3 profiles/SCHEMA.md
-2 profiles/psx/README.md.template
-5 profiles/psx/hosts/linux-amd64.md
-1 profiles/psx/hosts/macos-arm64.md
-4 profiles/psx/private/README.md
 5 skills/doctor/SKILL.md
 3 skills/new/SKILL.md
 6 skills/new/reference/gate.md

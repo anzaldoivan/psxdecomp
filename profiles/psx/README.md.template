@@ -2,9 +2,9 @@
 
 ## Description
 
-A matching decompilation of **{{GAME_TITLE}}** ({{PLATFORM}}, {{GAME_SERIAL}}): C source that, compiled with the original
-era's toolchain and linked in the original order, reproduces every shipped binary byte for byte, verified by a hash check
-inside every build.
+A matching decompilation of **{{GAME_TITLE}}** ({{PLATFORM}}, {{GAME_SERIAL}}). The C source is compiled with the
+original era's toolchain and linked in the original order. It reproduces every shipped binary byte for byte, and a
+hash check inside every build verifies that.
 
 {{PROJECT_GOALS}}
 
@@ -49,8 +49,8 @@ The host setup (Docker, Python, the reference library) is in [docs/ops/host-reci
 
 ### Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) first: bring your own copy of the game, never commit anything derived from it,
-and read the AI-use conduct section before your first pull request.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Bring your own copy of the game. Never commit anything derived from
+it. Read the AI-use conduct section before your first pull request.
 
 ### Reference
 
