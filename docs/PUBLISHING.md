@@ -275,8 +275,8 @@ commit offline (no fetch; public main as the cache last saw it) and runs the rel
   last line is `PRE-PUSH release-ready: N files, M new`.
 
 The hook file itself never changes; the vendored tool carries the gate. `git push --no-verify` skips every hook: the
-developer's escape hatch for a broken hook, and the reason the agents' deny list refuses it. That list is `profiles/psx/deny.json`: `/psxdecomp:upgrade` adds its rules
-to a game's `.claude/settings.json` `permissions.deny` and never removes one. doctor's `split-guard` row FAILs while the hook is missing, origin is the
+developer's escape hatch for a broken hook, and the reason the agents' deny list refuses it. That list is `profiles/psx/deny.json`: S10 writes its rules to a game's
+`.claude/settings.json` `permissions.deny`; `/psxdecomp:upgrade` adds any missing and never removes one. doctor's `split-guard` row FAILs while the hook is missing, origin is the
 public repository, or a workflow's action is not pinned to a full commit SHA (the public standard requires it, so
 GitHub would not start that job). In split mode the README names `[public].repo`, never dev's origin.
 

@@ -7,12 +7,13 @@
                                            last line and never reported as OK
     doctor.py --self-test
 
-Checks: the bootstrap record (config/psxdecomp.toml); PA3's version against compat.toml; pa3-drift (WARN only: the
-machine's PA3 against the pin, and pa.json `"upgrade": "ask"`); the kit's install record; the README (FAIL without the
-AI policy block; a README on the standard, docs/PUBLISHING.md, is linted and FAILs on a lint failure; an older one
-WARNs); publish-tool (WARN only: tools/psxd_publish.py and its workflow are the plugin's); categories (when
-config/categories.tsv exists: its rules, and no published id gone); split-guard (split mode only: origin is not the
-public repository, the pre-push hook is in place, every workflow action is pinned to a full commit SHA); the
+Checks: the bootstrap record (config/psxdecomp.toml); deny (FAIL when a rule of profiles/psx/deny.json is missing from
+.claude/settings.json, WARN when psxdecomp cannot edit that file); PA3's version against compat.toml; pa3-drift (WARN
+only: the machine's PA3 against the pin, and pa.json `"upgrade": "ask"`); the kit's install record; the README (FAIL
+without the AI policy block; a README on the standard, docs/PUBLISHING.md, is linted and FAILs on a lint failure; an
+older one WARNs); publish-tool (WARN only: tools/psxd_publish.py and its workflow are the plugin's); categories
+(when config/categories.tsv exists: its rules, and no published id gone); split-guard (split mode only: origin is not
+the public repository, the pre-push hook is in place, every workflow action is pinned to a full commit SHA); the
 interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
 PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
@@ -119,6 +120,7 @@ def base_rows(repo: pathlib.Path, add):
     readme = repo / "README.md"
     add("readme", *readme_row(common.read(readme) if readme.is_file() else None, repo))
     add("publish-tool", *publish_tool_row(repo))
+    add("deny", *deny_row(repo))
     guard = split_guard_row(repo)
     if guard:
         add("split-guard", *guard)
@@ -220,6 +222,18 @@ def publish_tool_row(repo: pathlib.Path) -> tuple[str, str]:
     if off:
         return "WARN", "%s — /psxdecomp:upgrade apply writes them" % "; ".join(off)
     return "OK", "%s and %s are psxdecomp %s's" % (publish.VENDORED, publish.WORKFLOW, common.plugin_version())
+
+
+def deny_row(repo: pathlib.Path) -> tuple[str, str]:
+    """The profile's deny rules are in .claude/settings.json. FAIL when psxdecomp could add one; WARN when it cannot."""
+    want = len(json.loads(common.read(common.PROFILE_DENY))["permissions"]["deny"])
+    missing, why = common.deny_missing(repo)
+    if why:
+        return "WARN", "%s; add the rules of profiles/psx/deny.json by hand" % why
+    if missing:
+        return "FAIL", "%d of %d deny rules missing from %s — /psxdecomp:upgrade apply adds them" % (
+            len(missing), want, common.SETTINGS)
+    return "OK", "all %d deny rules are in %s" % (want, common.SETTINGS)
 
 
 def split_guard_row(repo: pathlib.Path) -> tuple[str, str] | None:
@@ -828,11 +842,28 @@ def self_test() -> int:
         "; ".join(r[0] for r in rm), tool[0], cats[0], cats_gone[0]))
     ok &= [r[0] for r in rm] == ["WARN", "FAIL", "WARN", "WARN", "OK", "FAIL"] and "predates" in rm[2][1]
     ok &= tool[0] == "WARN" and cats[0] == "OK" and cats_gone[0] == "FAIL" and "'ovl.stage1'" in cats_gone[1]
+    ok &= self_test_deny()
     ok &= self_test_progress()
     ok &= self_test_github()
     ok &= self_test_split()
     ok &= self_test_summary()
     return common.self_test_banner("doctor", ok)
+
+
+def self_test_deny() -> bool:
+    with tempfile.TemporaryDirectory() as td:
+        repo = pathlib.Path(td)
+        (repo / ".claude").mkdir()
+        (repo / common.SETTINGS).write_text(common.with_denies(repo, common.deny_missing(repo)[0]))
+        full = deny_row(repo)
+        conf = json.loads((repo / common.SETTINGS).read_text())
+        conf["permissions"]["deny"].pop()
+        (repo / common.SETTINGS).write_text(json.dumps(conf))
+        short = deny_row(repo)
+        (repo / publish.PA3_REL).write_text(json.dumps({"files": {common.SETTINGS: "h"}}))
+        managed = deny_row(repo)
+    print("  deny: all %s; one removed %s; PA3-managed %s" % (full[0], short[0], managed[0]))
+    return full[0] == "OK" and short[0] == "FAIL" and "1 of 18" in short[1] and managed[0] == "WARN"
 
 
 GOOD_WORKFLOW = """name: progress

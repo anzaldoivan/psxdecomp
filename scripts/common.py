@@ -274,7 +274,36 @@ def load_toml_str(text: str) -> dict:
 # block verbatim); re-exported here. psxdecomp's README carries it verbatim (tier 0 checks); S8 writes it into every
 # game README (the README standard), or swaps it for the kit's disclosure paragraph in an older README ---------------
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import publish  # noqa: E402
 from publish import AI_POLICY, AI_POLICY_MARK, OLD_DISCLOSURE, ai_policy_block  # noqa: E402,F401
+
+
+# ---- the profile's deny rules (profiles/psx/deny.json): S10 writes them, upgrade adds any missing, doctor checks -----
+PROFILE_DENY = PLUGIN_ROOT / "profiles" / "psx" / "deny.json"
+SETTINGS = ".claude/settings.json"
+
+
+def deny_missing(repo: pathlib.Path) -> tuple[list[str], str | None]:
+    """(the profile's deny rules the game's .claude/settings.json lacks, why psxdecomp cannot add them or None)."""
+    want = json.loads(read(PROFILE_DENY))["permissions"]["deny"]
+    managed = publish._pa3_files(read(repo / publish.PA3_REL)) if (repo / publish.PA3_REL).is_file() else []
+    if SETTINGS in managed:
+        return want, "PA3 manages %s here" % SETTINGS
+    f = repo / SETTINGS
+    try:
+        conf = json.loads(read(f)) if f.is_file() else {}
+        have = conf.get("permissions", {}).get("deny", [])
+        assert isinstance(conf, dict) and isinstance(have, list)
+    except (ValueError, AttributeError, AssertionError):
+        return want, "%s is not a JSON object with a permissions.deny list" % SETTINGS
+    return [r for r in want if r not in have], None
+
+
+def with_denies(repo: pathlib.Path, missing: list[str]) -> str:
+    f = repo / SETTINGS
+    conf = json.loads(read(f)) if f.is_file() else {}
+    conf.setdefault("permissions", {}).setdefault("deny", []).extend(missing)
+    return json.dumps(conf, indent=2, ensure_ascii=False) + "\n"
 
 
 def swappable_disclosure(text: str | None) -> bool:

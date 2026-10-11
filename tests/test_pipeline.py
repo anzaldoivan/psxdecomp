@@ -74,6 +74,26 @@ def test_s6_restart_line_and_upgrade_ask(toolchain, game):
     assert 'upgrade = "ask"' in (game / "config/psxdecomp.toml").read_text()
 
 
+def test_s10_writes_the_deny_rules_and_doctor_checks_them(game, tmp_path):
+    """S10 puts every rule of profiles/psx/deny.json into the tracked .claude/settings.json beside PA3's own, in the
+    handoff commit (still 9 commits); doctor's `deny` row is OK, and FAILs on a copy that lacks one rule."""
+    want = json.loads((ROOT / "profiles/psx/deny.json").read_text())["permissions"]["deny"]
+    have = json.loads((game / ".claude/settings.json").read_text())["permissions"]["deny"]
+    assert set(want) <= set(have) and len(have) > len(want) and len(want) == 18, have
+    assert run(["git", "-C", game, "status", "--porcelain", ".claude/settings.json"]).stdout == ""
+    assert run(["git", "-C", game, "ls-files", ".claude/settings.json"]).stdout.strip()
+    assert len(run(["git", "-C", game, "log", "--oneline"]).stdout.splitlines()) == 9
+    ok = run([PY, ROOT / "scripts/doctor.py", "--repo", game, "--offline"], check=False)
+    assert re.search(r"DOCTOR deny\s+OK", ok.stdout), ok.stdout
+    bad = tmp_path / "copy"
+    shutil.copytree(game, bad)
+    conf = json.loads((bad / ".claude/settings.json").read_text())
+    conf["permissions"]["deny"].remove(want[0])
+    (bad / ".claude/settings.json").write_text(json.dumps(conf))
+    r = run([PY, ROOT / "scripts/doctor.py", "--repo", bad, "--offline"], check=False)
+    assert r.returncode == 1 and re.search(r"DOCTOR deny\s+FAIL\s+1 of 18", r.stdout), r.stdout
+
+
 def test_s6_root_hint_pins_the_clone(toolchain, tmp_path):
     """No PA3 on the machine: S6 prints the --root command with --no-clone (the pinned copy, not upstream's branch)."""
     target = tmp_path / "noroot"

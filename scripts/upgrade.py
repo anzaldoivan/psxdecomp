@@ -12,7 +12,8 @@ apply. psxrecomp's migrate shape, our own code.
 psxdecomp owns: config/psxdecomp.toml (apply sets its [psxdecomp].version to this plugin's), config/refs.toml, docs/ops/refs.md, its .gitignore block, its firewall purge
 line, the one HOW_WE_WORK references line, the docs/ops/INDEX.md row, tools/psxd_publish.py,
 .github/workflows/psxdecomp-readme.yml (the README standard's lint and its CI) and the agents' deny rules
-(profiles/psx/deny.json, added to .claude/settings.json `permissions.deny`, never removed). The README's prose is
+(profiles/psx/deny.json, added to .claude/settings.json `permissions.deny`, never removed; the bootstrap's S10 writes
+them first, this adds any that are missing later). The README's prose is
 the developer's: its migration to the standard is a `manual` action listing the lint findings. PA3 and kit upgrades
 are printed as commands for the developer (their own installers, their own gates).
 
@@ -48,33 +49,6 @@ SPLIT_OWNED = {"docs/ops/psxdecomp-split.md": common.PLUGIN_ROOT / "profiles" / 
 PUBLIC_LIST = "config/public-paths.txt"
 BUILD_WF = ".github/workflows/build.yml"
 PROFILE_BUILD = common.PLUGIN_ROOT / "profiles" / "psx" / "build.yml"
-PROFILE_DENY = common.PLUGIN_ROOT / "profiles" / "psx" / "deny.json"
-SETTINGS = ".claude/settings.json"
-
-
-def deny_missing(repo: pathlib.Path) -> tuple[list[str], str | None]:
-    """(the profile's deny rules the game's .claude/settings.json lacks, why upgrade cannot add them or None)."""
-    want = json.loads(common.read(PROFILE_DENY))["permissions"]["deny"]
-    managed = publish._pa3_files(common.read(repo / publish.PA3_REL)) if (repo / publish.PA3_REL).is_file() else []
-    if SETTINGS in managed:
-        return want, "PA3 manages %s here" % SETTINGS
-    f = repo / SETTINGS
-    try:
-        conf = json.loads(common.read(f)) if f.is_file() else {}
-        have = conf.get("permissions", {}).get("deny", [])
-        assert isinstance(conf, dict) and isinstance(have, list)
-    except (ValueError, AttributeError, AssertionError):
-        return want, "%s is not a JSON object with a permissions.deny list" % SETTINGS
-    return [r for r in want if r not in have], None
-
-
-def with_denies(repo: pathlib.Path, missing: list[str]) -> str:
-    f = repo / SETTINGS
-    conf = json.loads(common.read(f)) if f.is_file() else {}
-    conf.setdefault("permissions", {}).setdefault("deny", []).extend(missing)
-    return json.dumps(conf, indent=2, ensure_ascii=False) + "\n"
-
-
 def build_values(repo: pathlib.Path) -> dict[str, str]:
     """The build.yml placeholders this repository can answer: the public repository (`[public].repo` in
     config/psxdecomp.toml) and the executables (config/discs.tsv, one required check `build <EXE>` each)."""
@@ -153,10 +127,10 @@ def plan(repo: pathlib.Path) -> list[dict]:
         if left:
             add("manual", "build: fill %s in %s by hand (the game's own values; psxdecomp's docs/PUBLISHING.md)"
                 % (", ".join("{{%s}}" % k for k in left), BUILD_WF), "upgrade cannot read them", "build-fill")
-    missing, why = deny_missing(repo)
+    missing, why = common.deny_missing(repo)
     if missing:
         add("manual" if why else "psxdecomp", "deny: add %d rule(s) to %s permissions.deny from psxdecomp's "
-            "profiles/psx/deny.json%s" % (len(missing), SETTINGS, " by hand (%s)" % why if why else " (add-only)"),
+            "profiles/psx/deny.json%s" % (len(missing), common.SETTINGS, " by hand (%s)" % why if why else " (add-only)"),
             "PA3's own deny stops `git push` alone; these forms also reach a push, a PR or a release", "deny")
     readme = repo / "README.md"
     if readme.is_file():
@@ -251,7 +225,7 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool) -> list[str]:
     if "build" in acts:
         w(BUILD_WF, fill_known(common.read(PROFILE_BUILD), build_values(repo)))
     if "deny" in acts:
-        w(SETTINGS, with_denies(repo, deny_missing(repo)[0]))
+        w(common.SETTINGS, common.with_denies(repo, common.deny_missing(repo)[0]))
     if "refs-add" in acts or "ignore" in acts:
         gi = common.read(repo / ".gitignore") if (repo / ".gitignore").is_file() else ""
         if "/refs/" not in gi.splitlines():
@@ -336,22 +310,22 @@ def self_test() -> int:
         ok &= install.REFS_RULE in (repo / "HOW_WE_WORK.md").read_text()
         keys2 = {x["key"] for x in plan(repo)}
         ok &= "deny" in keys and not ({"adopt", "refs-add", "ignore", "publish", "deny"} & keys2)
-        want = json.loads(common.read(PROFILE_DENY))["permissions"]["deny"]
-        ok &= json.loads((repo / SETTINGS).read_text())["permissions"]["deny"] == want
+        want = json.loads(common.read(common.PROFILE_DENY))["permissions"]["deny"]
+        ok &= json.loads((repo / common.SETTINGS).read_text())["permissions"]["deny"] == want
         # add-only: the game's own rules and keys stay, in place; only the missing rules are appended
         mine = {"model": "m", "permissions": {"allow": ["Bash(git add:*)"], "deny": ["Bash(git push:*)", want[3]]}}
-        (repo / SETTINGS).write_text(json.dumps(mine, indent=2) + "\n")
+        (repo / common.SETTINGS).write_text(json.dumps(mine, indent=2) + "\n")
         ok &= next(x for x in plan(repo) if x["key"] == "deny")["owner"] == "psxdecomp"
         apply(repo, False, False)
-        got = json.loads((repo / SETTINGS).read_text())
+        got = json.loads((repo / common.SETTINGS).read_text())
         ok &= got["model"] == "m" and got["permissions"]["allow"] == ["Bash(git add:*)"] and got["permissions"][
             "deny"] == ["Bash(git push:*)", want[3]] + [r for r in want if r != want[3]]
         ok &= "deny" not in {x["key"] for x in plan(repo)}
-        (repo / publish.PA3_REL).write_text(json.dumps({"files": {SETTINGS: "h"}}))
-        (repo / SETTINGS).write_text("{}\n")
+        (repo / publish.PA3_REL).write_text(json.dumps({"files": {common.SETTINGS: "h"}}))
+        (repo / common.SETTINGS).write_text("{}\n")
         ok &= next(x for x in plan(repo) if x["key"] == "deny")["owner"] == "manual"   # PA3's file: never written
         (repo / publish.PA3_REL).unlink()
-        (repo / SETTINGS).write_text(json.dumps({"permissions": {"deny": want}}, indent=2) + "\n")
+        (repo / common.SETTINGS).write_text(json.dumps({"permissions": {"deny": want}}, indent=2) + "\n")
         ok &= (repo / publish.VENDORED).read_bytes() == OWNED[publish.VENDORED].read_bytes()
         (repo / "README.md").write_text("# G\n\n%s\n## Status\n" % common.ai_policy_block())
         readme = next((x for x in plan(repo) if x["key"] == "readme"), None)
