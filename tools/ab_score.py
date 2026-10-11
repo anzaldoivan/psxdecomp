@@ -4,8 +4,11 @@
     ab_score.py DIR                 DIR holds <arm>-<model>-q<n>-r<k>.json (claude -p --output-format json)
     ab_score.py --self-test
 
-Each answer (`result`) is scored by its question's regexes; the table gives passes, mean `total_cost_usd` and mean
-`num_turns` per arm and model. Keep rule: with AGENTS.md scores at least as well as without, at no more than +20% cost.
+Each answer (`result`) is scored by its question's regexes; the table gives passes, mean `total_cost_usd`, mean
+`num_turns` and mean tokens (input, output, cache read, cache creation: summed over `modelUsage`, the session total the
+cost comes from; `?` when a file has none) per arm and model. Keep rule: with scores at least as well as without, at no
+more than +20% cost. With BASE (revision against working tree) questions 4 and 5 are expected to favour "with": that is
+the change, not noise.
 """
 from __future__ import annotations
 
@@ -26,7 +29,16 @@ QUESTIONS = {
     3: ("Which compiler triple (compiler, assembler) does a game repository bootstrapped by psxdecomp use? Answer in "
         "at most five lines.",
         [r"\b1\.4\b", r"(?i)\b(?:its own|each game|per[- ]game|the game(?: repo(?:sitory)?)? pins)"], [TRIPLE]),
+    4: ("What does a `doctor` row report when its check could not run (offline, or `gh` unavailable), and does that "
+        "change the exit code? Answer in at most five lines.",
+        [r"\bSKIP\b",
+         r"(?i)unchanged|unaffected|not change|n't change|no (?:change|effect)|only (?:on|for|when|if)[^.\n]*FAIL"], []),
+    5: ("At which point of a fresh bootstrap do the profile's deny rules reach the game's `.claude/settings.json`? "
+        "Answer in at most five lines.",
+        [r"\bS10\b|(?i:handoff)"],
+        [r"(?<!not )\bonly\b[^.\n]*upgrade", r"\b(?:not|never)\b[^.\n]*\b(?:bootstrap|S10|handoff)"]),
 }
+TOKENS = ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens")
 NAME = re.compile(r"^(with|without)-([\w.-]+)-q(\d+)-r(\d+)\.json$")
 KEEP_COST = 1.20
 
@@ -37,7 +49,7 @@ def score(q: int, text: str) -> bool:
 
 
 def table(root: pathlib.Path) -> tuple[list[str], bool | None]:
-    cells: dict[tuple[str, str], list[tuple[bool, float, int]]] = {}
+    cells: dict[tuple[str, str], list[tuple[bool, float, int, list[int] | None]]] = {}
     for f in sorted(root.glob("*.json")):
         m = NAME.match(f.name)
         if not m:
@@ -48,14 +60,20 @@ def table(root: pathlib.Path) -> tuple[list[str], bool | None]:
             d = {}
         ok = score(int(m[3]), d.get("result") or "") and not d.get("is_error")
         cost, turns = float(d.get("total_cost_usd") or 0), int(d.get("num_turns") or 0)
-        cells.setdefault((m[1], m[2]), []).append((ok, cost, turns))
-    out = ["| Arm | Model | Score | Mean cost (USD) | Mean turns |", "|---|---|---|---|---|"]
+        mu = d.get("modelUsage")
+        tok = [sum(int(v.get(k) or 0) for v in mu.values() if isinstance(v, dict)) for k in TOKENS] \
+            if isinstance(mu, dict) else None
+        cells.setdefault((m[1], m[2]), []).append((ok, cost, turns, tok))
+    out = ["| Arm | Model | Score | Mean cost (USD) | Mean turns | In | Out | Cache read | Cache create |",
+           "|---|---|---|---|---|---|---|---|---|"]
     agg = {}
     for (arm, model), rows in sorted(cells.items()):
         n = len(rows)
         s, c, t = sum(r[0] for r in rows), sum(r[1] for r in rows) / n, sum(r[2] for r in rows) / n
         agg[(arm, model)] = (s / n, c)
-        out.append("| %s | %s | %d/%d | %.4f | %.1f |" % (arm, model, s, n, c, t))
+        toks = ["?" if any(r[3] is None for r in rows) else "%.0f" % (sum(r[3][i] for r in rows) / n)
+                for i in range(len(TOKENS))]
+        out.append("| %s | %s | %d/%d | %.4f | %.1f | %s |" % (arm, model, s, n, c, t, " | ".join(toks)))
     models = sorted({m for _, m in agg})
     if not models or any((a, m) not in agg for a in ("with", "without") for m in models):
         return out, None
@@ -69,18 +87,28 @@ def table(root: pathlib.Path) -> tuple[list[str], bool | None]:
 
 def self_test() -> int:
     good = {1: "Run `PSXDECOMP_KIT=/path pytest -q tests/test_pipeline.py`.", 2: "In compat.toml, [pa3] version.",
-            3: "None is fixed: each game pins its own triple in its phase 1.4 (docs/ops/compiler-pin.md)."}
-    bad = {1: "Run pytest.", 2: "In README.md.", 3: "It uses gcc 2.7.2 with aspsx 2.56; each game pins its own in 1.4."}
+            3: "None is fixed: each game pins its own triple in its phase 1.4 (docs/ops/compiler-pin.md).",
+            4: "The row says SKIP and the last line counts it as not run; the exit code is unchanged (1 only on FAIL).",
+            5: "At S10, the handoff; `/psxdecomp:upgrade apply` adds them to older games."}
+    bad = {1: "Run pytest.", 2: "In README.md.", 3: "It uses gcc 2.7.2 with aspsx 2.56; each game pins its own in 1.4.",
+           4: "The row says OK when the check could not run; the exit code is unchanged.",
+           5: "Never during the bootstrap (S0 to S10): `upgrade apply` writes them later."}
     ok = all(score(q, t) for q, t in good.items()) and not any(score(q, t) for q, t in bad.items())
     with tempfile.TemporaryDirectory() as td:
         d = pathlib.Path(td)
+        usage = {"m1": {"inputTokens": 10, "outputTokens": 20, "cacheReadInputTokens": 30,
+                        "cacheCreationInputTokens": 40},
+                 "m2": {"inputTokens": 1, "outputTokens": 2, "cacheReadInputTokens": 3, "cacheCreationInputTokens": 4}}
         for q in QUESTIONS:
             for arm, text, cost in (("with", good[q], 0.10), ("without", bad[q], 0.09)):
-                (d / ("%s-opus-q%d-r1.json" % (arm, q))).write_text(json.dumps(
-                    {"result": text, "total_cost_usd": cost, "num_turns": 2}))
+                body = {"result": text, "total_cost_usd": cost, "num_turns": 2}
+                if arm == "with":
+                    body["modelUsage"] = usage                             # without: no modelUsage, columns give "?"
+                (d / ("%s-opus-q%d-r1.json" % (arm, q))).write_text(json.dumps(body))
         (d / "notes.json").write_text("{}")                                # ignored: not an arm file
         rows, keep = table(d)
-        ok &= keep is True and "| with | opus | 3/3 | 0.1000 | 2.0 |" in rows
+        ok &= keep is True and "| with | opus | 5/5 | 0.1000 | 2.0 | 11 | 22 | 33 | 44 |" in rows
+        ok &= "| without | opus | 0/5 | 0.0900 | 2.0 | ? | ? | ? | ? |" in rows
         (d / "with-opus-q1-r1.json").write_text(json.dumps({"result": good[1], "total_cost_usd": 0.5}))
         ok &= table(d)[1] is False                                         # +20% cost rule
     print("SELF-TEST %s ab_score" % ("OK" if ok else "FAIL"))

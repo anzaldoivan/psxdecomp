@@ -10,7 +10,8 @@
    At each model release, PA3 bump and kit bump, re-run `--tag hygiene --scaffold --runs 5` on both current models.
    At each model release also run `/doctor prompt-audit` in a session here (it audits AGENTS.md, CLAUDE.md and the
    skills for instructions written for older models), and re-run `tools/ab_agents.sh`: AGENTS.md stays only while it
-   scores at least as well as no file at no more than +20% cost (`tools/ab_score.py`).
+   scores at least as well as no file at no more than +20% cost (`tools/ab_score.py`);
+   `BASE=<revision> tools/ab_agents.sh` instead compares the working tree with that revision.
 4. Tier 3: `/psxdecomp:new` on one real game with your own dump, in an empty folder, stopped at PA3's first planner
    draft. Check `tools/audit_public.py` exits 0 on the tree and 1 on the planted fixture, `config/psxdecomp.toml` holds
    the pins, and `docs/ops/refs.md` lists every fetched source with its class.
