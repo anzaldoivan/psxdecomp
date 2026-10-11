@@ -109,7 +109,6 @@ your-game/
   docs/prior-art.md       the research report you confirmed
   docs/ops/refs.md        the reference-library index (the sources sit in the ignored refs/)
   docs/ops/host-recipe.md the tools for this machine, with install commands
-  docs/ops/drafting.md    the one drafting rule a benchmark earned, with its numbers
   .ignore                 keeps refs/ searchable for agents although git ignores it
   HOW_WE_WORK.md          Project Architect's working card for agents
   tools/audit_public.py   the ROM firewall, enforced from the first commit

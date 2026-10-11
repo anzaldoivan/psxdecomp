@@ -518,15 +518,16 @@ def insert_in_section(text: str, heading: str, line: str) -> str:
 
 SCOPE_MARK = "- **This repo:**"
 CONV_MARK = "- **C conventions:**"
-DRAFTING = "docs/ops/drafting.md"
+# The one drafting rule a benchmark earned (its numbers: docs/ECOSYSTEM.md rows K22 and M15). The card is always read,
+# so the rule sits there; the expert copies it into each drafter brief.
+DRAFT_RULE = ("Fields by name. Read and write struct members as `p->field`: no byte-offset arithmetic, no `M2C_FIELD`, "
+              "no macro that hides one. If a header lacks the struct or the field, say which one in your last message.")
 
 
-def conventions_line(c: Ctx) -> str:
-    """One pointer, not a copy: the C rules live in CONTRIBUTING.md (the kit's), other projects' in the prior-art table."""
-    prior = "; what prior-art projects require, and the decision: `docs/prior-art.md`" \
-        if c.p("docs/prior-art.md").exists() else ""
-    return ("%s `CONTRIBUTING.md` (names on evidence, one definition per type, `// !FAKE:`, `make format`); for a "
-            "drafter's brief, the rule that measured: `%s`%s." % (CONV_MARK, DRAFTING, prior))
+def conventions_line(prior: bool) -> str:
+    """The card's conventions line, at most 400 characters: the kit's C rules by pointer, DRAFT_RULE whole."""
+    return '%s `CONTRIBUTING.md`. Put this line in each drafter brief: "%s"%s' % (
+        CONV_MARK, DRAFT_RULE, " Prior-art rules and the decision: `docs/prior-art.md`." if prior else "")
 
 
 def psyq_record(medium: dict | None) -> tuple[list[str], str]:
@@ -579,11 +580,10 @@ def s10_handoff(c: Ctx) -> str:
     # written once: a re-run on a later day leaves the record alone (/psxdecomp:upgrade is what rewrites it)
     for rel, body in ((RECORD, "\n".join(rec)),
                       ("config/psxdecomp.profile.toml", common.read(common.PLUGIN_ROOT / "profiles/psx/profile.toml")),
-                      ("docs/ops/host-recipe.md", common.read(common.PLUGIN_ROOT / ("profiles/psx/hosts/%s.md" % recipe))),
-                      (DRAFTING, common.read(common.PLUGIN_ROOT / "profiles/psx/drafting.md"))):
+                      ("docs/ops/host-recipe.md", common.read(common.PLUGIN_ROOT / ("profiles/psx/hosts/%s.md" % recipe)))):
         if not c.p(rel).exists():
             c.write(rel, body)
-    paths = [RECORD, "config/psxdecomp.profile.toml", "docs/ops/host-recipe.md", DRAFTING]
+    paths = [RECORD, "config/psxdecomp.profile.toml", "docs/ops/host-recipe.md"]
     pa_src = c.boot("prior-art.md")
     if pa_src.is_file() and not c.p("docs/prior-art.md").exists():
         c.write("docs/prior-art.md", common.read(pa_src))
@@ -599,7 +599,8 @@ def s10_handoff(c: Ctx) -> str:
         c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Docs map", scope_line(ans, psyq_v)))
         paths.append("HOW_WE_WORK.md")
     if how.is_file() and CONV_MARK not in common.read(how):     # the card's conventions slot is empty after S7
-        c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Conventions", conventions_line(c)))
+        c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Conventions",
+                                                    conventions_line(c.p("docs/prior-art.md").exists())))
         paths.append("HOW_WE_WORK.md")
     seeds = c.boot("seeds.txt")
     if c.dry:
@@ -837,6 +838,8 @@ def self_test() -> int:
     ok &= asked.count("\n") == pa.count("\n") + 1
     ok &= json.loads(with_upgrade_ask(pa.replace('"x"', '"x", "upgrade": "auto"')))["upgrade"] == "ask"
     ok &= "--resume" in RESTART and "--agent plain" in RESTART
+    conv = conventions_line(True)
+    ok &= len(conv) <= 400 and DRAFT_RULE in conv and "docs/prior-art.md" not in conventions_line(False)
     readme = "# G\n\nLead.\n\n## How this project is made\n\n%s\n\nThe standard.\n" % common.OLD_DISCLOSURE
     swapped = common.with_ai_policy(readme, replace=common.OLD_DISCLOSURE)
     ok &= common.OLD_DISCLOSURE not in swapped and swapped.count(common.AI_POLICY_MARK) == 1

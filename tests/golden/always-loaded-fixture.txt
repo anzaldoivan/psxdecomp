@@ -23,5 +23,5 @@
 1492 .claude/settings.json
 13208 .claude/skills/project-architect/SKILL.md
 1193 CLAUDE.md
-5997 HOW_WE_WORK.md
+6100 HOW_WE_WORK.md
 0 hook:SessionStart

@@ -185,27 +185,25 @@ def test_scoped_outputs(game):
     rec = tomllib.loads((game / "config/psxdecomp.toml").read_text())
     assert rec["psyq"]["version"] == "4.7" and rec["psyq"]["status"].startswith("lead")
     assert "compiler_ladder" not in (game / "config/psxdecomp.profile.toml").read_text()
+    import install
     how = (game / "HOW_WE_WORK.md").read_text()
     line = next(l for l in how.splitlines() if l.startswith("- **This repo:**"))
     assert "PsyQ 4.7" in line and len(line) <= 300
-    conv = how[how.index("## Conventions"):].split("\n## ")[0]      # S10's pointer sits in the card's conventions section
-    assert conv.count("- **C conventions:** `CONTRIBUTING.md`") == 1 and "## Names, types and formatting" in \
-        (game / "CONTRIBUTING.md").read_text()
+    conv = how[how.index("## Conventions"):].split("\n## ")[0]      # S10's line sits in the card's conventions section
+    cline = [l for l in conv.splitlines() if l.startswith(install.CONV_MARK)]
+    assert len(cline) == 1 and len(cline[0]) <= 400 and install.DRAFT_RULE in cline[0], cline
+    assert "`CONTRIBUTING.md`" in cline[0] and "## Names, types and formatting" in (game / "CONTRIBUTING.md").read_text()
     assert ("docs/prior-art.md" in conv) == (game / "docs/prior-art.md").is_file()   # never a pointer to a missing file
-    drafting = (game / "docs/ops/drafting.md").read_text()                  # the profile's one measured drafting rule
-    assert "`docs/ops/drafting.md`" in conv and drafting == (ROOT / "profiles/psx/drafting.md").read_text()
-    assert drafting.count("\n- **") == 1 and len(drafting.splitlines()) <= 25      # one rule; a second needs its number
+    assert not (game / "docs/ops/drafting.md").exists()             # the rule has one home in a game: the card
     env = next(l for l in (game / "docs/ops/decomp-environment.md").read_text().splitlines()
                if l.startswith("| Candidate compiler family"))
     assert env.split("|")[2].strip().startswith("Candidate (S4"), env
     for rel in ("docs/ops/refs.md", "docs/prior-art.md", "config/psxdecomp.toml", "config/psxdecomp.profile.toml",
-                "config/refs.toml", "docs/ops/drafting.md"):
+                "config/refs.toml"):
         if (game / rel).is_file():
             assert fetch_refs.lint_file(game / rel) == [], rel
     # one home: no sentence psxdecomp writes (the index, its config records, its HOW_WE_WORK lines) is copied elsewhere
-    import install
-    ours = ("docs/ops/refs.md", "config/psxdecomp.toml", "config/psxdecomp.profile.toml", "config/refs.toml",
-            "docs/ops/drafting.md")
+    ours = ("docs/ops/refs.md", "config/psxdecomp.toml", "config/psxdecomp.profile.toml", "config/refs.toml")
     mine = lambda l: l.startswith((install.SCOPE_MARK, install.CONV_MARK, install.REFS_RULE[:20]))  # noqa: E731
     written = {s for rel in ours if (game / rel).is_file()
                for _, s in fetch_refs.sentences((game / rel).read_text(), toml=rel.endswith(".toml"))}
