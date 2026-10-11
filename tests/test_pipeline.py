@@ -188,6 +188,10 @@ def test_scoped_outputs(game):
     how = (game / "HOW_WE_WORK.md").read_text()
     line = next(l for l in how.splitlines() if l.startswith("- **This repo:**"))
     assert "PsyQ 4.7" in line and len(line) <= 300
+    conv = how[how.index("## Conventions"):].split("\n## ")[0]      # S10's pointer sits in the card's conventions section
+    assert conv.count("- **C conventions:** `CONTRIBUTING.md`") == 1 and "## Names, types and formatting" in \
+        (game / "CONTRIBUTING.md").read_text()
+    assert ("docs/prior-art.md" in conv) == (game / "docs/prior-art.md").is_file()   # never a pointer to a missing file
     env = next(l for l in (game / "docs/ops/decomp-environment.md").read_text().splitlines()
                if l.startswith("| Candidate compiler family"))
     assert env.split("|")[2].strip().startswith("Candidate (S4"), env
@@ -198,7 +202,7 @@ def test_scoped_outputs(game):
     # one home: no sentence psxdecomp writes (the index, its config records, its HOW_WE_WORK lines) is copied elsewhere
     import install
     ours = ("docs/ops/refs.md", "config/psxdecomp.toml", "config/psxdecomp.profile.toml", "config/refs.toml")
-    mine = lambda l: l.startswith((install.SCOPE_MARK, install.REFS_RULE[:20]))  # noqa: E731
+    mine = lambda l: l.startswith((install.SCOPE_MARK, install.CONV_MARK, install.REFS_RULE[:20]))  # noqa: E731
     written = {s for rel in ours if (game / rel).is_file()
                for _, s in fetch_refs.sentences((game / rel).read_text(), toml=rel.endswith(".toml"))}
     written |= {s for _, s in fetch_refs.sentences("\n\n".join(l for l in how.splitlines() if mine(l)))}

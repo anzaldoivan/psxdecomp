@@ -517,6 +517,14 @@ def insert_in_section(text: str, heading: str, line: str) -> str:
 # ---- S10 handoff ----------------------------------------------------------------------------------------------
 
 SCOPE_MARK = "- **This repo:**"
+CONV_MARK = "- **C conventions:**"
+
+
+def conventions_line(c: Ctx) -> str:
+    """One pointer, not a copy: the C rules live in CONTRIBUTING.md (the kit's), other projects' in the prior-art table."""
+    prior = "; what prior-art projects require, and the decision: `docs/prior-art.md`" \
+        if c.p("docs/prior-art.md").exists() else ""
+    return "%s `CONTRIBUTING.md` (names on evidence, one definition per type, `// !FAKE:`, `make format`)%s." % (CONV_MARK, prior)
 
 
 def psyq_record(medium: dict | None) -> tuple[list[str], str]:
@@ -586,6 +594,9 @@ def s10_handoff(c: Ctx) -> str:
     how = c.p("HOW_WE_WORK.md")
     if how.is_file() and SCOPE_MARK not in common.read(how):
         c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Docs map", scope_line(ans, psyq_v)))
+        paths.append("HOW_WE_WORK.md")
+    if how.is_file() and CONV_MARK not in common.read(how):     # the card's conventions slot is empty after S7
+        c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Conventions", conventions_line(c)))
         paths.append("HOW_WE_WORK.md")
     seeds = c.boot("seeds.txt")
     if c.dry:
