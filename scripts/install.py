@@ -593,9 +593,10 @@ def s10_handoff(c: Ctx) -> str:
     missing, why = common.deny_missing(c.target)   # the profile's deny rules: native enforcement from the first commit
     if missing and not why:
         c.write(common.SETTINGS, common.with_denies(c.target, missing))
-        paths.append(common.SETTINGS)
     elif why:
         print("     deny rules not written: %s; add profiles/psx/deny.json by hand" % why)
+    if not why:                                   # a re-run after a failed S10 finds nothing missing but the file staged
+        paths.append(common.SETTINGS)
     c.git("add", "--", *[x for x in paths if c.p(x).exists()])   # the README lint counts tracked paths, not local
     import doctor
     rows = doctor.check(c.target)

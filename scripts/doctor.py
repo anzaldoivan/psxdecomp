@@ -860,10 +860,14 @@ def self_test_deny() -> bool:
         conf["permissions"]["deny"].pop()
         (repo / common.SETTINGS).write_text(json.dumps(conf))
         short = deny_row(repo)
+        rule = common.deny_missing(repo)[0][0]                          # a rule under permissions.allow is not a deny
+        (repo / common.SETTINGS).write_text(json.dumps({"permissions": {"allow": [rule]}}))
+        allowed = deny_row(repo)
         (repo / publish.PA3_REL).write_text(json.dumps({"files": {common.SETTINGS: "h"}}))
         managed = deny_row(repo)
     print("  deny: all %s; one removed %s; PA3-managed %s" % (full[0], short[0], managed[0]))
-    return full[0] == "OK" and short[0] == "FAIL" and "1 of 18" in short[1] and managed[0] == "WARN"
+    return (full[0] == "OK" and short[0] == "FAIL" and "1 of 18" in short[1] and managed[0] == "WARN"
+            and allowed[0] == "FAIL" and "18 of 18" in allowed[1])
 
 
 GOOD_WORKFLOW = """name: progress
@@ -1011,7 +1015,8 @@ def self_test_github() -> bool:
     return ok and (len(warn) == 1 and warn[0][0] == "WARN" and "sha_pinning_required=true" in warn[0][1]
             and "gh api -X PUT repos/example/game/actions/permissions" in warn[0][1]
             and [s for s, _ in clean] == ["OK"] and skipped[0][0] == "SKIP" and "skipped" in skipped[0][1]
-            and github_rows(None, down) == [] and github_rows("example/game", None)[0][1].startswith("offline"))
+            and github_rows(None, down) == [] and github_rows("example/game", None)[0][0] == "SKIP"
+            and github_rows("example/game", None)[0][1].startswith("offline"))
 
 
 REV = "ab" * 20
@@ -1069,7 +1074,8 @@ def self_test_split() -> bool:
     ok = good[0] == "OK" and "personal account" in good[1] and "private_rev abababab" in good[1]
     ok &= all(got[n][0] == "FAIL" and w in got[n][1] for n, w in want.items()) and "2 deploy keys" in got["keys"][1]
     ok &= org_ok[0] == "OK" and gone[0] == "FAIL" and "not found" in gone[1]
-    ok &= private_repo_row(cfg, down)[1].startswith("skipped") and private_repo_row(cfg, None)[1].startswith("offline")
+    ok &= private_repo_row(cfg, down)[0] == "SKIP" and private_repo_row(cfg, down)[1].startswith("skipped")
+    ok &= private_repo_row(cfg, None)[0] == "SKIP" and private_repo_row(cfg, None)[1].startswith("offline")
     ok &= private_repo_row(dict(cfg, private_repo=""), None) is None
     store = publish._fake_store(cfg)                                    # publish's compliant public repository
     std = public_standard_row(cfg, _store_api(store))
@@ -1077,7 +1083,8 @@ def self_test_split() -> bool:
     store["repos/example/game"]["allow_forking"] = False
     drift = public_standard_row(cfg, _store_api(store))
     ok &= std[0] == "OK" and drift[0] == "WARN" and "2 drift(s)" in drift[1] and "settings --apply" in drift[1]
-    ok &= "by hand: CODEOWNERS" in drift[1] and public_standard_row(cfg, down)[1].startswith("skipped")
+    ok &= "by hand: CODEOWNERS" in drift[1] and public_standard_row(cfg, down)[0] == "SKIP"
+    ok &= public_standard_row(cfg, down)[1].startswith("skipped")
     dev = [dev_row("example/game-dev", lambda p: {"private": True, "visibility": "private"}, cfg),
            dev_row("example/game-dev", lambda p: {"private": False, "visibility": "public"}, cfg),
            dev_row("example/game-dev", None, cfg), dev_row(None, None, cfg)]

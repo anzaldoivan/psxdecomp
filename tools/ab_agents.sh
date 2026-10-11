@@ -45,7 +45,9 @@ test -f "$dir_with/AGENTS.md" || { echo "AB FAIL: no AGENTS.md in the working tr
         short=$(echo "$model" | sed 's/^claude-//; s/-[0-9].*$//')
         r=1
         while [ "$r" -le "$runs" ]; do
-            for arm in with without; do
+            # alternate which arm goes first: the first call of a pair pays the cold prompt cache for the shared prefix
+            if [ $(((q + r) % 2)) -eq 0 ]; then arms="with without"; else arms="without with"; fi
+            for arm in $arms; do
                 f="$out/$arm-$short-q$q-r$r.json"
                 [ -s "$f" ] && continue                         # resumable: a finished run is kept
                 (cd "$(armdir "$arm")" && claude -p --output-format json --setting-sources project \

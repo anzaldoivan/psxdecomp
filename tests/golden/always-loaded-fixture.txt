@@ -14,6 +14,12 @@
 1304 .claude/agents/retriever-digest.md
 1225 .claude/agents/retriever-web.md
 2901 .claude/agents/review.md
+3037 .claude/commands/bench.md
+3397 .claude/commands/discuss.md
+466 .claude/commands/plangen.md
+472 .claude/commands/planphase.md
+892 .claude/commands/proceed.md
+1652 .claude/commands/thoughts.md
 1492 .claude/settings.json
 13208 .claude/skills/project-architect/SKILL.md
 1193 CLAUDE.md

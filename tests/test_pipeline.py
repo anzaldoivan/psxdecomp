@@ -32,11 +32,13 @@ def test_golden_tree(game):
 
 def test_always_loaded_bytes(game):
     """Tier 4a: the bytes a session in the bootstrapped repo loads first (CLAUDE.md, the card, settings, agents,
-    skills, rules without `paths:`, the hook's stdout) as a golden file; agent and skill files count whole. The
+    skills, commands, rules without `paths:`, the hook's stdout) as a golden file; agent, command and skill files
+    count whole, agents at any depth. Not covered: .mcp.json, hook events other than SessionStart, output styles. The
     interpreter path, its version, the host line and the bootstrap date are this machine's and this day's, so they
     count as tokens."""
     files = ["CLAUDE.md", "HOW_WE_WORK.md", ".claude/settings.json"]
-    files += [p.relative_to(game).as_posix() for g in (".claude/agents/*.md", ".claude/skills/*/SKILL.md")
+    files += [p.relative_to(game).as_posix() for g in (".claude/agents/**/*.md", ".claude/commands/*.md",
+                                                    ".claude/skills/*/SKILL.md")
               for p in game.glob(g)]
     files += [p.relative_to(game).as_posix() for p in game.glob(".claude/rules/*.md") if "\npaths:" not in p.read_text()]
     subs = ((r"/\S*?/python[\d.]*( \(\d+\.\d+\.\d+\))?", "<PY>"), (r"(?m)^- OS / shells: .*$", "- OS / shells: <HOST>"),
