@@ -1,4 +1,4 @@
-2288 AGENTS.md
+2315 AGENTS.md
 11 CLAUDE.md
 197 agent:scout-repo
 227 agent:scout-web

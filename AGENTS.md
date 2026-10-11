@@ -28,7 +28,8 @@ design and test tiers: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## Rules
 
 - Never push, never tag, never publish a release from an agent session.
-- House rules (one home per fact, scoped versions, no game byte): [CONTRIBUTING.md](CONTRIBUTING.md#house-rules).
+- House rules (one home per fact, scoped versions, no game byte) and the writing standard:
+  [CONTRIBUTING.md](CONTRIBUTING.md#house-rules).
 - psxdecomp pins no compiler. A bootstrapped game repo records only a candidate set; the game pins its own triple in
   its phase 1.4 (`docs/ops/compiler-pin.md` there).
 

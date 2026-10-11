@@ -21,3 +21,13 @@ Follow [docs/RELEASING.md](docs/RELEASING.md). A PA3 or kit bump changes `compat
 - One home per fact: fix a duplicate by linking to its home, never by copying (tier 0's `test_no_copied_prose`).
 - A toolchain version or a game named in a doc carries its date or scope (`fetch_refs.lint_scope`).
 - No game byte, no SDK file, no disc image, ever (`tools/audit_public.py`).
+
+## Writing
+
+ASD-STE100 subset. Tier 0 counts the first two (`fetch_refs.lint_style`). The count never rises.
+- A numbered step has at most 20 words. Any other sentence has at most 25.
+- A paragraph has at most 6 sentences.
+- One instruction per sentence. Use the imperative.
+- Use the active voice. Name who or what acts.
+- State the rule and its number. Do not tell how you found it.
+- A file that S10 copies into a game has no finding.

@@ -246,6 +246,18 @@ def test_no_copied_prose():
     assert not dupes, ["%s: %s" % (", ".join(w), t[:80]) for t, w in dupes]
 
 
+def test_style_ratchet():
+    """The writing standard (CONTRIBUTING.md "Writing"): tests/golden/style.txt holds one `<count> <path>` line per
+    document with a finding of fetch_refs.lint_style. A count may only fall: the update switch refuses a higher one."""
+    golden = ROOT / "tests" / "golden" / "style.txt"
+    docs = [p for p in _docs((".md", ".template")) if p.relative_to(ROOT).parts[0] not in ("evals", "fixtures", "tests")]
+    found = {p.relative_to(ROOT).as_posix(): fetch_refs.lint_style(p.read_text()) for p in docs}
+    was = {rel: int(n) for n, rel in (l.split(" ", 1) for l in golden.read_text().splitlines())}
+    rose = ["%s:%d: %s" % (rel, n, m) for rel, f in found.items() if len(f) > was.get(rel, 0) for n, m in f]
+    assert not rose, rose
+    check_golden(golden, {rel: "." * len(f) for rel, f in found.items() if f})       # the count as the item's length
+
+
 def test_search_ignore():
     """.ignore keeps the deliberately stale eval and fixture text out of a root search (rg, Claude's Grep): every entry
     exists, and a root search for a stale compiler lead finds only the self-test strings that plant it."""
