@@ -81,6 +81,31 @@ def test_refs_rows_have_class_and_licence():
         assert doc["authority"] and doc["traps"]
 
 
+def test_refs_counts():
+    """docs/REFS.md's result line counts the profile's rows as refs.toml holds them, and carries the date of the count."""
+    rows = fetch_refs.load_rows(ROOT / "profiles/psx/refs.toml")
+    n = lambda **kv: sum(all(r.get(k) == v for k, v in kv.items()) for r in rows)  # noqa: E731
+    line = next(l for l in (ROOT / "docs/REFS.md").read_text().splitlines() if l.startswith("Result: "))
+    want = "**%d core sources" % n(tier="core"), ", %d optional, %d byo, %d links (counted " % (
+        n(tier="optional"), n(**{"class": "byo"}), n(**{"class": "link"}))
+    assert all(w in line for w in want) and re.search(r"\(counted \d{4}-\d\d-\d\d\)", line), (line, want)
+
+
+def test_readme_version():
+    """The README names the version of .claude-plugin/plugin.json, once."""
+    version = json.loads((ROOT / ".claude-plugin/plugin.json").read_text())["version"]
+    assert re.findall(r"at version (\d+\.\d+\.\d+)\.", (ROOT / "README.md").read_text()) == [version]
+
+
+def test_python_floor():
+    """One Python floor (3.12) in the launcher, the scripts and the manifest: no script asks find_python for less."""
+    psxd = (ROOT / "scripts/psxd").read_text()
+    assert "(3, 12)" in psxd and "3.11" not in psxd
+    assert ">= 3.12" in (ROOT / ".claude-plugin/plugin.json").read_text()
+    for p in (ROOT / "scripts").glob("*.py"):
+        assert "find_python((3, 11))" not in p.read_text() and "3.11" not in p.read_text().split('"""')[1], p.name
+
+
 def test_answers_fixtures():
     for f in [ROOT / "fixtures/answers.psx.txt"] + sorted((ROOT / "fixtures/backtest").glob("*.answers.txt")):
         v, note = answers.parse(f.read_text())
@@ -323,7 +348,7 @@ def test_upstream_proposals():
     states = ("proposed", "sent", "accepted", "declined", "deferred", "superseded")
     for r in rows:
         assert len(r) == 5 and r[1] and r[2], r[0]
-        assert r[3] in {"kit", "mmx6", "PA3", "DC2", "BFM"}, (r[0], r[3])
+        assert r[3] in {"kit", "mmx6", "mmx5", "PA3", "DC2", "BFM"}, (r[0], r[3])
         assert r[4].split(" (")[0] in states, (r[0], r[4])
     assert len({r[0] for r in rows}) == len(rows)
 

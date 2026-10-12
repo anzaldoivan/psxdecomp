@@ -20,7 +20,7 @@ new profile.
 | `sdk.family` | the SDK family whose stamps the probe detects |
 | `sdk.detector` | how the probe detects the SDK version |
 | `sdk.authority` | which later tool's detection is the final word |
-| `tools.splitter` | the splitter/disassembler the ladder's phase 1 uses |
+| `tools.splitter` | the splitter/disassembler the ladder's phase 1.3 uses |
 | `tools.assembler` | the assembler/linker |
 | `tools.compilers` | where candidate compilers come from |
 | `tools.loader` | the RE database loader |

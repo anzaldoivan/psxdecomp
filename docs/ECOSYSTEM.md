@@ -66,7 +66,7 @@ repo owns its own text. Each row goes to its owner as its own change. States: **
 | K12 | Write the README skeleton on psxdecomp's README standard: its sections, the AI policy block, the two `psxdecomp:` generated-block markers, "not yet" lines in place of `TODO(phase-N)` | psxdecomp's S8 replaces the untouched skeleton with `profiles/psx/README.md.template` meanwhile ([PUBLISHING.md](PUBLISHING.md), 2026-10-04) | kit | proposed |
 | K13 | G12 scope clause for a never-public `<game>-private` | split mode ([PUBLISHING.md](PUBLISHING.md), 2026-10-09) | kit | proposed |
 | K14 | `no-rom.yml` header: byte-identity in CI when the files come from `<game>-private` | split mode's `build.yml` (2026-10-09) | kit | proposed |
-| K15 | Phase 9 / 1.9: a public trunk created new, no flip | split mode (2026-10-09) | kit | proposed |
+| K15 | Phase 1.9 (the kit's phase 9): a public trunk created new, no flip | split mode (2026-10-09) | kit | proposed |
 | K16 | PROJECT_CONTEXT visibility row: a split option | mmx6 and dc2 amendments (2026-10-09) | kit | proposed |
 | K17 | SECURITY.md purge path across the public repo, `-dev`, `-private`, the read-only credential and the image | split mode (2026-10-09) | kit | proposed |
 | K18 | G63: `Assisted-by:` disclosure (Linux kernel model), not acknowledgement | the PR template's line and the release body's `Assisted-by:` trailer (2026-10-09) | kit | proposed |

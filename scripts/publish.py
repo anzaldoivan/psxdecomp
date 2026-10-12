@@ -703,7 +703,7 @@ def lint(text: str, ctx: Ctx, release: bool = False) -> list[tuple[str, str, str
     # the records behind the blocks
     if ctx.categories is None:
         add("FAIL" if release else "INFO", "categories", "no %s yet: the progress table says \"not published\" "
-            "until the first report (Phase 9)" % CATEGORIES_REL)
+            "until the first report (phase 1.9)" % CATEGORIES_REL)
     for e in ctx.categories_errs:
         add("FAIL", "categories", e)
     if ctx.discs is None:
@@ -4897,9 +4897,9 @@ def self_test() -> int:
         (repo / CATEGORIES_REL).unlink()
         bare = Ctx(repo)
         t2 = render(text, bare)
-        check("render before Phase 9", "Not published yet" in t2 and "decomp.dev/example" not in t2)
+        check("render before phase 1.9", "Not published yet" in t2 and "decomp.dev/example" not in t2)
         got = lint(t2, bare)
-        check("lint before Phase 9", [f[0] for f in got] == ["INFO"], got)
+        check("lint before phase 1.9", [f[0] for f in got] == ["INFO"], got)
         check("lint --release needs the list", any(f[0] == "FAIL" and f[1] == "categories"
                                                    for f in lint(t2, bare, release=True)))
         # the freeze: an id committed once may be retired, never removed

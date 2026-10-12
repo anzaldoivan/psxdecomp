@@ -1,6 +1,6 @@
 """Shared helpers for the psxdecomp scripts: paths, TOML, the stage state file, pins, the PA3/kit sources.
 
-Standard library only (Python >= 3.11 for tomllib). Every script that writes has --dry-run and --self-test.
+Standard library only (Python >= 3.12). Every script that writes has --dry-run and --self-test.
 """
 from __future__ import annotations
 

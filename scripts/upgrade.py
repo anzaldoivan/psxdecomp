@@ -307,7 +307,7 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool) -> list[str]:
     if "ai-policy" in acts:
         w("README.md", common.with_ai_policy(common.read(repo / "README.md")))
     if "ste-rule" in acts:
-        written += common.ste_rule_write(repo, common.find_python((3, 11)) or sys.executable, dry)
+        written += common.ste_rule_write(repo, common.find_python() or sys.executable, dry)
     if "split-doc" in acts:
         for rel, src in SPLIT_OWNED.items():
             w(rel, common.read(src))
@@ -329,7 +329,7 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool) -> list[str]:
         if how.is_file() and install.REFS_RULE not in common.read(how):
             w("HOW_WE_WORK.md", install.insert_in_section(common.read(how), "## Docs map", install.REFS_RULE))
     if not dry and any(x.endswith(" HOW_WE_WORK.md") for x in written) and (repo / "tools/card.py").is_file():
-        py = common.find_python((3, 11)) or sys.executable
+        py = common.find_python() or sys.executable
         r = common.run([py, "tools/card.py", "check"], cwd=repo, check=False)
         written.append("card check rc %d: %s" % (r.returncode, (r.stdout + r.stderr).strip().splitlines()[-1:]))
     refs_file = repo / "config/refs.toml"

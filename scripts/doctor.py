@@ -138,7 +138,7 @@ def base_rows(repo: pathlib.Path, add):
         "the kit's firewall block %s" % ("present" if "ROM firewall" in gtext else "missing from .gitignore"))
     audit = repo / "tools" / "audit_public.py"
     if audit.is_file():
-        py = common.find_python((3, 11)) or sys.executable
+        py = common.find_python() or sys.executable
         r = common.run([py, audit], cwd=repo, check=False, timeout=600)
         add("audit", "OK" if r.returncode == 0 else "FAIL",
             "tools/audit_public.py rc %d%s" % (r.returncode, "" if r.returncode == 0 else ": " + r.stdout.strip()[-200:]))

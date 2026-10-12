@@ -3,7 +3,7 @@
 # public OWNER/NAME, `[public].repo`), {{EXES}} (the boot executables, quoted, comma-separated: one required check
 # `build <EXE>` each), {{FETCH_COMMAND}} (fetches the compiler by pinned sha256, as the game's recipe does; runs with
 # network and without game files), {{BUILD_COMMAND}} (e.g. `make split build`), {{REPORT_COMMAND}} (the game's report
-# generator, Phase 9; writes report.json for $EXE).
+# generator, phase 1.9; writes report.json for $EXE).
 #
 # The toolchain image is public (pulled by digest); the game files come from the private `<game>-private` through the
 # read-only deploy key PRIVATE_DEPLOY_KEY, a secret a fork's workflow never receives. Every PR runs this file as it is
@@ -130,7 +130,7 @@ jobs:
         working-directory: ${{ runner.temp }}/work
         run: sha1sum --strict --quiet -c "$RUNNER_TEMP/private/check/$EXE.sha1"
 
-      # Phase 9 decides the generator. The report steps start with config/categories.tsv; before it the job is the byte
+      # Phase 1.9 decides the generator. The report steps start with config/categories.tsv; before it the job is the byte
       # check alone. The report is validated by the base's tools (no game bytes, the arithmetic, the artifact name).
       - name: Report
         id: report

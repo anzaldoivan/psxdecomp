@@ -39,7 +39,7 @@ tracked docs and its own `tools/reference/` clones.
 | decomp.me · decomp.dev · TCRF · Redump | — · — · L8 · dump check | 7 · 3 · 3 · 1 | **links** |
 | psxdev.net | 0 | 0 | **dropped** |
 
-Result: **4 core sources (13 MB, about 9 s)**, 6 optional, 1 byo, 5 links. The optional ones take up to 109 MB if
+Result: **4 core sources (13 MB, about 9 s)**, 8 optional, 1 byo, 6 links (counted 2026-10-12). The optional ones take up to 109 MB if
 all are fetched. Most of that is the two gcc sources, and a project needs only its pin's.
 
 decomp.dev is a research source too, not a fetched row. `scripts/decompdev.py lookup --title T [--serial S]` lists

@@ -26,7 +26,7 @@ records them a second time, and it never asks for them before the phase that pro
   function never makes a README block stale. The game's own numbers block (the kit corpus `progress.py`, between
   `<!-- progress:begin -->` and `<!-- progress:end -->`) stays the game's; psxdecomp's markers are namespaced
   `psxdecomp:` so the two never collide.
-- **Phase 9's first publish** creates `config/categories.tsv`. From that commit on its ids are frozen.
+- **The first publish of phase 1.9** creates `config/categories.tsv`. From that commit on its ids are frozen.
 
 ## Category ids: `config/categories.tsv`
 
@@ -80,7 +80,7 @@ is the same check from the plugin.
 
 The upload step is the last step of the public repo's `build.yml`, which runs after the byte check (the template,
 `profiles/psx/build.yml`; doctor's `progress` row lints a workflow like it). Push only for decomp.dev, ROM-free in
-what it uploads. The report generator is a marked placeholder there: each game's Phase 9 decides it.
+what it uploads. The report generator is a marked placeholder there: each game's phase 1.9 decides it.
 
 A repository admin then registers the project at `https://decomp.dev/manage/new`. Its `default_category` is not on
 that form, so the project page and an unfiltered badge show game and SDK together; the README's headline badges
@@ -114,7 +114,7 @@ Skeleton of `<game>-private`: `profiles/psx/private/`. Toolchain image recipe: `
 
 ### Overrides
 
-Split mode replaces two kit rulings ([ECOSYSTEM.md](ECOSYSTEM.md) K14, K15). Phase 9's visibility flip: nothing is
+Split mode replaces two kit rulings ([ECOSYSTEM.md](ECOSYSTEM.md) K14, K15). The visibility flip of phase 1.9: nothing is
 flipped; the public repository is created empty and release 1 is its first commit. `no-rom.yml`'s "byte-identity … is
 therefore never in CI": the public `build.yml` byte-checks every push and pull request with the files from
 `<game>-private`; `no-rom.yml` stays, a required check too.
@@ -514,7 +514,7 @@ runs `style --hook`. The hook reports the findings in the public text that the a
   vendored lint or its workflow differ from the plugin's; the `categories` row checks the list and its freeze.
 - **`/psxdecomp:upgrade`:** writes the vendored lint and the workflow (psxdecomp owns both), and lists the README's
   lint failures as a manual action; the prose is the developer's.
-- **Phase 9:** a suggested `verified by:` clause for the Publish phase:
+- **Phase 1.9:** a suggested `verified by:` clause for the Publish phase:
   `python3 tools/psxd_publish.py lint README.md --release && python3 tools/psxd_publish.py categories --history`
   and a validated report uploaded as `<EXE>_report`.
 
@@ -536,4 +536,4 @@ runs `style --hook`. The hook reports the findings in the public text that the a
 - Whether decomp.dev's parser takes uint64 as JSON numbers is untested; the standard writes strings either way.
 - Setting a project's `default_category` needs a decomp.dev admin.
 - A CI report needs the game's unit list without game data: committed records, or a person publishing locally.
-  Each game's Phase 9 decides.
+  Each game's phase 1.9 decides.

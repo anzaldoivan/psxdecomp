@@ -220,7 +220,7 @@ def test_s6_root_hint_pins_the_clone(toolchain, tmp_path):
 
 def test_readme_standard(game):
     """S8 replaces the kit's skeleton with psxdecomp's README standard, filled with the kit's own values: no old
-    disclosure, the AI policy block, both generated blocks; the vendored lint passes it (before Phase 9 and with no
+    disclosure, the AI policy block, both generated blocks; the vendored lint passes it (before phase 1.9 and with no
     Sony serial, the categories and the disc rows are INFO), and the game's CI runs that lint."""
     import publish
     readme = (game / "README.md").read_text()
