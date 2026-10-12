@@ -25,6 +25,7 @@ def test_plugin_validates():
     for target in (".", ".claude-plugin/plugin.json"):
         r = run(["claude", "plugin", "validate", target], cwd=ROOT, check=False)
         assert r.returncode == 0 and "Validation passed" in r.stdout, r.stdout + r.stderr
+        assert "warning" not in r.stdout.lower() and "Advice" not in r.stdout, r.stdout     # no warning, no advice
 
 
 def test_manifests():
@@ -147,7 +148,24 @@ def test_eval_cases():
             assert (case.parent / sc).is_file()
     assert {"no-autofire", "interview-first", "answers-path", "refs-grep", "refs-grep-ignored", "refuse-nonpsx",
             "backtest-x6", "backtest-x5", "backtest-dc2", "backtest-bfm", "poisoned-grep", "poisoned-grep-raw", "unpinned-candidate",
-            "kit-calibration-scope", "id-collision", "id-collision-tool", "restart-handoff", "psyq-question"} <= names
+            "kit-calibration-scope", "id-collision", "id-collision-tool", "restart-handoff", "psyq-question",
+            "s7-ladder"} <= names
+
+
+def test_s7_ladder_eval_reads_the_ladder():
+    """The `s7-ladder` case grades the constitution a real S7 writes: its file graders pass on a text that names the
+    eleven ladder phases as floor.LADDER holds them, and at least one fails on the two-phase fixture constitution, so
+    the canned fixture can never stand in for the intake."""
+    yaml = pytest.importorskip("yaml")
+    d = yaml.safe_load((ROOT / "evals/s7-ladder/case.yaml").read_text())
+    gs = [g for g in d["graders"] if g["type"] == "regex" and isinstance(g.get("target"), dict)]
+    assert len(gs) == 6 and all(g["target"] == {"source": "file", "path": floor.CONTEXT} for g in gs), gs
+    full = "\n".join("- **Phase 1.%d %s** — milestone: m" % (n, name) for n, name, _, _ in floor.LADDER)
+    assert floor.ladder_missing(full) == [] and all(_passes(g, full) for g in gs), [g["name"] for g in gs if not _passes(g, full)]
+    fixture = (ROOT / "fixtures/PROJECT_CONTEXT.fixture.md").read_text()
+    assert not all(_passes(g, fixture) for g in gs)
+    assert {"file_exists", "tool_used"} <= {g["type"] for g in d["graders"]}
+    assert (ROOT / "evals/s7-ladder/scaffold.sh").read_text().count("--until S6") == 1
 
 
 def _passes(g, text):
@@ -311,19 +329,20 @@ def test_search_ignore():
 
 def test_agents_md_size():
     """AGENTS.md is the agent entry point and stays small (just-in-time retrieval: it links, it does not hold the
-    docs); CLAUDE.md only imports it."""
+    docs); .claude/CLAUDE.md only imports it. A CLAUDE.md at a plugin's root is not loaded as project context, and
+    `claude plugin validate` warns about one."""
     text = (ROOT / "AGENTS.md").read_text()
     assert len(text.splitlines()) <= 50 and len(text.encode()) <= 4096, (len(text.splitlines()), len(text.encode()))
-    assert (ROOT / "CLAUDE.md").read_text().strip() == "@AGENTS.md"
+    assert (ROOT / ".claude/CLAUDE.md").read_text().strip() == "@../AGENTS.md" and not (ROOT / "CLAUDE.md").exists()
 
 
 def test_always_loaded_bytes(tmp_path):
-    """Tier 4a: the bytes a session loads before it does anything (AGENTS.md and CLAUDE.md, the listing text of each
+    """Tier 4a: the bytes a session loads before it does anything (AGENTS.md and .claude/CLAUDE.md, the listing text of each
     skill Claude may invoke on its own, each agent's and command's description, the SessionStart hook's stdout in an
     empty folder and in a paused bootstrap) are a golden file: growth is a reviewed diff. An invocation-only skill's
     description is not in context, so it has no line. The listing cap is Claude Code's 1,536 characters. Not covered:
     .mcp.json, hook events other than SessionStart, output styles."""
-    items = {n: (ROOT / n).read_text() for n in ("AGENTS.md", "CLAUDE.md")}
+    items = {n: (ROOT / n).read_text() for n in ("AGENTS.md", ".claude/CLAUDE.md")}
     for p in (ROOT / "skills").glob("*/SKILL.md"):
         if front(p.read_text(), "disable-model-invocation") != "true":
             items["skill:" + p.parent.name] = front(p.read_text(), "description", "when_to_use")
@@ -997,3 +1016,16 @@ def test_campaign_templates():
     d = next(d for d in upgrade.DELIVERY if d.path == upgrade.CAMPAIGN_DOC)
     assert (d.cls, d.own, d.src) == ("owned", "campaign", "profiles/psx/campaign.md")
     assert not [d for d in upgrade.DELIVERY if d.path.startswith(upgrade.MATCHER_SKILL)]
+
+
+def test_prompt_examples():
+    """Each of the five prompts that asks a model for a shaped output shows one: an `<example>` block whose body is one
+    fenced block (a fence is exempt from the style, scope and copy lints, so an example never counts as the repo's own
+    claim). The examples name invented games only."""
+    for rel in ("agents/scout-web.md", "agents/scout-repo.md", "skills/new/reference/investigate.md",
+                "skills/new/reference/gate.md", "skills/upgrade/SKILL.md"):
+        text = (ROOT / rel).read_text()
+        blocks = re.findall(r"<example>\n\n```\n(.*?)\n```\n\n</example>", text, re.S)
+        assert len(blocks) == 1 and text.count("<example>") == text.count("</example>") == 1, rel
+        assert 3 <= len(blocks[0].splitlines()) <= 14 and "```" not in blocks[0], rel
+        assert not re.search(r"mmx\d|Mega Man|Dino Crisis|BFM|SLUS-0[1-9]", blocks[0]), rel

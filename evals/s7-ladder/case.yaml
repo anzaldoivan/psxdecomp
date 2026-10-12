@@ -1,0 +1,67 @@
+schema_version: "1.0"
+name: s7-ladder
+description: The intake (S7) in a plain session writes a constitution that carries the kit's eleven-phase ladder, and leaves GENERATION_PLAN.md to the planner.
+tags: [flow, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "/psxdecomp:new --resume --until S7"
+  max_turns: 40
+  timeout_seconds: 1500
+  allowed_tools: [Skill, Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion]
+  append_system_prompt: |
+      This session was opened with `claude --agent plain` in a repository that Project Architect installed
+      (.claude/pa.json exists). It is a plain session: do the intake here. The developer confirmed every answer at
+      the gate; ask nothing that `.run/bootstrap/answers.txt` already answers.
+runs: 1
+graders:
+  - name: constitution-written
+    type: file_exists
+    path: PROJECT_CONTEXT.md
+  - name: ladder-governance
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "Governance and the firewall"
+  - name: ladder-baseline
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "all-assembly|byte-identical baseline"
+    flags: "i"
+  - name: ladder-compiler
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "compiler pinned by evidence"
+    flags: "i"
+  - name: ladder-census
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "honest census"
+    flags: "i"
+  - name: ladder-codegen-map
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "codegen map and the permuter"
+    flags: "i"
+  - name: ladder-readability
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[^\\n]*\\b(1\\.)?10\\b[^\\n]*Readability"
+  - name: no-plan
+    type: file_exists
+    path: GENERATION_PLAN.md
+    exists: false
+  - name: asked-for-the-intake-file
+    type: tool_used
+    tool: Bash
+    input_match: "install where"
+    min: 1
+  - name: says-intake-done
+    type: regex
+    target: last_message
+    pattern: "PROJECT_CONTEXT\\.md"
+  - name: names-the-next-stage
+    type: regex
+    target: last_message
+    pattern: "\\bS8\\b|the kit|--resume"
+    flags: "i"
+expected_outcome: The skill sees a plain session at NEXT S7, reads the kit's intake file that `install where` prints, writes PROJECT_CONTEXT.md with the eleven ladder phases, commits it, marks S7 and stops at --until S7. psxdecomp's `floor.py ladder PROJECT_CONTEXT.md` then exits 0.

@@ -22,6 +22,20 @@ psxrecomp's migrate shape: **audit → plan → apply --dry-run → apply**. `PS
 5. The script never commits. Its last line, `COMMIT ...`, is the command that commits the paths it wrote.
    Run that command on the developer's word. If a router session is running in that repository, do not apply; say so.
 
+Tell the developer what each plan line does, in one line each. Two plan lines and what to say:
+
+<example>
+
+```
+PLAN 3 [psxdecomp] floor: write tools/psxd_floor.py and docs/ops/psxdecomp-floor.md (…) — missing or older …
+PLAN 7 [manual] PA3: the repository is at 3.14.1, psxdecomp is tested on 3.14.2; update with PA3's own installer …
+
+3. I can apply this one: it adds the floor's tool and its reference file. Nothing of yours changes.
+7. This one is yours: run PA3's installer yourself, then `/psxdecomp:doctor`. I do not run it.
+```
+
+</example>
+
 Two kinds of action need a word to the developer:
 
 - An action that ends in `-edited` names a psxdecomp file that the game edited. The script never overwrites it unasked.

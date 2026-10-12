@@ -60,6 +60,21 @@ Rules for its rows:
 - In a backtest (`PSXDECOMP_BACKTEST_EXCLUDE` set), no agent opens, cites or follows those repositories: tell every
   scout. This includes any page or file that names those repositories or quotes their documents.
 
+One search row sorted three ways. The game and the repositories are invented:
+
+<example>
+
+```
+github.md row: example/quest-pc — "Example Quest decompilation", C, 412 stars
+  README: "a native PC port built from recompiled MIPS". It is a port, so it goes to the ports agent, not to existing.
+github.md row: example/quest-symbols — symbols.us.txt, names the Redump id of the USA disc
+  It feeds a decision (a name for the evidence ladder, phase 1.2): a lead for the maps agent, class from its licence.
+github.md row: example/quest-fan-art — images only
+  It feeds no decision: one line under Dead ends.
+```
+
+</example>
+
 Brief each agent with: the question, the title/serial/region, today's date, the output path
 `.run/bootstrap/research/<question>.md`, and "shallow" (default) or "deep" (`--deep`: extended search, more sources).
 The agent writes its report and returns ≤ 15 lines.

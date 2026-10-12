@@ -1,5 +1,5 @@
 #!/bin/sh
-# ab_agents.sh — does AGENTS.md (+ CLAUDE.md = @AGENTS.md) help an agent answer questions about this repository?
+# ab_agents.sh — does AGENTS.md (+ .claude/CLAUDE.md = @../AGENTS.md) help an agent answer questions about this repository?
 # With BASE=<git revision>: does this working tree beat that revision? Not installed into game repos.
 # Paid: 5 questions x RUNS x 2 arms x models, each capped at $0.50.
 #
@@ -8,7 +8,7 @@
 #
 # Two throwaway copies, each its own git repository OUTSIDE this one, so no parent CLAUDE.md is discovered. The "with"
 # arm is the current working tree (tracked + untracked, minus ignored). The "without" arm is the same tree minus
-# AGENTS.md and CLAUDE.md; with BASE it is instead `git archive $BASE`, AGENTS.md and CLAUDE.md kept, so the arms differ
+# AGENTS.md and both CLAUDE.md homes; with BASE it is instead `git archive $BASE`, those files kept, so the arms differ
 # by `git diff $BASE` plus untracked files. Without BASE, everything else (.ignore included) is identical.
 # Not --bare: that skips CLAUDE.md discovery. --setting-sources project keeps the user's own settings and CLAUDE.md
 # out of both arms. Scores: tools/ab_score.py OUT_DIR.
@@ -33,7 +33,7 @@ for arm in with without; do
     else
         (cd "$here" && git ls-files -co --exclude-standard -z | xargs -0 -I{} sh -c \
             'test -e "$1" && mkdir -p "$2/$(dirname "$1")" && cp -p "$1" "$2/$1" || true' _ {} "$d")
-        if [ "$arm" = without ] && [ -z "${BASE:-}" ]; then rm -f "$d/AGENTS.md" "$d/CLAUDE.md"; fi
+        if [ "$arm" = without ] && [ -z "${BASE:-}" ]; then rm -f "$d/AGENTS.md" "$d/CLAUDE.md" "$d/.claude/CLAUDE.md"; fi
     fi
     (cd "$d" && git init -q && git add -A && \
         git -c user.name=ab -c user.email=ab@example.invalid commit -qm "snapshot")

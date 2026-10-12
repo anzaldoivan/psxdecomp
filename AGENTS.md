@@ -24,6 +24,8 @@ design and test tiers: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Reference library policy: [docs/REFS.md](docs/REFS.md); the profile's rows: `profiles/psx/refs.toml`.
 - README standard and decomp.dev reports: [docs/PUBLISHING.md](docs/PUBLISHING.md); its code: `scripts/publish.py`
   (vendored into games byte for byte: stdlib only, no plugin import).
+- The floor (roadmap, tooling, readability debt, guard): `profiles/psx/floor.md`, which holds the phase numbering.
+  Its code: `scripts/floor.py` (vendored the same way). What S10 and upgrade deliver, and how: `upgrade.DELIVERY`.
 
 ## Rules
 

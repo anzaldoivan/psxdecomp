@@ -11,6 +11,23 @@ Nothing installs before this stage ends. Present, in this order, compactly:
 4. **The reference library** — the 4 core sources fetched at S9. Also the rows added to the profile's defaults
    (class, tier, what they cover) and any new `[[trap]]`.
 
+The whole view fits one screen. The game is invented:
+
+<example>
+
+```
+Medium: SLUS_000.00 (SLUS-00000), PsyQ 4.3, 212 stamps, track 01 SHA-1 3f2a…c91e, Redump match: yes.
+Prior art: 3 leads, 1 dead end.
+  L1 compiler triple of the sibling game (MIT, adapt, lead) — verify: the 1.4 ladder runs it first
+  L2 symbol file for the USA disc (unstated, facts, lead) — verify: 12 addresses land on function starts
+  L3 PC port (GPL-3.0, copyleft, lead) — facts only
+  Conventions: no community decompilation of this game. Nothing to decide.
+Answers: 13 keys drafted. GOAL: every code binary byte-identical from readable C. COMPILER_FAMILY: gcc 2.7.2 era.
+References: 4 core sources. Added: example/quest-symbols (facts, optional, the USA disc).
+```
+
+</example>
+
 Then AskUserQuestion, at most 4 per round: for each group, `Confirm` (recommended) / `Edit` (the developer types the
 change in the notes). Loop until every group is confirmed. Never drop a lead silently: a rejected lead stays in
 `prior-art.md` with status `rejected` and the reason.

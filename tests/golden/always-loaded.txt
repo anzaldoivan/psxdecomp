@@ -1,5 +1,5 @@
-2315 AGENTS.md
-11 CLAUDE.md
+14 .claude/CLAUDE.md
+2545 AGENTS.md
 197 agent:scout-repo
 241 agent:scout-web
 0 hook:SessionStart

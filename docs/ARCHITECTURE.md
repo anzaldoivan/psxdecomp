@@ -18,6 +18,7 @@ pinned installers. After S10 the repository needs nothing from the plugin.
   ├─ S8 install.py → the kit's install.py --answers (dry run, then run; digest-checked) + the README standard
   ├─ S9 fetch_refs.py → refs/ (git-ignored, searchable via .ignore) + docs/ops/refs.md (committed)
   └─ S10 doctor.py + config/psxdecomp.toml + tools/psxd_publish.py (the README lint, vendored; its CI)
+         + tools/psxd_floor.py (the floor, vendored: roadmap lint, debt baseline, guard hook) + docs/ops/psxdecomp-floor.md
 ```
 
 A game may also run in split mode: a public trunk, a private `-dev` workspace and a private `-private` store for the
@@ -80,7 +81,7 @@ commit and the kit's content digest: the kit is not yet a git repository of its 
 | 1 | every push | `install.py run` on the homebrew fixture: the tree equals the golden tree, and a second run changes nothing. The S5 dry run lists what S5 writes. The firewall control fails on the planted blob. A wrong PA3 or kit is refused. Every stage resumes, and so does an S10 that failed. The dump is never copied |
 | 1b | weekly | the fixture exe: extract → splat split → all-asm build → sha1 equal, in the profile container |
 | 1c | every push | split mode end to end on the fixture (`tests/test_split_e2e.py`) |
-| 2 | manual / pre-release | `claude plugin eval . --ablation none --runs 1`. Graders: regex, `tool_used`, `tool_order`, `file_exists` only. Tag `hygiene` (5 runs, pass^5) proves that an agent grepping a poisoned game repo answers the current pin, not stale or kit text. It has one `llm` grader on the short answer |
+| 2 | manual / pre-release | `claude plugin eval . --ablation none --runs 1`. Graders: regex, `tool_used`, `tool_order`, `file_exists` only. Tag `hygiene` (5 runs, pass^5) proves that an agent grepping a poisoned game repo answers the current pin, not stale or kit text. It has one `llm` grader on the short answer. `s7-ladder` runs the real intake and reads the eleven ladder phases in the constitution |
 | 3 | per release | `/psxdecomp:new` on a real game with your own dump, stopped at PA3's first planner draft |
 | 4a | every push | With tiers 0 and 1: the bytes a session loads before it does anything match `tests/golden/always-loaded*.txt`, so growth is a reviewed diff. The plugin's bytes: `AGENTS.md`, agent descriptions, the hook and any skill Claude may invoke on its own. The fixture repo's bytes: `CLAUDE.md`, the card, settings, agents, skills and the hook |
 | 4b | manual / pre-release | `BASE=<revision> tools/ab_agents.sh` runs the working tree against that revision on fixed questions. It scores correctness, cost and tokens. The tree is kept while it is at least as correct at no more than +20% cost |

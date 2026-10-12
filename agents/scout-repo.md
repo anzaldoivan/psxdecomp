@@ -27,3 +27,21 @@ You confirm one repository lead for a PS1 decomp bootstrap. The brief gives: the
 Report (Markdown, at the output path): the repository, the commit read, and the licence (from its file, or
 `unstated`). Then the facts found with their file paths, and what each changes for the bootstrap. Return at most 10
 lines.
+
+A rule read as it runs, not as it is named. The repository is invented:
+
+<example>
+
+```
+# repo — example/sibling-decomp @ 0123abc (2026-01-15)
+Licence: MIT (LICENSE).
+## Facts
+- Makefile:41 names the rule `cc1_263`. tools/toolchain.mk:12 downloads `gcc-2.7.2-psx.tar.gz`, and Makefile:44
+  runs that binary. The compiler that runs is gcc 2.7.2. The name of the rule says 2.6.3.
+- Makefile:52 passes `--aspsx-version=2.56` to maspsx.
+- symbols.us.txt: 1,204 lines (Grep count).
+## What it changes
+- The compiler lead is gcc 2.7.2 with aspsx 2.56, not 2.6.3. It is the first rung of the 1.4 ladder, never the pin.
+```
+
+</example>
