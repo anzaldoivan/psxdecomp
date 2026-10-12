@@ -25,6 +25,9 @@ as `ste-rule` is), `names-ledger` (the header lines of config/names.tsv and conf
 `debt-baseline` (config/debt-baseline.txt, once, last, in `mode admit`); `floor-public` is the manual line of split
 mode. A game with `[own] debt` or `[own] names` gets none of the actions that key replaces.
 
+`readme-blocks` regenerates the README's two generated blocks (`publish.render`: the text between the markers, nothing
+else) when a block is not what this plugin's `render` writes; without it a new vendored lint finds every README stale.
+
 psxdecomp also owns the writing rule of the public files, in four actions: `ai-policy` (the three lines of the README's
 AI policy block, when they hold an older text), `ste-rule` (rules/STE1.md and its row of rules/INDEX.md, written by
 the game's own tools/rules_add.py from profiles/psx/rules/STE1.md; `manual` without that tool), `style-hook`
@@ -403,6 +406,15 @@ def plan(repo: pathlib.Path) -> list[dict]:
             add("psxdecomp", "ai-policy: write the current AI policy block in README.md (the block's three lines, "
                 "nothing else)", "the block holds an older text of the policy", "ai-policy")
             text = common.with_ai_policy(text)           # the lint below reads the README as this action leaves it
+        try:
+            fresh = publish.render(text, publish.Ctx(repo))
+        except publish.RenderError:
+            fresh = text                                 # the lint below says why the blocks do not render
+        if fresh != text:
+            add("psxdecomp", "readme-blocks: regenerate the generated blocks of README.md (`render`: the disc table "
+                "and the progress table between their markers, nothing else)", "a block is not what psxdecomp %s's "
+                "`render` writes, and the README lint fails on a stale block" % common.plugin_version(), "readme-blocks")
+            text = fresh
         found = [f for f in publish.lint(text, publish.Ctx(repo)) if f[0] == "FAIL"]
         if found:
             add("manual", "README: %d lint failure(s) against the README standard (docs/PUBLISHING.md; the prose is "
@@ -548,8 +560,13 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
                           mode=0o755 if d.path.endswith(".py") else None)
         if st != "unchanged":
             written.append("%s%s %s" % ("would be " if dry else "", st, d.path))
-    if "ai-policy" in acts:
-        w("README.md", common.with_ai_policy(common.read(repo / "README.md")))
+    if {"ai-policy", "readme-blocks"} & acts:       # one write of the README: the block's three lines, the two tables
+        text = common.read(repo / "README.md")
+        if "ai-policy" in acts:
+            text = common.with_ai_policy(text)
+        if "readme-blocks" in acts:
+            text = publish.render(text, publish.Ctx(repo))
+        w("README.md", text)
     for rid, row in common.PROFILE_RULES.items():
         if row[3] in acts:
             written += common.rule_write(repo, common.find_python() or sys.executable, rid, dry)
@@ -904,7 +921,16 @@ def self_test_style(repo: pathlib.Path) -> bool:
     (repo / "docs/a.md").write_text("Run it; then stop; then go.\n")     # a count changes later: the file is the game's
     ok &= "style-ratchet" not in acts() and written_paths(apply(repo, False, False)) == [] and rat.read_text() == kept
     readme.write_text("# G\n")                                                # no block: the README lint's action alone
-    ok &= "ai-policy" not in acts() and "readme" in acts()
+    ok &= "ai-policy" not in acts() and "readme" in acts() and "readme-blocks" not in acts()
+    std = "# G\n\n## Progress\n\n%s\nan older table\n%s\n\nOurs; kept.\n" % (
+        publish.marker("progress"), publish.marker("progress", True))
+    readme.write_text(std)                                                    # a stale generated block: rewritten alone
+    ok &= acts()["readme-blocks"]["owner"] == "psxdecomp"
+    ok &= apply(repo, True, False) == ["would be changed README.md"]
+    apply(repo, False, False)
+    ok &= "an older table" not in readme.read_text() and "Not published yet" in readme.read_text()
+    ok &= readme.read_text().endswith("\n\nOurs; kept.\n") and "readme-blocks" not in acts()
+    ok &= not [f for f in publish.lint(readme.read_text(), publish.Ctx(repo)) if f[1] == "blocks" and "stale" in f[2]]
     readme.unlink()
     pub = repo / PUBLIC_LIST                                             # split mode: the public CI needs the ratchet
     pub.write_text("README.md\n")

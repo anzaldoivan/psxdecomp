@@ -23,6 +23,8 @@ hash check inside every build verifies that.
 <!-- psxdecomp:progress:end -->
 
 "Matched" means byte-identical: a function counts only when the whole binary still hashes with it compiled from source.
+Matched code is not finished code. `python3 tools/psxd_floor.py debt` counts what each source file still needs to be
+readable.
 
 ## Building the decompilation
 

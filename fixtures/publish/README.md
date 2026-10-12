@@ -40,6 +40,8 @@ The target `PSXD_000.01` has SHA-1 `89abcdef0123456789abcdef0123456789abcdef` (`
 
 </details>
 
+The published number is the matched code of the `game` category, in bytes. The `sdk` row counts the SDK libraries apart.
+
 Progress bars powered by [decomp.dev][psxd-progress].
 
 [psxd-code]: https://decomp.dev/example/synthetic-decomp.svg?mode=shield&label=Code&measure=code&category=game

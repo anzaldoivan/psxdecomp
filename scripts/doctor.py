@@ -74,7 +74,7 @@ def check(repo, only=None, offline=False) -> list[tuple[str, str, str]]:
     if not only or not set(only) <= set(NETWORK_ROWS):
         base_rows(repo, add)
     if not only or "progress" in only:
-        prog = progress_row(repo, None if offline else decompdev.projects)
+        prog = progress_row(repo, None if offline else decompdev.projects, None if offline else public_head)
         if prog:
             add("progress", *prog)
     try:
@@ -722,10 +722,19 @@ def github_slug(repo: pathlib.Path) -> str | None:
     return "%s/%s" % (m[1], m[2]) if m else None
 
 
-def progress_row(repo: pathlib.Path, fetch) -> tuple[str, str] | None:
+def public_head(slug: str) -> str | None:
+    """The head commit of a GitHub repository's default branch, through `gh api`; None when it cannot be read."""
+    try:
+        return gh_api("repos/%s/commits/HEAD" % slug).get("sha")
+    except Exception:                                   # noqa: BLE001 — logged out, offline, private: not checked
+        return None
+
+
+def progress_row(repo: pathlib.Path, fetch, head=None) -> tuple[str, str] | None:
     """With a report workflow: WARN on any lint finding or when decomp.dev does not list the repo (in split mode the
     public [public].repo: decomp.dev registers the public repo, never the private `-dev` origin). Without one: WAIT
-    until phase 1.9 opens, WARN while it is open, FAIL once it is closed (the published number then has no source)."""
+    until phase 1.9 opens, WARN while it is open, FAIL once it is closed (the published number then has no source).
+    `head`: a function from OWNER/REPO to the head commit of its default branch; WARN when decomp.dev shows another."""
     wf = repo / ".github" / "workflows"
     texts = {p.name: common.read(p) for p in sorted(wf.glob("*.y*ml"))} if wf.is_dir() else {}
     if not any(REPORT_HINT.search(t) for t in texts.values()):
@@ -748,6 +757,11 @@ def progress_row(repo: pathlib.Path, fetch) -> tuple[str, str] | None:
             listed, note = decompdev.status(fetch(), slug)
         except Exception as e:                                          # noqa: BLE001 — a WARN row, never a crash
             listed, note = None, "decomp.dev unreachable (%s)" % str(e)[:80]
+    at = re.search(r"at commit ([0-9a-f]{7})", note) if listed else None
+    tip = head(slug) if at and head else None
+    if tip and not tip.startswith(at[1]):               # the one published number is of an older commit
+        found.append("decomp.dev shows commit %s and the default branch of %s is at %s: the report workflow has not "
+                     "run on the head, or it failed" % (at[1], slug, tip[:7]))
     detail = "; ".join(found + [note])
     return ("WARN" if found or listed is False else "SKIP" if listed is None else "OK"), detail
 
@@ -1304,6 +1318,10 @@ def self_test_progress() -> bool:
         listed = [{"owner": "example", "repo": "game-a-decomp", "commit": {"sha": "1234567abc"}, "measures": {}}]
         a, b = progress_row(repo, lambda: listed), progress_row(repo, lambda: [])
         c = progress_row(repo, None)
+        fresh = progress_row(repo, lambda: listed, lambda slug: "1234567abc" + "0" * 30)
+        behind = progress_row(repo, lambda: listed, lambda slug: "fedcba9" + "0" * 33)
+        unread = progress_row(repo, lambda: listed, lambda slug: None)
+        ok &= fresh[0] == "OK" and unread[0] == "OK" and behind[0] == "WARN" and "is at fedcba9" in behind[1]
         print("  progress row: listed %s; unlisted %s; offline %s" % (a[0], b[0], c[0]))
         ok &= a[0] == "OK" and "commit 1234567" in a[1] and b[0] == "WARN" and "/manage/new" in b[1] and c[0] == "SKIP"
         common.git(repo, "remote", "set-url", "origin", "https://github.com/example/game-a-decomp-dev.git")
