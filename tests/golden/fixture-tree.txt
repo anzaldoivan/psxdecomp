@@ -39,11 +39,14 @@ LICENSE
 Makefile
 PROJECT_CONTEXT.md
 README.md
+config/asm-evidence.tsv
+config/debt-baseline.txt
 config/decomp-hooks.snippet.json
 config/firewall-fixture.sha1
 config/firewall.txt
 config/guard.tsv
 config/mcp.json.template
+config/names.tsv
 config/psxdecomp.profile.toml
 config/psxdecomp.toml
 config/refs.toml
@@ -78,6 +81,7 @@ phase-ends/TASK_INDEX.md
 phase-ends/current/discussions/INDEX.md
 phase-ends/current/research/INDEX.md
 phase-ends/current/tasks/INDEX.md
+rules/FIN1.md
 rules/G1.md
 rules/G10.md
 rules/G11.md
@@ -166,6 +170,7 @@ rules/M6.md
 rules/M7.md
 rules/M8.md
 rules/M9.md
+rules/NAME1.md
 rules/P1.md
 rules/P10.md
 rules/P3.md

@@ -21,12 +21,17 @@ the public repository, the pre-push hook is in place, every workflow action is p
 interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
 PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
+gate, toolchain, names and debt (the tooling and readability floor, each WAIT until its phase: one gate command and
+the hash files once 1.3 is closed, FAIL without them once 1.9 is closed; docs/ops/compiler-pin.md and
+config/toolchain.tsv once 1.4 is closed; the two ledgers once 1.4 is closed, FAIL when one is malformed; the debt
+baseline equal to the tree from the first C file, FAIL on a rise or a stale row; an [own] key answers its row);
 guard (the profile's hook groups are in .claude/settings.json and config/guard.tsv parses: FAIL when psxdecomp could
 add a group or a rules line is no rule, WARN when it cannot edit the settings or the rules file is absent);
 hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs; it also counts the
-writing findings, publish.lint_style); card (WARN only: HOW_WE_WORK.md over PA3's cap); progress (WARN only,
-when a workflow builds a decomp.dev report: its safety lint, and whether decomp.dev lists the repo, in split mode the
-public [public].repo); github (WARN only, through `gh api`, skipped offline or logged out: the repository's security
+writing findings, publish.lint_style); card (WARN only: HOW_WE_WORK.md over PA3's cap); progress (when a workflow
+builds a decomp.dev report: its safety lint, and whether decomp.dev lists the repo, in split mode the public
+[public].repo, WARN only; with no such workflow: WAIT until phase 1.9 opens, WARN while it is open, FAIL once it is
+closed); github (WARN only, through `gh api`, skipped offline or logged out: the repository's security
 settings, each with the `gh api` command that fixes it; doctor never applies one). `--only github` runs just that row,
 e.g. on psxdecomp itself. In split mode, github checks only that origin (the -dev) is private (FAIL otherwise), and two
 rows join it through `gh api`: private-repo ([public].private_repo against its rules, FAIL on any drift) and
@@ -56,8 +61,8 @@ import publish  # noqa: E402
 
 NETWORK_ROWS = ("progress", "github", "dev-ci", "private-repo", "public-standard")
 SPLIT_ROWS = ("private-repo", "public-standard")
-ROWS = ("record", "sdk", "pa3", "pa3-drift", "python", "kit", "roadmap", "readme", "publish-tool", "deny", "guard",
-        "split-guard",
+ROWS = ("record", "sdk", "pa3", "pa3-drift", "python", "kit", "roadmap", "gate", "toolchain", "names", "debt",
+        "readme", "publish-tool", "deny", "guard", "split-guard",
         "categories", "ignore", "audit", "fixture", "refs", "refs-ignored", "hygiene", "card") + NETWORK_ROWS
 WIDTH = max(map(len, ROWS))                     # the name column of every printed row (doctor, upgrade audit, S10)
 
@@ -133,6 +138,8 @@ def base_rows(repo: pathlib.Path, add):
     else:
         add("kit", "FAIL", "no docs/decomp-architect-install.md (the kit is not installed)")
     add("roadmap", *roadmap_row(repo))
+    for name, row in floor_rows(repo):
+        add(name, *row)
     readme = repo / "README.md"
     add("readme", *readme_row(common.read(readme) if readme.is_file() else None, repo))
     add("publish-tool", *publish_tool_row(repo))
@@ -167,7 +174,7 @@ def base_rows(repo: pathlib.Path, add):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 rc = fetch_refs.main(["--repo", str(repo), "--check"])
-            drift = [l for l in buf.getvalue().splitlines() if l.startswith(("DRIFT", "MISSING"))]
+            drift = [l for l in buf.getvalue().splitlines() if l.startswith(("DRIFT", "MISSING", "DIRTY"))]
             add("refs", "OK" if rc == 0 else "WARN", buf.getvalue().strip().splitlines()[-1] +
                 ("" if rc == 0 else " — %s (fetch_refs.py --repo . fixes it)" % "; ".join(drift[:3])))
         ignored = common.git(repo, "check-ignore", "-q", "refs/x", check=False).returncode == 0
@@ -212,6 +219,113 @@ def roadmap_row(repo: pathlib.Path) -> tuple[str, str]:
         return "OK", "%s: %s" % (floor.PLAN, info.get("state", count))
     return st, "%s: %s — %s%s (`python3 %s plan` lists them)" % (
         floor.PLAN, count, "; ".join("%s: %s" % f[1:] for f in worst[:2]), "; …" if len(worst) > 2 else "", floor.VENDORED)
+
+
+def _record(repo: pathlib.Path) -> dict:
+    rec = repo / "config" / "psxdecomp.toml"
+    try:
+        return common.load_toml(rec) if rec.is_file() else {}
+    except Exception:                                  # noqa: BLE001 — the record row reports a record that is not TOML
+        return {}
+
+
+def floor_rows(repo: pathlib.Path) -> list[tuple[str, tuple[str, str]]]:
+    """The four phase-conditional rows of the tooling and readability floor: gate, toolchain, names, debt. A row that
+    is not due says WAIT with the phase that makes it due; an [own] key answers its row (the record row checks that
+    its path exists)."""
+    rec, state = _record(repo), floor.phase_state(repo)
+    own = rec.get("own") or {}
+    debt = None
+    if "debt" not in own or "names" not in own:
+        try:
+            debt = floor.debt_status(repo)
+        except floor.Fail as e:
+            debt = e
+    return [("gate", gate_row(repo, state, rec)), ("toolchain", toolchain_row(repo, state, own)),
+            ("names", names_row(repo, state, own, debt)), ("debt", debt_row(repo, state, own, debt))]
+
+
+def gate_row(repo: pathlib.Path, state: dict, rec: dict) -> tuple[str, str]:
+    """Due when phase 1.3 is closed: one acceptance-gate command (`[own] gate`, `[floor] gate`, or a `verify` make
+    target) and at least one config/check.*.sha. WARN; FAIL once phase 1.9 is closed."""
+    if state[3] != "closed":
+        return "WAIT", "due when phase 1.3 closes: one gate command (`make verify`) and the hash files that it checks"
+    own, fl = rec.get("own") or {}, rec.get("floor") or {}
+    cmd = own.get("gate") or fl.get("gate") or (None if own_missing(repo, {"gate": "make verify"}) else "make verify")
+    hashes = len(list((repo / "config").glob("check.*.sha")))
+    bad = []
+    if not cmd:
+        bad.append("no gate command: add a `verify` make target, or record `[floor] gate`, or `upgrade own gate \"<command>\"`")
+    elif own_missing(repo, {"gate": cmd}):
+        bad.append("the gate `%s` names no make target or path of this repository" % cmd)
+    if not hashes:
+        bad.append("no config/check.*.sha (the hash of each built binary)")
+    if bad:
+        return ("FAIL" if state[9] == "closed" else "WARN"), "; ".join(bad)
+    return "OK", "gate `%s`%s; %d hash file(s)" % (cmd, " ([own])" if own.get("gate") else "", hashes)
+
+
+def toolchain_row(repo: pathlib.Path, state: dict, own: dict) -> tuple[str, str]:
+    """Due when phase 1.4 is closed: docs/ops/compiler-pin.md, and config/toolchain.tsv with every row at its pin and
+    clean (or `[own] toolchain`). WARN only."""
+    if state[4] != "closed":
+        return "WAIT", "due when phase 1.4 closes: docs/ops/compiler-pin.md and %s" % floor.TOOLCHAIN
+    bad = [] if (repo / "docs/ops/compiler-pin.md").is_file() else ["no docs/ops/compiler-pin.md (the pinned triple and its evidence)"]
+    if own.get("toolchain"):
+        what = "the game's own `%s`" % own["toolchain"]
+    else:
+        rows = floor.toolchain_rows(repo)
+        if rows is None:
+            bad.append("no %s (columns: %s)" % (floor.TOOLCHAIN, " ".join(floor.TOOL_COLUMNS)))
+            what = ""
+        else:
+            bad += ["%s: %s" % r[1:] for r in rows if r[0] == "FAIL"][:3]
+            what = "%s: %d row(s), %d not on this machine" % (floor.TOOLCHAIN, len(rows), sum(r[0] == "MISSING" for r in rows))
+    if bad:
+        return "WARN", "; ".join(bad)
+    return "OK", "docs/ops/compiler-pin.md; %s" % what
+
+
+def names_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, str]:
+    """Due when phase 1.4 is closed: config/names.tsv and config/asm-evidence.tsv parse (or `[own] names`). FAIL on a
+    malformed file at any time; WARN when a ledger is absent; the functions with no row are counted."""
+    if own.get("names"):
+        return "OK", "the game's own names ledger: %s" % own["names"]
+    found = floor.names_findings(repo)
+    fails = [f[1] for f in found if f[0] == "FAIL"]
+    if fails:
+        return "FAIL", "%s%s (`python3 %s names`)" % ("; ".join(fails[:2]), "; …" if len(fails) > 2 else "", floor.VENDORED)
+    if state[4] != "closed":
+        return "WAIT", "due when phase 1.4 closes: %s and %s" % (floor.NAMES, floor.ASM_EVIDENCE)
+    gone = [rel for rel in (floor.NAMES, floor.ASM_EVIDENCE) if not (repo / rel).is_file()]
+    if gone:
+        return "WARN", "no %s — `python3 %s names --init` writes the header line" % (" and no ".join(gone), floor.VENDORED)
+    unbased = sum(n for (kind, _), n in debt["counts"].items() if kind == "unbased") if isinstance(debt, dict) else 0
+    rows = next((f[1] for f in found if f[1].startswith(floor.NAMES)), floor.NAMES)
+    return "OK", "%s; %d function(s) in src/ with no accepted or provisional row" % (rows, unbased)
+
+
+def debt_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, str]:
+    """Due with the first tracked C file under src/: config/debt-baseline.txt is equal to the tree (or `[own] debt`).
+    FAIL on a rise, a stale row or a baseline that does not parse; WARN with no baseline, and on `mode admit` once
+    phase 1.8 is closed."""
+    if own.get("debt"):
+        return "OK", "the game's own debt scanner: %s" % own["debt"]
+    if isinstance(debt, Exception):
+        return "FAIL", str(debt)
+    if not floor.tracked(repo, "src/**/*.c", "src/*.c"):
+        return "WAIT", "due with the first C file under src/: %s%s" % (
+            floor.BASELINE, "" if debt["baseline"] else " (/psxdecomp:upgrade apply writes it)")
+    totals = floor._totals(debt["counts"])
+    if not debt["baseline"]:
+        return "WARN", "no %s (the tree holds: %s) — /psxdecomp:upgrade apply writes it" % (floor.BASELINE, totals)
+    if debt["rise"] or debt["stale"]:
+        return "FAIL", "%d count(s) over their row, %d row(s) over their count (`python3 %s debt` lists them; " \
+                       "`debt --update` rewrites the baseline)" % (len(debt["rise"]), len(debt["stale"]), floor.VENDORED)
+    if debt["mode"] == "admit" and state[8] == "closed":
+        return "WARN", "the baseline is equal to the tree (%s) and still in `mode admit` after phase 1.8 closed: " \
+                       "`python3 %s debt --down` lets a count only fall" % (totals, floor.VENDORED)
+    return "OK", "the baseline is equal to the tree (%s; mode %s)" % (totals, debt["mode"])
 
 
 def machine_pa3_version() -> str | None:
@@ -609,12 +723,20 @@ def github_slug(repo: pathlib.Path) -> str | None:
 
 
 def progress_row(repo: pathlib.Path, fetch) -> tuple[str, str] | None:
-    """None without a report workflow; else WARN on any lint finding or when decomp.dev does not list the repo (in split
-    mode the public [public].repo: decomp.dev registers the public repo, never the private `-dev` origin)."""
+    """With a report workflow: WARN on any lint finding or when decomp.dev does not list the repo (in split mode the
+    public [public].repo: decomp.dev registers the public repo, never the private `-dev` origin). Without one: WAIT
+    until phase 1.9 opens, WARN while it is open, FAIL once it is closed (the published number then has no source)."""
     wf = repo / ".github" / "workflows"
     texts = {p.name: common.read(p) for p in sorted(wf.glob("*.y*ml"))} if wf.is_dir() else {}
     if not any(REPORT_HINT.search(t) for t in texts.values()):
-        return None
+        phase = floor.phase_state(repo)[9]
+        need = "a workflow that uploads the `<EXE>_report` artifact (psxdecomp's docs/PUBLISHING.md)"
+        if phase in ("absent", "pending"):
+            return "WAIT", "due when phase 1.9 opens: %s" % need
+        if phase == "open":
+            return "WARN", "phase 1.9 is open and no workflow builds a decomp.dev report: it needs %s" % need
+        return "FAIL", "phase 1.9 is closed and no workflow builds a decomp.dev report: the published number has no " \
+                       "source. It needs %s" % need
     found = lint_workflows(texts)
     slug = publish.readme_slug(repo)
     if not slug:
@@ -970,6 +1092,7 @@ def self_test() -> int:
     ok &= [r[0] for r in rm] == ["WARN", "FAIL", "WARN", "WARN", "OK", "FAIL"] and "predates" in rm[2][1]
     ok &= tool[0] == "WARN" and cats[0] == "OK" and cats_gone[0] == "FAIL" and "'ovl.stage1'" in cats_gone[1]
     ok &= self_test_roadmap()
+    ok &= self_test_floor()
     ok &= self_test_deny()
     ok &= self_test_progress()
     ok &= self_test_github()
@@ -1001,6 +1124,59 @@ def self_test_roadmap() -> bool:
             and last == "DOCTOR OK (0 warn, 1 not due)" and good[0] == "OK" and "ladder phases open 0" in good[1]
             and warn[0] == "WARN" and "criteria: no `Done-criteria:` line" in warn[1]
             and fail[0] == "FAIL" and "ladder: no line 1.4" in fail[1] and "tools/psxd_floor.py plan" in fail[1])
+
+
+def self_test_floor() -> bool:
+    """The four floor rows by phase: all WAIT before their phase, then WARN or FAIL for what is missing, then OK; an
+    [own] key answers its row; a malformed ledger fails at any time."""
+    with tempfile.TemporaryDirectory() as td:
+        repo = pathlib.Path(td).resolve()
+        common.git(repo, "init", "--quiet")
+        rows = lambda: dict(floor_rows(repo))  # noqa: E731
+        first = rows()
+        ok = {r[0] for r in first.values()} == {"WAIT"} and "phase 1.3 closes" in first["gate"][1]
+        (repo / floor.PLAN).write_text(floor.self_plan(closed=5))               # 1.0 to 1.4 closed
+        due = rows()
+        ok &= [due[k][0] for k in ("gate", "toolchain", "names", "debt")] == ["WARN", "WARN", "WARN", "WAIT"]
+        ok &= "no gate command" in due["gate"][1] and "no config/check.*.sha" in due["gate"][1]
+        ok &= "compiler-pin.md" in due["toolchain"][1] and "no config/toolchain.tsv" in due["toolchain"][1]
+        for rel, text in (("Makefile", "verify: build\n\ttrue\n"), ("config/check.main.sha", "0\n"),
+                          ("docs/ops/compiler-pin.md", "# the pin\n"),
+                          (floor.TOOLCHAIN, "\t".join(floor.TOOL_COLUMNS) + "\n"), ("src/a.c", floor.C_DEBT["goto"][0])):
+            common.write(repo / rel, text)
+        with contextlib.redirect_stdout(io.StringIO()):
+            floor.cmd_names(repo, init=True)
+        common.git(repo, "add", "-A")
+        mid = rows()
+        ok &= [mid[k][0] for k in ("gate", "toolchain", "names", "debt")] == ["OK", "OK", "OK", "WARN"]
+        ok &= "gate `make verify`; 1 hash file(s)" == mid["gate"][1] and "1 function(s) in src/" in mid["names"][1]
+        ok &= "the tree holds: goto 1, unbased 1" in mid["debt"][1]
+        (repo / floor.BASELINE).write_text(floor.first_baseline(repo))
+        equal = rows()["debt"]
+        (repo / "src/a.c").write_text(floor.C_CLEAN)
+        stale = rows()["debt"]
+        (repo / floor.BASELINE).write_text(floor.first_baseline(repo))
+        (repo / floor.PLAN).write_text(floor.self_plan(closed=11))              # the whole ladder closed
+        late = rows()
+        (repo / "Makefile").unlink()
+        gone = rows()["gate"]
+        (repo / floor.NAMES).write_text("kind\tname\n")
+        broken = rows()["names"]
+        common.write(repo / install_record(), '[psxdecomp]\nversion = "0"\n[own]\ngate = "bash tools/gate.sh"\n'
+                                              'debt = "tools/scan.py"\nnames = "config/n.tsv"\ntoolchain = "bash tools/f.sh"\n')
+        common.write(repo / "tools/gate.sh", "true\n")
+        mine = rows()
+    print("  floor rows: before %s; at 1.4 %s; a stale row %s; no gate after 1.9 %s; [own] %s" % (
+        first["gate"][0], "/".join(due[k][0] for k in due), stale[0], gone[0], "/".join(mine[k][0] for k in mine)))
+    return (ok and equal[0] == "OK" and "mode admit" in equal[1] and stale[0] == "FAIL" and "1 row(s) over their count" in stale[1]
+            and late["debt"][0] == "WARN" and "debt --down" in late["debt"][1] and gone[0] == "FAIL"
+            and broken[0] == "FAIL" and "the header is not" in broken[1]
+            and [mine[k][0] for k in ("gate", "toolchain", "names", "debt")] == ["OK", "OK", "OK", "OK"]
+            and "([own])" in mine["gate"][1] and "tools/scan.py" in mine["debt"][1])
+
+
+def install_record() -> str:
+    return "config/psxdecomp.toml"
 
 
 def self_test_deny() -> bool:
@@ -1116,7 +1292,13 @@ def self_test_progress() -> bool:
         repo = pathlib.Path(td).resolve()
         common.git(repo, "init", "--quiet")
         common.git(repo, "remote", "add", "origin", "https://github.com/example/game-a-decomp.git")
-        ok &= progress_row(repo, lambda: []) is None                  # no report workflow: no row
+        none = [progress_row(repo, lambda: [])]                        # no report workflow: by the state of phase 1.9
+        for closed in (9, 10, 11):
+            (repo / floor.PLAN).write_text(floor.self_plan(closed=closed))
+            none.append(progress_row(repo, lambda: []))
+        (repo / floor.PLAN).unlink()
+        print("  progress row, no report workflow: %s" % "; ".join(n[0] for n in none))
+        ok &= [n[0] for n in none] == ["WAIT", "WARN", "FAIL", "FAIL"] and "phase 1.9 opens" in none[0][1]
         (repo / ".github" / "workflows").mkdir(parents=True)
         (repo / ".github" / "workflows" / "progress.yml").write_text(good)
         listed = [{"owner": "example", "repo": "game-a-decomp", "commit": {"sha": "1234567abc"}, "measures": {}}]

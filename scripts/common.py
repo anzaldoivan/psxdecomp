@@ -371,45 +371,71 @@ def settings_due(repo: pathlib.Path) -> str | None:
     return text
 
 
-# ---- the writing rule of the public files (profiles/psx/rules/STE1.md, a body with no title line): the game's own
-# rules_add.py writes rules/STE1.md and its row of rules/INDEX.md. Never `promote`: the headline stays out of the
-# project-architect skill. S10 and upgrade's `ste-rule` both go through here ------------------------------------------
+# ---- the profile's rules (profiles/psx/rules/<id>.md, each a body with no title line): the game's own rules_add.py
+# writes rules/<id>.md and its row of rules/INDEX.md. Never `promote`: a headline stays out of the project-architect
+# skill, and no rule text goes in the card. S10 and upgrade's `<x>-rule` actions both go through here ----------------
 PROFILE_STE = PLUGIN_ROOT / "profiles" / "psx" / "rules" / "STE1.md"
 STE_RULE, STE_INDEX, STE_TOOL = "rules/STE1.md", "rules/INDEX.md", "tools/rules_add.py"
 STE_TITLE = ("Public files (`config/public-paths.txt`) follow `rules/STE1.md`. Read it before you write one. An "
              "instruction has at most 20 words, a description at most 25. A paragraph has at most 6 sentences. Use no "
              "semicolon: write two sentences. Put the condition before the command.")
+FIN_TITLE = ("A source file is finished only when it is matched and has no readability debt (`rules/FIN1.md`; "
+             "`python3 tools/psxd_floor.py debt`). Until then say \"matched, not finished\".")
+NAME_TITLE = ("A name needs recorded evidence (`rules/NAME1.md`; `config/names.tsv`). A byte-identical build proves "
+              "behaviour, not a name. Keep the placeholder until there is evidence.")
+# id: (group, tags, title, upgrade's action, what the rule is, the [own] key that replaces it)
+PROFILE_RULES = {
+    "STE1": ("STE", "writing,public", STE_TITLE, "ste-rule", "the writing rule of the public files", None),
+    "FIN1": ("FIN", "readability,debt", FIN_TITLE, "fin-rule", "the finished-file rule: matched is not finished", "debt"),
+    "NAME1": ("NAME", "readability,names", NAME_TITLE, "name-rule", "the naming rule: a name needs evidence", "names"),
+}
 
 
-def ste_rule_state(repo: pathlib.Path) -> str | None:
-    """None when rules/STE1.md holds the profile's body (its title line and its dated metadata line are not compared),
+def rule_paths(rid: str) -> tuple[str, pathlib.Path]:
+    """(the rule's path in a game, its body in the profile)."""
+    return "rules/%s.md" % rid, PLUGIN_ROOT / "profiles" / "psx" / "rules" / ("%s.md" % rid)
+
+
+def rule_state(repo: pathlib.Path, rid: str) -> str | None:
+    """None when rules/<id>.md holds the profile's body (its title line and its dated metadata line are not compared),
     else "add", "rewrite" (another body), or "manual" (the repository has no tools/rules_add.py)."""
-    f = repo / STE_RULE
-    if f.is_file() and "".join(read(f).split("\n", 2)[2:]).strip() == read(PROFILE_STE).strip():
+    rel, body = rule_paths(rid)
+    f = repo / rel
+    if f.is_file() and "".join(read(f).split("\n", 2)[2:]).strip() == read(body).strip():
         return None
     if not (repo / STE_TOOL).is_file():
         return "manual"
     return "rewrite" if f.is_file() else "add"
 
 
-def ste_rule_write(repo: pathlib.Path, python: str, dry: bool = False) -> list[str]:
+def rule_write(repo: pathlib.Path, python: str, rid: str, dry: bool = False) -> list[str]:
     """Run the game's rules_add.py for a rule that is due; returns `created|changed <path>` per file it wrote. A dry
     run runs no tool and names both files."""
-    state = ste_rule_state(repo)
+    state = rule_state(repo, rid)
     if state not in ("add", "rewrite"):
         return []
-    rels = (STE_RULE, STE_INDEX)
+    group, tags, title = PROFILE_RULES[rid][:3]
+    rel, body = rule_paths(rid)
+    rels = (rel, STE_INDEX)
     old = [(repo / x).read_bytes() if (repo / x).is_file() else None for x in rels]
     status = ["created" if o is None else "changed" for o in old]
     if dry:
         return ["would be %s %s" % (st, x) for st, x in zip(status, rels)]
-    r = run([python, STE_TOOL, "add", "--id", "STE1", "--title", STE_TITLE, "--group", "STE", "--tags",
-             "writing,public", "--origin", "psxdecomp", "--file", PROFILE_STE]
-            + (["--force"] if state == "rewrite" else []), cwd=repo, check=False, env={"PA_PROJECT_ROOT": str(repo)})
-    if r.returncode != 0 or ste_rule_state(repo):
-        raise Fail("%s did not write %s: %s" % (STE_TOOL, STE_RULE, (r.stdout + r.stderr).strip()[-300:]))
+    r = run([python, STE_TOOL, "add", "--id", rid, "--title", title, "--group", group, "--tags", tags, "--origin",
+             "psxdecomp", "--file", body] + (["--force"] if state == "rewrite" else []), cwd=repo, check=False,
+            env={"PA_PROJECT_ROOT": str(repo)})
+    if r.returncode != 0 or rule_state(repo, rid):
+        raise Fail("%s did not write %s: %s" % (STE_TOOL, rel, (r.stdout + r.stderr).strip()[-300:]))
     return ["%s %s" % (st, x) for st, x, o in zip(status, rels, old)
             if (repo / x).is_file() and (repo / x).read_bytes() != o]
+
+
+def ste_rule_state(repo: pathlib.Path) -> str | None:
+    return rule_state(repo, "STE1")
+
+
+def ste_rule_write(repo: pathlib.Path, python: str, dry: bool = False) -> list[str]:
+    return rule_write(repo, python, "STE1", dry)
 
 
 # ---- the first ratchet of the writing findings (config/style-ratchet.txt): S10 and upgrade write it once, after

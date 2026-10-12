@@ -655,6 +655,9 @@ def test_style_workflow_step():
     lint, style = "run: python3 %s lint README.md" % publish.VENDORED, "run: python3 %s style" % publish.VENDORED
     assert runs.count(lint) == 1 and runs.count(style) == 1 and runs.index(lint) < runs.index(style), runs
     assert lines[lines.index(style) - 1].startswith("- name: ") and "style" in lines[lines.index(style) - 1]
+    debt = "run: python3 %s debt" % floor.VENDORED                      # the debt of the source, after the style step
+    assert runs.count(debt) == 1 and runs.index(style) < runs.index(debt), runs
+    assert lines[lines.index(debt) - 1].startswith("- name: ") and floor.BASELINE in lines[lines.index(debt) - 1]
 
 
 # ---- the floor (scripts/floor.py, vendored into a game as tools/psxd_floor.py) --------------------------------------
@@ -852,3 +855,30 @@ def test_floor_doc_names_the_ladder():
     assert all("| `%s` |" % c in doc for c in floor.GUARD_COLUMNS)
     import upgrade
     assert all("| `%s` |" % k in doc for k in upgrade.OWN_KEYS)
+
+
+def test_readability_rule_files():
+    """profiles/psx/rules/FIN1.md and NAME1.md are rule bodies with no title line (the game's rules_add.py writes the
+    title, common.PROFILE_RULES holds it). FIN1 states the two states and its six conditions; NAME1 lists every
+    evidence class the ledger accepts. The floor's reference documents every debt kind, both ledgers and every
+    doctor row of the floor."""
+    import doctor
+    assert list(common.PROFILE_RULES) == ["STE1", "FIN1", "NAME1"]
+    assert [r[3] for r in common.PROFILE_RULES.values()] == ["ste-rule", "fin-rule", "name-rule"]
+    for rid, row in common.PROFILE_RULES.items():
+        rel, body = common.rule_paths(rid)
+        text = body.read_text()
+        assert not text.startswith("#") and text.splitlines()[0].strip() and "\n" not in row[2], rid
+        assert "`%s`" % rel in row[2], rid                              # the headline names the file to read
+    fin = (ROOT / "profiles/psx/rules/FIN1.md").read_text()
+    assert '"matched, not finished"' in fin and re.findall(r"(?m)^(\d)\. ", fin) == list("123456")
+    assert "`python3 %s debt`" % floor.VENDORED in fin and floor.BASELINE in fin
+    name = (ROOT / "profiles/psx/rules/NAME1.md").read_text()
+    assert all("| `%s` |" % c in name for c in floor.EVIDENCE) and floor.NAMES in name
+    doc = (ROOT / "profiles/psx/floor.md").read_text()
+    assert all("| `%s` |" % k in doc for k in floor.KINDS)
+    assert "`%s`" % " ".join(floor.NAME_COLUMNS) in doc and "`%s`" % " ".join(floor.ASM_COLUMNS) in doc
+    assert "`%s`" % " ".join(floor.TOOL_COLUMNS) in doc and all("`%s`" % c in doc for c in floor.ASM_CLASSES)
+    for row in ("roadmap", "guard", "gate", "toolchain", "names", "debt", "progress"):
+        assert "| `%s` | " % row in doc and row in doctor.ROWS, row
+    assert "`VERIFY OK`" in doc and "`VERIFY FAIL: <the command to run>`" in doc and "`make verify`" in doc

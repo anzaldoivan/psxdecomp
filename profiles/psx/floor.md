@@ -1,7 +1,7 @@
 # The psxdecomp floor
 
-psxdecomp checks a minimum in every game. The minimum is a roadmap on the kit's ladder, a small set of tools, and a
-guard for generated and frozen files. This file is the reference for those checks. `/psxdecomp:upgrade` rewrites it.
+psxdecomp checks a minimum in every game. The minimum has four parts: a roadmap on the kit's ladder, a small set of
+tools, a guard for generated files, and a debt count. This file is the reference for those checks. `/psxdecomp:upgrade` rewrites it.
 
 ## After the bootstrap
 
@@ -69,6 +69,82 @@ hook reads `config/guard.tsv`. psxdecomp writes that file once. After that it is
 - The default rows refuse an edit of `asm/`, of the hash files and of the two baselines.
 - `.claude/settings.json` also holds an `Edit(...)` deny rule for each of those paths. It stops a shell redirection too.
 - Add a row when a session must not run a command raw, such as a new split. The file holds two examples.
+
+## The tooling rows
+
+`/psxdecomp:doctor` prints these rows. A row that is not due says `WAIT` and names the phase that makes it due.
+
+| Row | Due when | It needs |
+|---|---|---|
+| `roadmap` | the plan exists | the roadmap checks above |
+| `guard` | always | the hook groups in `.claude/settings.json`, and a `config/guard.tsv` that parses |
+| `gate` | phase 1.3 is closed | one gate command, and at least one `config/check.*.sha` |
+| `toolchain` | phase 1.4 is closed | `docs/ops/compiler-pin.md`, and a `config/toolchain.tsv` with every row at its pin |
+| `names` | phase 1.4 is closed | the two ledgers, with no malformed row |
+| `debt` | the first C file is in `src/` | a debt baseline that is equal to the tree |
+| `progress` | phase 1.9 opens | a workflow that uploads the progress report of each executable |
+
+## The acceptance gate
+
+A game has one command that proves a change. The default is `make verify`.
+
+1. Run the policy checks first: `psxd_floor.py plan`, `debt` and `names`, then `psxd_publish.py lint README.md` and `style`.
+2. Run the build with its hash check.
+3. Print `VERIFY OK` as the last line, or `VERIFY FAIL: <the command to run>`.
+
+- Name another command in `[floor] gate` of `config/psxdecomp.toml`. A gate of the game's own goes in `[own] gate`.
+- psxdecomp delivers no makefile. Each game has targets of its own shape.
+
+## Readability debt
+
+`python3 tools/psxd_floor.py debt` counts ten kinds of debt in the tracked files of `src/` and `include/`. The rule
+is `rules/FIN1.md`.
+
+| Kind | It counts |
+|---|---|
+| `pin` | a register that the source forces: `register ... asm("$n")` |
+| `pin-unmarked` | a pin with no `// !FAKE:` reason on its line or on the line above |
+| `goto` | a `goto` |
+| `offset` | a field read by its offset: an offset cast, `M2C_FIELD(`, or a macro that hides one, at each use |
+| `address` | an address with no symbol, outside the address header |
+| `macro` | a `#define` whose body holds `{`, `;` or a line continuation |
+| `asm` | an assembly file under `src/`, or an inline assembly statement, with no row in `config/asm-evidence.tsv` |
+| `placeholder` | a `func_` or `D_` address name that a C file defines |
+| `unbased` | any other function that a C file defines, with no accepted row in `config/names.tsv` |
+| `struct` | a struct, union or enum body outside `include/` |
+
+- An `INCLUDE_ASM` stub is not debt. The progress report gives it no credit.
+- `config/debt-baseline.txt` holds one `<count> <kind> <path>` row for each count above zero.
+- The check fails when a count is over its row. It also fails when a row is over its count.
+- Run `debt --update` in the commit that changes a count.
+- In `mode admit`, `debt --update --admit` accepts a rise and prints it. Use that mode during the campaign.
+- `debt --down` switches to `mode down`. A count can then only fall. The switch is one way.
+- A `skip <entry>` line takes files out of the count.
+- `[debt] address_header` in `config/psxdecomp.toml` names the address header. The default is `include/addr.h`.
+
+## Names and assembly evidence
+
+The rule is `rules/NAME1.md`. `python3 tools/psxd_floor.py names` checks two tab-separated files.
+
+| File | Columns |
+|---|---|
+| `config/names.tsv` | `kind image scope old_name new_name decision evidence reason` |
+| `config/asm-evidence.tsv` | `image symbol path class evidence date` |
+
+- `kind` is `function`, `data`, `type`, `field`, `macro` or `file`.
+- `decision` is `accepted`, `provisional` or `rejected`.
+- `evidence` is `<class>:<path>:<line>`. `rules/NAME1.md` lists the classes.
+- The `class` of an assembly row is `sdk-object`, `hand-asm` or `data-in-text`.
+- A function that is only hard to match has no class. It stays a stub.
+
+## Toolchain pins
+
+`python3 tools/psxd_floor.py toolchain` reads `config/toolchain.tsv`. Phase 1.4 writes that file. Its columns are
+`name kind pin path`.
+
+- A `git` row passes when the checkout at `path` is at the commit `pin` and has no local change.
+- A `sha256` row passes when the file at `path` has the hash `pin`.
+- The command runs no tool of the game. A path that is not on this machine is `MISSING`, not a failure.
 
 ## A tool of the game's own
 

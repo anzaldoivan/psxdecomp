@@ -642,15 +642,24 @@ def s10_handoff(c: Ctx) -> str:
         print("     style and guard hooks not written: %s; add profiles/psx/hooks.json by hand" % hook_why)
     if not (why and hook_why):                    # a re-run after a failed S10 finds nothing missing but the file staged
         paths.append(common.SETTINGS)
-    if common.ste_rule_state(c.target) == "manual":
-        print("     rule STE1 not written: no %s here; PA3's rules_add.py must write %s from %s"
-              % (common.STE_TOOL, common.STE_RULE, common.PROFILE_STE))
-    else:                                         # the writing rule of the public files, with the game's own tool
-        c.written += common.ste_rule_write(c.target, c.python())
-        paths += [common.STE_RULE, common.STE_INDEX]
+    for rid in common.PROFILE_RULES:              # the profile's rules, each written with the game's own tool
+        rel, body = common.rule_paths(rid)
+        if common.rule_state(c.target, rid) == "manual":
+            print("     rule %s not written: no %s here; PA3's rules_add.py must write %s from %s"
+                  % (rid, common.STE_TOOL, rel, body))
+        else:
+            c.written += common.rule_write(c.target, c.python(), rid)
+            paths += [rel, common.STE_INDEX]
+    for rel, cols in upgrade.LEDGER_HEAD.items():  # the two ledgers: a header line, once
+        if not c.p(rel).exists():
+            c.write(rel, "\t".join(cols) + "\n")
+        paths.append(rel)
     if not c.p(publish.STYLE_RATCHET_REL).exists():   # last: each write above can change a count; never rewritten
         c.write(publish.STYLE_RATCHET_REL, common.first_ratchet(c.target))
     paths.append(publish.STYLE_RATCHET_REL)
+    if not c.p(floor.BASELINE).exists():          # the debt of the source at the handoff: none, in `mode admit`
+        c.write(floor.BASELINE, floor.first_baseline(c.target))
+    paths.append(floor.BASELINE)
     c.git("add", "--", *[x for x in paths if c.p(x).exists()])   # the README lint counts tracked paths, not local
     import doctor
     rows = doctor.check(c.target)
@@ -662,7 +671,8 @@ def s10_handoff(c: Ctx) -> str:
     card_check(c)
     sha = c.commit(paths, "psxdecomp handoff: the bootstrap record (pins, profile, host recipe), the prior-art table, "
                           "the README standard's lint and its CI, the writing rule of the public files (STE1, "
-                          "its hook, the first ratchet), and the floor (its tool, its reference, the guard)")
+                          "its hook, the first ratchet), and the floor (its tool, its reference, the guard, the two "
+                          "readability rules, the ledgers, the first debt baseline)")
     nxt = ("Next: a bare `claude` in this repository; PA3's planner drafts GENERATION_PLAN.md from the ladder. "
            "The steps after it: %s." % upgrade.FLOOR_DOC
            + (" Phase 1.2 leads: %s." % (BOOT + "/seeds.txt") if seeds.is_file() else ""))

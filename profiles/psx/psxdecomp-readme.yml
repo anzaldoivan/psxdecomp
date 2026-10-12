@@ -1,8 +1,9 @@
-# .github/workflows/psxdecomp-readme.yml — the README standard, the writing style of the public prose files and the
-# frozen category ids (written by psxdecomp's S10 and /psxdecomp:upgrade, which own this file; the standard is
-# psxdecomp's docs/PUBLISHING.md). No game data needed: it reads README.md, the public prose files (every published
-# `.md` file), config/style-ratchet.txt, config/public-paths.txt, config/categories.tsv, config/discs.tsv and the
-# tracked hash records.
+# .github/workflows/psxdecomp-readme.yml — the README standard, the writing style of the public prose files, the
+# readability debt of the source and the frozen category ids (written by psxdecomp's S10 and /psxdecomp:upgrade, which
+# own this file; the standard is psxdecomp's docs/PUBLISHING.md, the debt kinds are docs/ops/psxdecomp-floor.md). No
+# game data needed: it reads README.md, the public prose files (every published `.md` file), the tracked source,
+# config/style-ratchet.txt, config/debt-baseline.txt, config/names.tsv, config/asm-evidence.tsv,
+# config/public-paths.txt, config/categories.tsv, config/discs.tsv and the tracked hash records.
 name: psxdecomp-readme
 
 on:
@@ -28,5 +29,7 @@ jobs:
         run: python3 tools/psxd_publish.py lint README.md
       - name: "writing style of the public prose files (a count may only fall: config/style-ratchet.txt)"
         run: python3 tools/psxd_publish.py style
+      - name: "readability debt of the source (each count equal to its row: config/debt-baseline.txt)"
+        run: python3 tools/psxd_floor.py debt
       - name: category ids frozen (retired, never deleted or renamed)
         run: python3 tools/psxd_publish.py categories config/categories.tsv --history

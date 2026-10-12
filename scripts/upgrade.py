@@ -20,6 +20,11 @@ them first, this adds any that are missing later). The README's prose is
 the developer's: its migration to the standard is a `manual` action listing the lint findings. PA3 and kit upgrades
 are printed as commands for the developer (their own installers, their own gates).
 
+psxdecomp also delivers the readability floor: `fin-rule` and `name-rule` (rules/FIN1.md and rules/NAME1.md, written
+as `ste-rule` is), `names-ledger` (the header lines of config/names.tsv and config/asm-evidence.tsv, once) and
+`debt-baseline` (config/debt-baseline.txt, once, last, in `mode admit`); `floor-public` is the manual line of split
+mode. A game with `[own] debt` or `[own] names` gets none of the actions that key replaces.
+
 psxdecomp also owns the writing rule of the public files, in four actions: `ai-policy` (the three lines of the README's
 AI policy block, when they hold an older text), `ste-rule` (rules/STE1.md and its row of rules/INDEX.md, written by
 the game's own tools/rules_add.py from profiles/psx/rules/STE1.md; `manual` without that tool), `style-hook`
@@ -91,6 +96,11 @@ DELIVERY = (
     Delivery("build", "once", BUILD_WF, "profiles/psx/build.yml", None, True),
     Delivery("style-ratchet", "once", publish.STYLE_RATCHET_REL, None, None, False),
     Delivery("ste-rule", "rule", common.STE_RULE, "profiles/psx/rules/STE1.md", None, False),
+    Delivery("fin-rule", "rule", "rules/FIN1.md", "profiles/psx/rules/FIN1.md", "debt", False),
+    Delivery("name-rule", "rule", "rules/NAME1.md", "profiles/psx/rules/NAME1.md", "names", False),
+    Delivery("names-ledger", "once", floor.NAMES, None, "names", False),
+    Delivery("names-ledger", "once", floor.ASM_EVIDENCE, None, "debt", False),
+    Delivery("debt-baseline", "once", floor.BASELINE, None, "debt", False),
     Delivery("deny", "merge", common.SETTINGS, "profiles/psx/deny.json", None, False),
     Delivery("style-hook", "merge", common.SETTINGS, "profiles/psx/hooks.json", None, False),
     Delivery("refs-rows", "merge", "config/refs.toml", "profiles/psx/refs.toml", None, False),
@@ -198,6 +208,15 @@ def delivered_due(repo: pathlib.Path, take=()) -> dict[str, str]:
         if (state != "edited" or d.key in take) and delivered.get(path) != sha:
             out[path] = sha
     return out
+
+
+def ledgers_due(repo: pathlib.Path) -> list[str]:
+    """The ledgers (config/names.tsv, config/asm-evidence.tsv) that are absent and that no [own] key replaces."""
+    own = own_keys(repo)
+    return [d.path for d in DELIVERY if d.key == "names-ledger" and d.own not in own and not (repo / d.path).exists()]
+
+
+LEDGER_HEAD = {floor.NAMES: floor.NAME_COLUMNS, floor.ASM_EVIDENCE: floor.ASM_COLUMNS}
 
 
 def ops_index_due(repo: pathlib.Path) -> str | None:
@@ -352,14 +371,31 @@ def plan(repo: pathlib.Path) -> list[dict]:
             add("manual" if why else "psxdecomp", "%s: add %d hook group(s) to %s hooks from psxdecomp's "
                 "profiles/psx/hooks.json%s" % (key, len(mine), common.SETTINGS,
                                                " by hand (%s)" % why if why else " (add-only)"), reason, key)
-    rule = common.ste_rule_state(repo)
-    if rule == "manual":
-        add("manual", "ste-rule: write %s with PA3's rules_add.py (this repository has no %s); the rule's body is %s"
-            % (common.STE_RULE, common.STE_TOOL, common.PROFILE_STE), "the writing rule of the public files", "ste-rule")
-    elif rule:
-        add("psxdecomp", "ste-rule: %s %s with the game's %s (the body of psxdecomp's profiles/psx/rules/STE1.md; "
-            "never promoted)" % (rule, common.STE_RULE, common.STE_TOOL), "the writing rule of the public files: "
-            "missing, or its body is not psxdecomp %s's" % common.plugin_version(), "ste-rule")
+    own = own_keys(repo)
+    for rid, (_, _, _, key, what, own_key) in common.PROFILE_RULES.items():
+        rel, body = common.rule_paths(rid)
+        rule = None if own_key in own else common.rule_state(repo, rid)
+        if rule == "manual":
+            add("manual", "%s: write %s with PA3's rules_add.py (this repository has no %s); the rule's body is %s"
+                % (key, rel, common.STE_TOOL, body), what, key)
+        elif rule:
+            add("psxdecomp", "%s: %s %s with the game's %s (the body of psxdecomp's profiles/psx/rules/%s.md; "
+                "never promoted)" % (key, rule, rel, common.STE_TOOL, rid), "%s: missing, or its body is not psxdecomp "
+                "%s's" % (what, common.plugin_version()), key)
+    ledgers = ledgers_due(repo)
+    if ledgers:
+        add("psxdecomp", "names-ledger: write the header line of %s, once (names with their evidence; assembly with "
+            "its reason)" % " and ".join(ledgers), "`names` checks them; `debt` counts a name with no row", "names-ledger")
+    if "debt" not in own and not (repo / floor.BASELINE).is_file():
+        add("psxdecomp", "debt-baseline: write %s, once (the count of readability debt of each tracked source file, in "
+            "`mode admit`)" % floor.BASELINE, "`debt` fails when a count is not equal to its row", "debt-baseline")
+    if (repo / PUBLIC_LIST).is_file():
+        listed = publish.parse_public_paths(common.read(repo / PUBLIC_LIST))
+        need = [floor.VENDORED] + [d.path for d in DELIVERY if d.key in ("names-ledger", "debt-baseline") and d.own not in own]
+        gone = [p for p in need if not publish.is_listed(listed, p)]
+        if gone:
+            add("manual", "floor-public: add %s to %s" % (", ".join(gone), PUBLIC_LIST),
+                "the public repository's CI runs `debt` and needs the files", "floor-public")
     readme = repo / "README.md"
     if readme.is_file():
         text = common.read(readme)
@@ -514,8 +550,9 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
             written.append("%s%s %s" % ("would be " if dry else "", st, d.path))
     if "ai-policy" in acts:
         w("README.md", common.with_ai_policy(common.read(repo / "README.md")))
-    if "ste-rule" in acts:
-        written += common.ste_rule_write(repo, common.find_python() or sys.executable, dry)
+    for rid, row in common.PROFILE_RULES.items():
+        if row[3] in acts:
+            written += common.rule_write(repo, common.find_python() or sys.executable, rid, dry)
     if "build" in acts:
         w(BUILD_WF, fill_known(common.read(PROFILE_BUILD), build_values(repo)))
     if "guard" in acts:
@@ -551,8 +588,13 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
                                                      buf.getvalue().strip().splitlines()[-1]))
     elif dry and ("refs-add" in acts or "refs-rows" in acts):
         written.append("would write docs/ops/refs.md (the index)")
+    if "names-ledger" in acts:
+        for rel in ledgers_due(repo):
+            w(rel, "\t".join(LEDGER_HEAD[rel]) + "\n")
     if "style-ratchet" in acts:                      # last: each write above can change a count (a dry run counts none)
         w(publish.STYLE_RATCHET_REL, "" if dry else common.first_ratchet(repo))
+    if "debt-baseline" in acts:                      # and the debt of the source as the ledgers leave it
+        w(floor.BASELINE, "" if dry else floor.first_baseline(repo))
     return written
 
 
@@ -667,6 +709,14 @@ def self_test_record(repo: pathlib.Path) -> bool:
     ok &= written_paths(apply(repo, False, False)) == [install.RECORD]
     ok &= record_tables(repo)["own"] == {"debt": value} and "own" not in keys() and TABLE_NOTE["own"] in common.read(rec)
     ok &= doctor.own_missing(repo, record_tables(repo)["own"]) == []
+    (repo / floor.BASELINE).rename(repo / "kept")                       # [own] debt: no baseline, no evidence ledger
+    (repo / floor.ASM_EVIDENCE).unlink()
+    (repo / floor.NAMES).unlink()
+    ok &= "debt-baseline" not in keys() and "names-ledger: write the header line of %s, once" % floor.NAMES in keys()[
+        "names-ledger"]["what"]
+    (repo / "kept").rename(repo / floor.BASELINE)
+    for rel in (floor.ASM_EVIDENCE, floor.NAMES):
+        (repo / rel).write_text("\t".join(LEDGER_HEAD[rel]) + "\n")
     (repo / path).unlink()
     ok &= doctor.own_missing(repo, record_tables(repo)["own"]) == ["debt = %s" % value]
     row = [r for r in doctor.check(repo, only=["record"], offline=True)]
@@ -808,13 +858,18 @@ def self_test_style(repo: pathlib.Path) -> bool:
     ok &= act["owner"] == "manual" and str(common.PROFILE_STE) in act["what"]
     tool.write_text(RULES_STUB, encoding="utf-8")
     ok &= acts()["ste-rule"]["owner"] == "psxdecomp" and not rule.exists()
-    ok &= apply(repo, True, False) == ["would be created %s" % x for x in (common.STE_RULE, common.STE_INDEX)]
+    rules = [common.rule_paths(rid)[0] for rid in common.PROFILE_RULES]
+    ok &= rules == [common.STE_RULE, "rules/FIN1.md", "rules/NAME1.md"] and {"fin-rule", "name-rule"} <= set(acts())
+    ok &= apply(repo, True, False) == ["would be created %s" % x for r in rules for x in (r, common.STE_INDEX)]
     ok &= not rule.exists() and {common.STE_RULE, common.STE_INDEX} <= set(written_paths(apply(repo, False, False)))
     text = common.read(rule)
     ok &= text.startswith("# STE1 — %s\nid: STE1 · group: STE · status: active · tags: writing,public · origin: psxdecomp"
                           % common.STE_TITLE) and text.endswith("\n\n" + common.read(common.PROFILE_STE))
     ok &= "\nSTE1 | %s | writing,public | active | psxdecomp\n" % common.STE_TITLE in common.read(repo / common.STE_INDEX)
-    ok &= "ste-rule" not in acts()
+    ok &= not {"ste-rule", "fin-rule", "name-rule"} & set(acts())
+    fin = common.read(repo / "rules/FIN1.md")
+    ok &= fin.startswith("# FIN1 — %s\nid: FIN1 · group: FIN · " % common.FIN_TITLE) and '"matched, not finished"' in fin
+    ok &= "\nNAME1 | %s | readability,names | active | psxdecomp\n" % common.NAME_TITLE in common.read(repo / common.STE_INDEX)
     rule.write_text(re.sub(r"added: \S+", "added: 2001-01-01", text), encoding="utf-8")
     ok &= "added: 2001" in common.read(rule) and "ste-rule" not in acts()     # the date line is never compared
     rule.write_text(text + "\nAn edit.\n", encoding="utf-8")
@@ -903,6 +958,13 @@ def self_test() -> int:
         (repo / common.SETTINGS).write_text(json.dumps({"permissions": {"deny": want}}, indent=2) + "\n")
         ok &= (repo / publish.VENDORED).read_bytes() == OWNED[publish.VENDORED].read_bytes()
         ok &= {"floor", "guard", "guard-hook", "style-hook"} <= keys and not {"floor", "guard", "ops-index"} & keys2
+        ok &= {"names-ledger", "debt-baseline"} <= keys and not {"names-ledger", "debt-baseline"} & keys2
+        ok &= (repo / floor.NAMES).read_text() == "\t".join(floor.NAME_COLUMNS) + "\n"
+        ok &= (repo / floor.ASM_EVIDENCE).read_text() == "\t".join(floor.ASM_COLUMNS) + "\n"
+        base = (repo / floor.BASELINE).read_text()
+        ok &= base.endswith("mode admit\nskip include/include_asm.h\n") and base.startswith("# %s: " % floor.BASELINE)
+        ok &= "would be created %s" % floor.BASELINE in dry and dry.index("would be created %s" % floor.NAMES) < dry.index(
+            "would be created %s" % floor.BASELINE)
         ok &= (repo / floor.VENDORED).read_bytes() == OWNED[floor.VENDORED].read_bytes() and os.access(repo / floor.VENDORED, os.X_OK)
         ok &= (repo / FLOOR_DOC).read_bytes() == OWNED[FLOOR_DOC].read_bytes()
         ok &= (repo / floor.GUARD).read_text() == common.read(common.PROFILE_GUARD)
@@ -935,7 +997,11 @@ def self_test() -> int:
         toml = repo / "config/psxdecomp.toml"
         saved = toml.read_text() if toml.is_file() else None
         toml.write_text((saved or "") + '\n[public]\nrepo = "Example/Game"\n')
-        ok &= {"build", "build-fill", "split-doc"} <= {x["key"] for x in plan(repo)}
+        ok &= {"build", "build-fill", "split-doc", "floor-public"} <= {x["key"] for x in plan(repo)}
+        need = next(x for x in plan(repo) if x["key"] == "floor-public")
+        ok &= need["owner"] == "manual" and all(p in need["what"] for p in (floor.VENDORED, floor.BASELINE, floor.NAMES))
+        (repo / "config/public-paths.txt").write_text("config/\ntools/psxd_*.py\n")
+        ok &= "floor-public" not in {x["key"] for x in plan(repo)}
         apply(repo, False, False)
         card = repo / "docs/ops/psxdecomp-split.md"
         ok &= card.read_bytes() == SPLIT_OWNED["docs/ops/psxdecomp-split.md"].read_bytes()

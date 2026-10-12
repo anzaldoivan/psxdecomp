@@ -425,6 +425,11 @@ def main(argv=None) -> int:
             elif head != want:
                 print("DRIFT %s at %s, pinned %s" % (r["name"], head[:12], want[:12]))
                 bad += 1
+            elif (repo / "refs" / r["name"] / ".git").is_dir() and common.git(
+                    repo / "refs" / r["name"], "status", "--porcelain", check=False).stdout.strip():
+                print("DIRTY %s has local changes: a patched reference is not the pinned one (`git -C refs/%s "
+                      "checkout .` restores it)" % (r["name"], r["name"]))
+                bad += 1
         idx = repo / INDEX_REL
         if not idx.is_file() or common.read(idx) != index:
             print("DRIFT %s is not the index of %s (re-run fetch_refs.py --index-only)" % (INDEX_REL, refs_rel))

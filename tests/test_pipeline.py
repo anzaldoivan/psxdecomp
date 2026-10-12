@@ -271,6 +271,56 @@ def test_s10_writes_the_guard_beside_the_style_hook(game, tmp_path):
     assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
 
 
+def test_s10_writes_the_debt_baseline_and_debt_passes(game):
+    """S10 writes the readability floor in the handoff commit: rules/FIN1.md and rules/NAME1.md (never promoted), the
+    header lines of the two ledgers, and config/debt-baseline.txt last, in `mode admit` with no row (the game has no
+    C file yet). The vendored `debt` and `names` (the CI step of the README workflow) exit 0, and `debt` exits 1 when
+    a source file gains a `goto`."""
+    import floor
+    rows, skip, mode, head = floor.parse_baseline((game / floor.BASELINE).read_text())
+    assert (rows, skip, mode) == ({}, ["include/include_asm.h"], "admit") and len(head) == 5, (rows, skip, mode)
+    assert (game / floor.NAMES).read_text() == "\t".join(floor.NAME_COLUMNS) + "\n"
+    assert (game / floor.ASM_EVIDENCE).read_text() == "\t".join(floor.ASM_COLUMNS) + "\n"
+    for rid in ("FIN1", "NAME1"):
+        assert common.rule_state(game, rid) is None, rid
+        assert rid not in (game / ".claude/skills/project-architect/SKILL.md").read_text()
+        assert len([l for l in (game / common.STE_INDEX).read_text().splitlines() if l.startswith(rid + " | ")]) == 1
+    assert "FIN1" not in (game / "HOW_WE_WORK.md").read_text() and "NAME1" not in (game / "HOW_WE_WORK.md").read_text()
+    handoff = set(run(["git", "-C", game, "show", "--name-only", "--format=", "HEAD"]).stdout.split())
+    assert {floor.BASELINE, floor.NAMES, floor.ASM_EVIDENCE, "rules/FIN1.md", "rules/NAME1.md"} <= handoff, handoff
+    r = run([PY, floor.VENDORED, "debt"], cwd=game, check=False)
+    assert r.returncode == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); mode admit)" in r.stdout, r.stdout
+    assert run([PY, floor.VENDORED, "names"], cwd=game, check=False).returncode == 0
+    wf = (game / ".github/workflows/psxdecomp-readme.yml").read_text()
+    assert "run: python3 %s debt" % floor.VENDORED in wf
+    src = game / "src/probe.c"
+    try:                                                    # the negative control: a tracked C file with a goto
+        src.write_text(floor.C_DEBT["goto"][0])
+        run(["git", "-C", game, "add", "-f", "src/probe.c"])
+        r = run([PY, floor.VENDORED, "debt"], cwd=game, check=False)
+        assert r.returncode == 1 and "DEBT FAIL rise goto src/probe.c: 1, its row is 0\n" in r.stdout, r.stdout
+        r = run([PY, floor.VENDORED, "debt"], cwd=game, check=False)
+        assert "DEBT FAIL rise unbased src/probe.c: 1, its row is 0\n" in r.stdout, r.stdout   # the ledger exists
+    finally:
+        run(["git", "-C", game, "rm", "-q", "-f", "--cached", "src/probe.c"])
+        src.unlink()
+    assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+
+
+def test_phase_rows_wait_at_bootstrap(game):
+    """The phase-conditional rows of the floor at the handoff: gate, toolchain, names, debt and progress say WAIT with
+    the phase that makes each due, and the doctor still exits 0 (S10 aborts on a FAIL)."""
+    r = run([PY, ROOT / "scripts/doctor.py", "--repo", game, "--offline"], check=False)
+    assert r.returncode == 0, r.stdout
+    rows = dict(re.findall(r"^DOCTOR (\S+) +(OK|WARN|FAIL|SKIP|WAIT) ", r.stdout, re.M))
+    waits = {k for k, v in rows.items() if v == "WAIT"}
+    assert waits == {"roadmap", "gate", "toolchain", "names", "debt", "progress"}, rows
+    for name, due in (("gate", "phase 1.3 closes"), ("toolchain", "phase 1.4 closes"), ("names", "phase 1.4 closes"),
+                      ("debt", "the first C file under src/"), ("progress", "phase 1.9 opens")):
+        assert re.search(r"^DOCTOR %s +WAIT due w\S+ %s" % (name, re.escape(due)), r.stdout, re.M), (name, r.stdout)
+    assert r.stdout.splitlines()[-1].startswith("DOCTOR OK (") and ", 6 not due" in r.stdout.splitlines()[-1]
+
+
 def test_second_pa3_install_keeps_the_rule_the_ratchet_and_the_hook(toolchain, game, tmp_path):
     """PA3's own `--project` install run again over a copy of the game (the command of S6, from the pinned clone of the
     toolchain fixture) keeps what S10 wrote for the public files: the rule file and its index row, the ratchet, the
