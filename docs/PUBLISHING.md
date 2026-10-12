@@ -477,6 +477,34 @@ recvx-decomp (the AI notice). Prose stays human-written; only the two marked blo
 It reads one README, two small records, the Makefile and `git show` of one file's history, with the standard
 library only, in well under a second.
 
+## The writing style of the public prose files
+
+The rules are in [CONTRIBUTING.md](../CONTRIBUTING.md#writing), in the style of ASD-STE100. A game counts the
+findings of its public prose files with the vendored tool.
+
+A public prose file is a `.md` file that `config/public-paths.txt` covers and that no deny entry covers. With no
+public list, it is every `.md` file outside the agent paths and PA3's managed files. A file that git ignores is never a public prose file.
+
+| Command | Result |
+|---|---|
+| `python3 tools/psxd_publish.py style FILE...` | Each finding of the named files, whatever their path. |
+| `python3 tools/psxd_publish.py style` | A failure when the count of a public prose file is over its row. |
+| `python3 tools/psxd_publish.py style --update` | Lower rows, at the counts of now. It refuses a rise. |
+
+The ratchet is `config/style-ratchet.txt`. S10 and `/psxdecomp:upgrade` write it once, and then it is the game's.
+It has two kinds of line:
+
+- `<count> <path>`: the highest count that this file can have. A file with no row has row 0.
+- `skip <entry>`: an entry in the syntax of the public list. `style` does not check a file that the entry covers.
+  The first ratchet has the kit's five documents in `skip` lines.
+
+The README workflow runs `style`. In split mode, the CI of the public repository runs that workflow too. Thus
+`config/public-paths.txt` must list `config/style-ratchet.txt`. When it does not, upgrade plans the manual action
+`style-public`.
+
+S10 and upgrade also add a `PostToolUse` hook to `.claude/settings.json`. After a Write, an Edit or a Bash call, it
+runs `style --hook`. The hook reports the findings in the public text that the agent changed. It never blocks.
+
 ## Enforcement
 
 - **CI:** `.github/workflows/psxdecomp-readme.yml` runs the lint and `categories --history` on every push and pull

@@ -53,7 +53,7 @@ the whole output.
 | S7 intake | you | Follow `reference/intake.md` (PA3's intake in this plain session, handed the kit's `intake.decomp.md` with the S4 answers). Commit what it writes. |
 | S8 kit | script | `"$PSXD" install stage S8 --target .` — the pinned decomp-architect installer: its dry run, then the run. |
 | S9 refs | script | `"$PSXD" install stage S9 --target .` — `config/refs.toml`, the core rows fetched into `refs/` at their pins (optional ones are fetched later, when their `when` holds), `docs/ops/refs.md`, the grep rule. |
-| S10 handoff | script | `"$PSXD" install stage S10 --target .` — doctor, `config/psxdecomp.toml`, `docs/prior-art.md`, the agents' deny rules, the vendored README lint and its CI. Then tell the developer: **"Run a bare `claude` here: PA3's planner drafts GENERATION_PLAN.md."** |
+| S10 handoff | script | `"$PSXD" install stage S10 --target .` — doctor, `config/psxdecomp.toml`, `docs/prior-art.md`, the agents' deny rules, the vendored README lint and its CI. It also writes the writing rule `rules/STE1.md`, its hook and the first `config/style-ratchet.txt`. Then tell the developer: **"Run a bare `claude` here: PA3's planner drafts GENERATION_PLAN.md."** |
 
 `--deep` widens S3 (extended web search, shallow clones of every repository lead). Without it, S3 is one shallow
 search pass per question.
