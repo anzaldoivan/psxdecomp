@@ -611,13 +611,26 @@ def s10_handoff(c: Ctx) -> str:
     seeds = c.boot("seeds.txt")
     if c.dry:
         return "would write the record, the profile, the host recipe and docs/prior-art.md"
-    missing, why = common.deny_missing(c.target)   # the profile's deny rules: native enforcement from the first commit
-    if missing and not why:
-        c.write(common.SETTINGS, common.with_denies(c.target, missing))
-    elif why:
+    # the profile's deny rules (native enforcement from the first commit) and its style hook: one write of the file
+    why, hook_why = common.deny_missing(c.target)[1], common.hooks_missing(c.target)[1]
+    text = common.settings_due(c.target)
+    if text:
+        c.write(common.SETTINGS, text)
+    if why:
         print("     deny rules not written: %s; add profiles/psx/deny.json by hand" % why)
-    if not why:                                   # a re-run after a failed S10 finds nothing missing but the file staged
+    if hook_why:
+        print("     style hook not written: %s; add profiles/psx/hooks.json by hand" % hook_why)
+    if not (why and hook_why):                    # a re-run after a failed S10 finds nothing missing but the file staged
         paths.append(common.SETTINGS)
+    if common.ste_rule_state(c.target) == "manual":
+        print("     rule STE1 not written: no %s here; PA3's rules_add.py must write %s from %s"
+              % (common.STE_TOOL, common.STE_RULE, common.PROFILE_STE))
+    else:                                         # the writing rule of the public files, with the game's own tool
+        c.written += common.ste_rule_write(c.target, c.python())
+        paths += [common.STE_RULE, common.STE_INDEX]
+    if not c.p(publish.STYLE_RATCHET_REL).exists():   # last: each write above can change a count; never rewritten
+        c.write(publish.STYLE_RATCHET_REL, common.first_ratchet(c.target))
+    paths.append(publish.STYLE_RATCHET_REL)
     c.git("add", "--", *[x for x in paths if c.p(x).exists()])   # the README lint counts tracked paths, not local
     import doctor
     rows = doctor.check(c.target)
@@ -628,7 +641,8 @@ def s10_handoff(c: Ctx) -> str:
         raise common.Fail("doctor: %s" % "; ".join("%s: %s" % (r[0], r[2]) for r in bad))
     card_check(c)
     sha = c.commit(paths, "psxdecomp handoff: the bootstrap record (pins, profile, host recipe), the prior-art table, "
-                          "and the README standard's lint and its CI")
+                          "the README standard's lint and its CI, and the writing rule of the public files (STE1, "
+                          "its hook, the first ratchet)")
     nxt = ("Next: a bare `claude` in this repository; PA3's planner drafts GENERATION_PLAN.md from the ladder."
            + (" Phase 1.2 leads: %s." % (BOOT + "/seeds.txt") if seeds.is_file() else ""))
     return "record %s, commit %s. %s" % (RECORD, sha, nxt)
@@ -857,6 +871,9 @@ def self_test() -> int:
     ok &= "made\n\nThe standard." in swapped and common.with_ai_policy(swapped, common.OLD_DISCLOSURE) == swapped
     own = readme.replace(common.OLD_DISCLOSURE, "We disclose AI use per pull request.")
     ok &= "We disclose AI use" in common.with_ai_policy(own, replace="We disclose AI use per pull request.")
+    aged = "# G\n\n%s\n## Status\n\nOurs; kept.\n"                # an older text of the policy: the block alone changes
+    ok &= common.with_ai_policy(aged % common.ai_policy_block().replace("decisions. AI", "decisions; AI")) == \
+        aged % common.ai_policy_block() == common.with_ai_policy(aged % common.ai_policy_block())
     skel = "# {{PROJECT_NAME}}\n\n{{GAME_TITLE}} ({{GAME_SERIAL}}).\n\n## Made\n\n{{AI_DISCLOSURE}}\n\n*{{GAME_TITLE}}*\n"
     filled = skel.replace("{{PROJECT_NAME}}", "g").replace("{{GAME_TITLE}}", "Game X").replace(
         "{{GAME_SERIAL}}", "USA, SLUS-01234").replace("{{AI_DISCLOSURE}}", common.OLD_DISCLOSURE + ".")
@@ -874,6 +891,25 @@ def self_test() -> int:
         st = common.State(td)
         st.mark("S0", "done")
         ok &= st.first_open() == "S1"
+    with tempfile.TemporaryDirectory() as td:       # S10's writes that need no PA3: the settings, the rule, the ratchet
+        repo = pathlib.Path(td)
+        common.git(repo, "init", "--quiet")
+        own = {"matcher": "Bash", "hooks": [{"type": "command", "command": "true"}]}
+        common.write(repo / common.SETTINGS, json.dumps({"hooks": {"PostToolUse": [own]}}))
+        ok &= common.write(repo / common.SETTINGS, common.settings_due(repo)) == "changed"   # one write holds both
+        got = json.loads(common.read(repo / common.SETTINGS))
+        prof = [json.loads(common.read(f)) for f in (common.PROFILE_HOOKS, common.PROFILE_DENY)]
+        ok &= got["hooks"]["PostToolUse"] == [own] + prof[0]["hooks"]["PostToolUse"]     # the game's own group stays first
+        ok &= got["permissions"]["deny"] == prof[1]["permissions"]["deny"]
+        ok &= common.settings_due(repo) is None and common.hooks_missing(repo) == ([], None)
+        ok &= "|" not in common.STE_TITLE and "\n" not in common.STE_TITLE          # one cell of the index row
+        ok &= common.ste_rule_state(repo) == "manual" and common.ste_rule_write(repo, sys.executable) == []
+        common.write(repo / common.STE_RULE, "# STE1 — t\nadded: 2026-01-01\n\n" + common.read(common.PROFILE_STE))
+        ok &= common.ste_rule_state(repo) is None
+        for rel in ("docs/a.md", common.KIT_PROSE[0]):
+            common.write(repo / rel, "Run it; then stop.\n")
+        rat = common.first_ratchet(repo).splitlines()
+        ok &= rat[3:] == ["skip %s" % k for k in common.KIT_PROSE] + ["1 docs/a.md"] and "style --update" in rat[1]
     return common.self_test_banner("install", ok)
 
 

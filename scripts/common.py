@@ -283,11 +283,15 @@ PROFILE_DENY = PLUGIN_ROOT / "profiles" / "psx" / "deny.json"
 SETTINGS = ".claude/settings.json"
 
 
+def pa3_manages_settings(repo: pathlib.Path) -> bool:
+    managed = publish._pa3_files(read(repo / publish.PA3_REL)) if (repo / publish.PA3_REL).is_file() else []
+    return SETTINGS in managed
+
+
 def deny_missing(repo: pathlib.Path) -> tuple[list[str], str | None]:
     """(the profile's deny rules the game's .claude/settings.json lacks, why psxdecomp cannot add them or None)."""
     want = json.loads(read(PROFILE_DENY))["permissions"]["deny"]
-    managed = publish._pa3_files(read(repo / publish.PA3_REL)) if (repo / publish.PA3_REL).is_file() else []
-    if SETTINGS in managed:
+    if pa3_manages_settings(repo):
         return want, "PA3 manages %s here" % SETTINGS
     f = repo / SETTINGS
     try:
@@ -306,22 +310,129 @@ def with_denies(repo: pathlib.Path, missing: list[str]) -> str:
     return json.dumps(conf, indent=2, ensure_ascii=False) + "\n"
 
 
+# ---- the profile's hooks (profiles/psx/hooks.json: `style --hook` after a write): S10 writes them, upgrade adds any
+# missing. A group is present when a group of the same event holds a hook with its command --------------------------
+PROFILE_HOOKS = PLUGIN_ROOT / "profiles" / "psx" / "hooks.json"
+
+
+def hooks_missing(repo: pathlib.Path) -> tuple[list[tuple[str, dict]], str | None]:
+    """(the profile's (event, hook group) pairs the game's .claude/settings.json lacks, why psxdecomp cannot add them
+    or None)."""
+    want = [(ev, g) for ev, groups in json.loads(read(PROFILE_HOOKS))["hooks"].items() for g in groups]
+    if pa3_manages_settings(repo):
+        return want, "PA3 manages %s here" % SETTINGS
+    f = repo / SETTINGS
+    try:
+        have = (json.loads(read(f)) if f.is_file() else {}).get("hooks", {})
+        cmds = {ev: {h.get("command") for g in have.get(ev, []) for h in g.get("hooks", [])} for ev, _ in want}
+    except (ValueError, AttributeError, TypeError):
+        return want, "%s is not a JSON object with hook groups under `hooks`" % SETTINGS
+    return [(ev, g) for ev, g in want if not {h["command"] for h in g["hooks"]} <= cmds[ev]], None
+
+
+def with_hooks(repo: pathlib.Path, missing: list[tuple[str, dict]], base: str | None = None) -> str:
+    """The settings text with the missing groups, each at the end of its event's list. `base`: the text to add to in
+    place of the file's (with_denies' result, so that one write holds both)."""
+    f = repo / SETTINGS
+    conf = json.loads(base if base is not None else read(f) if f.is_file() else "{}")
+    for ev, group in missing:
+        conf.setdefault("hooks", {}).setdefault(ev, []).append(group)
+    return json.dumps(conf, indent=2, ensure_ascii=False) + "\n"
+
+
+def settings_due(repo: pathlib.Path) -> str | None:
+    """The .claude/settings.json text with every deny rule and hook group psxdecomp may add here (add-only, one write
+    for both), or None when none is due. S10 and upgrade both write through here."""
+    text = None
+    missing, why = deny_missing(repo)
+    if missing and not why:
+        text = with_denies(repo, missing)
+    hooks, why = hooks_missing(repo)
+    if hooks and not why:
+        text = with_hooks(repo, hooks, text)
+    return text
+
+
+# ---- the writing rule of the public files (profiles/psx/rules/STE1.md, a body with no title line): the game's own
+# rules_add.py writes rules/STE1.md and its row of rules/INDEX.md. Never `promote`: the headline stays out of the
+# project-architect skill. S10 and upgrade's `ste-rule` both go through here ------------------------------------------
+PROFILE_STE = PLUGIN_ROOT / "profiles" / "psx" / "rules" / "STE1.md"
+STE_RULE, STE_INDEX, STE_TOOL = "rules/STE1.md", "rules/INDEX.md", "tools/rules_add.py"
+STE_TITLE = ("Public files (`config/public-paths.txt`) follow `rules/STE1.md`. Read it before you write one. An "
+             "instruction has at most 20 words, a description at most 25. A paragraph has at most 6 sentences. Use no "
+             "semicolon: write two sentences. Put the condition before the command.")
+
+
+def ste_rule_state(repo: pathlib.Path) -> str | None:
+    """None when rules/STE1.md holds the profile's body (its title line and its dated metadata line are not compared),
+    else "add", "rewrite" (another body), or "manual" (the repository has no tools/rules_add.py)."""
+    f = repo / STE_RULE
+    if f.is_file() and "".join(read(f).split("\n", 2)[2:]).strip() == read(PROFILE_STE).strip():
+        return None
+    if not (repo / STE_TOOL).is_file():
+        return "manual"
+    return "rewrite" if f.is_file() else "add"
+
+
+def ste_rule_write(repo: pathlib.Path, python: str, dry: bool = False) -> list[str]:
+    """Run the game's rules_add.py for a rule that is due; returns `created|changed <path>` per file it wrote. A dry
+    run runs no tool and names both files."""
+    state = ste_rule_state(repo)
+    if state not in ("add", "rewrite"):
+        return []
+    rels = (STE_RULE, STE_INDEX)
+    old = [(repo / x).read_bytes() if (repo / x).is_file() else None for x in rels]
+    status = ["created" if o is None else "changed" for o in old]
+    if dry:
+        return ["would be %s %s" % (st, x) for st, x in zip(status, rels)]
+    r = run([python, STE_TOOL, "add", "--id", "STE1", "--title", STE_TITLE, "--group", "STE", "--tags",
+             "writing,public", "--origin", "psxdecomp", "--file", PROFILE_STE]
+            + (["--force"] if state == "rewrite" else []), cwd=repo, check=False, env={"PA_PROJECT_ROOT": str(repo)})
+    if r.returncode != 0 or ste_rule_state(repo):
+        raise Fail("%s did not write %s: %s" % (STE_TOOL, STE_RULE, (r.stdout + r.stderr).strip()[-300:]))
+    return ["%s %s" % (st, x) for st, x, o in zip(status, rels, old)
+            if (repo / x).is_file() and (repo / x).read_bytes() != o]
+
+
+# ---- the first ratchet of the writing findings (config/style-ratchet.txt): S10 and upgrade write it once, after
+# their other writes (each can change a count). After that it is the game's: `style --update` alone rewrites it ------
+KIT_PROSE = ("docs/decomp-kernels.md", "docs/decomp-architect.md", "docs/decomp-architect-install.md",
+             "docs/knowledge-corpus.md", "docs/tools-manifest.md")
+RATCHET_HEAD = ("%s: the count of writing findings of each public prose file (rules/STE1.md)."
+                % publish.STYLE_RATCHET_REL,
+                "A count may only fall. After a fix, run `python3 %s style --update`." % publish.VENDORED,
+                "The `skip` lines name files that the kit or a generator writes.")
+
+
+def first_ratchet(repo: pathlib.Path) -> str:
+    """The text of a game's first ratchet: the counts of now, the kit's five files skipped."""
+    try:
+        return publish.ratchet_text(publish.style_counts(repo, skip=KIT_PROSE), skip=KIT_PROSE, head=RATCHET_HEAD)
+    except publish.Fail as e:
+        raise Fail("%s: %s" % (publish.STYLE_RATCHET_REL, e))
+
+
 def swappable_disclosure(text: str | None) -> bool:
     """A disclosure paragraph the block replaces: the old default sentence, or the policy itself (kept once)."""
     t = (text or "").strip()
     return bool(t) and (t.startswith(OLD_DISCLOSURE) or t == AI_POLICY)
 
 
+POLICY_BLOCK_RE = re.compile(r"^%s[ \t]*\n> \[!IMPORTANT\][ \t]*\n> \*\*AI policy:\*\* .*$" % re.escape(AI_POLICY_MARK),
+                             re.M)
+
+
 def with_ai_policy(readme: str, replace: str | None = None) -> str:
     """The README with the AI policy block after its title and lead paragraph (before the first `## `). `replace`:
     the kit's disclosure paragraph (the AI_DISCLOSURE answer), removed when it is swappable — a developer's own
-    sentence stays. Idempotent."""
+    sentence stays. A README that holds the block keeps it where it is: its three lines become the current block
+    (an older text of the policy), nothing else changes. Idempotent."""
     if replace and swappable_disclosure(replace):
         para = "\n\n%s\n" % replace.strip()
         while para in readme:
             readme = readme.replace(para, "\n", 1)
     if AI_POLICY_MARK in readme:
-        return readme
+        return POLICY_BLOCK_RE.sub(lambda m: ai_policy_block().rstrip("\n"), readme)
     lines = readme.splitlines(keepends=True)
     at = next((i for i, l in enumerate(lines) if l.startswith("## ")), len(lines))
     head = "".join(lines[:at]).rstrip("\n")

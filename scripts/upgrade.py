@@ -18,6 +18,13 @@ them first, this adds any that are missing later). The README's prose is
 the developer's: its migration to the standard is a `manual` action listing the lint findings. PA3 and kit upgrades
 are printed as commands for the developer (their own installers, their own gates).
 
+psxdecomp also owns the writing rule of the public files, in four actions: `ai-policy` (the three lines of the README's
+AI policy block, when they hold an older text), `ste-rule` (rules/STE1.md and its row of rules/INDEX.md, written by
+the game's own tools/rules_add.py from profiles/psx/rules/STE1.md; `manual` without that tool), `style-hook`
+(profiles/psx/hooks.json, added to .claude/settings.json `hooks`, never removed, in the one write of the deny rules)
+and `style-ratchet` (config/style-ratchet.txt, written once, after the other writes of the run; from then on it is
+the game's).
+
 Opt-in, only in a repository with config/public-paths.txt (split mode, docs/PUBLISHING.md): .github/workflows/build.yml,
 the public repository's byte check (written only when absent: it carries the game's own values; what upgrade cannot
 read stays a {{PLACEHOLDER}} and a `manual` action), and docs/ops/psxdecomp-split.md, the release operator's card
@@ -144,13 +151,39 @@ def plan(repo: pathlib.Path) -> list[dict]:
         add("manual" if why else "psxdecomp", "deny: add %d rule(s) to %s permissions.deny from psxdecomp's "
             "profiles/psx/deny.json%s" % (len(missing), common.SETTINGS, " by hand (%s)" % why if why else " (add-only)"),
             "PA3's own deny stops `git push` alone; these forms also reach a push, a PR or a release", "deny")
+    hooks, why = common.hooks_missing(repo)
+    if hooks:
+        add("manual" if why else "psxdecomp", "style-hook: add %d hook group(s) to %s hooks from psxdecomp's "
+            "profiles/psx/hooks.json%s" % (len(hooks), common.SETTINGS, " by hand (%s)" % why if why else " (add-only)"),
+            "an agent session reads the writing findings of a public file right after it writes one", "style-hook")
+    rule = common.ste_rule_state(repo)
+    if rule == "manual":
+        add("manual", "ste-rule: write %s with PA3's rules_add.py (this repository has no %s); the rule's body is %s"
+            % (common.STE_RULE, common.STE_TOOL, common.PROFILE_STE), "the writing rule of the public files", "ste-rule")
+    elif rule:
+        add("psxdecomp", "ste-rule: %s %s with the game's %s (the body of psxdecomp's profiles/psx/rules/STE1.md; "
+            "never promoted)" % (rule, common.STE_RULE, common.STE_TOOL), "the writing rule of the public files: "
+            "missing, or its body is not psxdecomp %s's" % common.plugin_version(), "ste-rule")
     readme = repo / "README.md"
     if readme.is_file():
-        found = [f for f in publish.lint(common.read(readme), publish.Ctx(repo)) if f[0] == "FAIL"]
+        text = common.read(readme)
+        if common.AI_POLICY_MARK in text and common.with_ai_policy(text) != text:
+            add("psxdecomp", "ai-policy: write the current AI policy block in README.md (the block's three lines, "
+                "nothing else)", "the block holds an older text of the policy", "ai-policy")
+            text = common.with_ai_policy(text)           # the lint below reads the README as this action leaves it
+        found = [f for f in publish.lint(text, publish.Ctx(repo)) if f[0] == "FAIL"]
         if found:
             add("manual", "README: %d lint failure(s) against the README standard (docs/PUBLISHING.md; the prose is "
                 "yours, the two generated blocks are `python3 tools/psxd_publish.py render README.md --write`): %s"
                 % (len(found), "; ".join("%s: %s" % f[1:] for f in found[:8])), "the README standard", "readme")
+    if not (repo / publish.STYLE_RATCHET_REL).is_file():
+        add("psxdecomp", "style-ratchet: write %s, once (the count of writing findings of each public prose file, the "
+            "kit's %d files skipped)" % (publish.STYLE_RATCHET_REL, len(common.KIT_PROSE)),
+            "`style` fails when a count rises; a count may only fall", "style-ratchet")
+    if (repo / PUBLIC_LIST).is_file() and not publish.is_listed(
+            publish.parse_public_paths(common.read(repo / PUBLIC_LIST)), publish.STYLE_RATCHET_REL):
+        add("manual", "style-public: add %s to %s" % (publish.STYLE_RATCHET_REL, PUBLIC_LIST),
+            "the public repository's CI runs `style` and needs the file", "style-public")
     gi = repo / ".gitignore"
     if gi.is_file() and "/refs/" not in common.read(gi).splitlines():
         add("psxdecomp", "ignore: add the /refs/ line in a psxdecomp block", "refs/ must never be tracked", "ignore")
@@ -255,13 +288,17 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool) -> list[str]:
             st = common.write(repo / rel, common.read(src), dry=dry, mode=0o755 if rel.endswith(".py") else None)
             if st != "unchanged":
                 written.append("%s%s %s" % ("would be " if dry else "", st, rel))
+    if "ai-policy" in acts:
+        w("README.md", common.with_ai_policy(common.read(repo / "README.md")))
+    if "ste-rule" in acts:
+        written += common.ste_rule_write(repo, common.find_python((3, 11)) or sys.executable, dry)
     if "split-doc" in acts:
         for rel, src in SPLIT_OWNED.items():
             w(rel, common.read(src))
     if "build" in acts:
         w(BUILD_WF, fill_known(common.read(PROFILE_BUILD), build_values(repo)))
-    if "deny" in acts:
-        w(common.SETTINGS, common.with_denies(repo, common.deny_missing(repo)[0]))
+    if {"deny", "style-hook"} & acts:                # one write of the file when both are due
+        w(common.SETTINGS, common.settings_due(repo))
     if "card-conv" in acts:
         w(doctor.CARD, conv_card(repo)[1])
     if "refs-add" in acts or "ignore" in acts:
@@ -289,6 +326,8 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool) -> list[str]:
                                                      buf.getvalue().strip().splitlines()[-1]))
     elif dry and ("refs-add" in acts or "refs-rows" in acts):
         written.append("would write docs/ops/refs.md (the index)")
+    if "style-ratchet" in acts:                      # last: each write above can change a count (a dry run counts none)
+        w(publish.STYLE_RATCHET_REL, "" if dry else common.first_ratchet(repo))
     return written
 
 
@@ -317,7 +356,11 @@ def main(argv=None) -> int:
         print("PLAN %d action(s)%s" % (len(acts), "" if acts else " — up to date"))
         return 0
     if a.cmd == "apply":
-        written = apply(repo, a.dry_run, a.fetch)
+        try:
+            written = apply(repo, a.dry_run, a.fetch)
+        except common.Fail as e:                     # a game tool refused: what was written before it stays
+            print("APPLY FAIL %s" % e)
+            return 1
         for x in written:
             print("APPLY %s" % x)
         manual = [x for x in plan(repo) if x["owner"] == "manual"] if not a.dry_run else []
@@ -369,6 +412,118 @@ def self_test_card(repo: pathlib.Path) -> bool:
     return ok and how.read_text() == done and last.startswith("COMMIT git add -- %s && git commit -m " % doctor.CARD)
 
 
+# A stand-in for PA3's tools/rules_add.py in the self-test: `add` alone, the real tool's two files and their format.
+RULES_STUB = r"""import argparse, datetime, os, pathlib, sys
+ap = argparse.ArgumentParser()
+ap.add_argument("cmd", choices=["add"])
+for k in ("--id", "--title", "--group", "--tags", "--origin", "--file"):
+    ap.add_argument(k, required=True)
+ap.add_argument("--force", action="store_true")
+a = ap.parse_args()
+root = pathlib.Path(os.environ.get("PA_PROJECT_ROOT") or sys.exit("refused: no PA_PROJECT_ROOT"))
+rule, index = root / "rules" / (a.id + ".md"), root / "rules" / "INDEX.md"
+if rule.is_file() and not a.force:
+    sys.exit("refused: rules/%s already exists (--force to overwrite)" % rule.name)
+rule.parent.mkdir(exist_ok=True)
+body = pathlib.Path(a.file).read_text(encoding="utf-8").rstrip("\n")
+rule.write_text("# %s — %s\nid: %s · group: %s · status: active · tags: %s · origin: %s · added: %s\n\n%s\n" % (
+    a.id, a.title, a.id, a.group, a.tags, a.origin, datetime.date.today().isoformat(), body), encoding="utf-8")
+rows = index.read_text(encoding="utf-8").splitlines() if index.is_file() else [
+    "# Rules -- full texts in rules/<id>.md", "# id | headline | tags | active|superseded-by:<id>|sunset | origin"]
+row = "%s | %s | %s | active | %s" % (a.id, a.title, a.tags, a.origin)
+if not any(r.startswith(a.id + " |") for r in rows):
+    rows.append(row)
+index.write_text("\n".join(row if r.startswith(a.id + " |") else r for r in rows) + "\n", encoding="utf-8")
+print(row)
+"""
+
+
+def self_test_style(repo: pathlib.Path) -> bool:
+    """The writing rule's actions: style-hook, ste-rule, ai-policy, style-ratchet and the manual style-public. On entry
+    the settings hold the deny rules alone, the first apply wrote the ratchet and there is no rules_add.py. On return
+    the four are present and the README is gone."""
+    acts = lambda: {x["key"]: x for x in plan(repo)}  # noqa: E731
+    settings, rule, rat = repo / common.SETTINGS, repo / common.STE_RULE, repo / publish.STYLE_RATCHET_REL
+    # style-hook: beside the game's own group, which stays first; every other key and event stays, in place
+    own = {"matcher": "Bash", "hooks": [{"type": "command", "command": "true"}]}
+    want = json.loads(common.read(common.PROFILE_HOOKS))["hooks"]["PostToolUse"]
+    mine = dict(json.loads(settings.read_text()), hooks={"Stop": [own], "PostToolUse": [own]}, model="m")
+    settings.write_text(json.dumps(mine, indent=2) + "\n")
+    ok = rat.is_file() and acts()["style-hook"]["owner"] == "psxdecomp"
+    apply(repo, False, False)
+    got = json.loads(settings.read_text())
+    ok &= got == dict(mine, hooks={"Stop": [own], "PostToolUse": [own] + want}) and list(got) == list(mine)
+    ok &= "style-hook" not in acts()
+    settings.write_text("{}\n")                                          # an empty file: one write, with the deny rules
+    out = apply(repo, False, False)
+    full = json.loads(settings.read_text())
+    ok &= out.count("changed %s" % common.SETTINGS) == 1 and full["hooks"] == {"PostToolUse": want}
+    ok &= full["permissions"] == mine["permissions"] and not {"deny", "style-hook"} & set(acts())
+    (repo / publish.PA3_REL).write_text(json.dumps({"files": {common.SETTINGS: "h"}}))
+    settings.write_text("{}\n")
+    ok &= acts()["style-hook"]["owner"] == "manual" and apply(repo, True, False) == []   # PA3's file: never written
+    (repo / publish.PA3_REL).unlink()
+    settings.write_text("[]\n")
+    ok &= acts()["style-hook"]["owner"] == "manual"                           # not a JSON object
+    settings.write_text(json.dumps(full, indent=2) + "\n")
+    # ste-rule: manual without the game's tool; with it added, present whatever its date line, rewritten on another body
+    act, tool = acts()["ste-rule"], repo / common.STE_TOOL
+    ok &= act["owner"] == "manual" and str(common.PROFILE_STE) in act["what"]
+    tool.write_text(RULES_STUB, encoding="utf-8")
+    ok &= acts()["ste-rule"]["owner"] == "psxdecomp" and not rule.exists()
+    ok &= apply(repo, True, False) == ["would be created %s" % x for x in (common.STE_RULE, common.STE_INDEX)]
+    ok &= not rule.exists() and {common.STE_RULE, common.STE_INDEX} <= set(written_paths(apply(repo, False, False)))
+    text = common.read(rule)
+    ok &= text.startswith("# STE1 — %s\nid: STE1 · group: STE · status: active · tags: writing,public · origin: psxdecomp"
+                          % common.STE_TITLE) and text.endswith("\n\n" + common.read(common.PROFILE_STE))
+    ok &= "\nSTE1 | %s | writing,public | active | psxdecomp\n" % common.STE_TITLE in common.read(repo / common.STE_INDEX)
+    ok &= "ste-rule" not in acts()
+    rule.write_text(re.sub(r"added: \S+", "added: 2001-01-01", text), encoding="utf-8")
+    ok &= "added: 2001" in common.read(rule) and "ste-rule" not in acts()     # the date line is never compared
+    rule.write_text(text + "\nAn edit.\n", encoding="utf-8")
+    ok &= "ste-rule: rewrite " in acts()["ste-rule"]["what"]
+    ok &= apply(repo, True, False) == ["would be changed %s" % x for x in (common.STE_RULE, common.STE_INDEX)]
+    tool.write_text("import sys\nsys.exit('refused: not today')\n")      # the tool's refusal is a failure, with its text
+    try:
+        apply(repo, False, False)
+        ok = False
+    except common.Fail as e:
+        ok &= "refused: not today" in str(e)
+    tool.write_text(RULES_STUB, encoding="utf-8")
+    ok &= written_paths(apply(repo, False, False)) == [common.STE_RULE] and common.read(rule) == text   # the index: as is
+    # ai-policy: the block's three lines, the rest byte for byte; the ratchet is written after it, once
+    readme, block, aged = repo / "README.md", common.ai_policy_block(), "# G\n\nLead.\n\n%s\n## Status\n\nOurs; kept.\n"
+    old = block.replace("decisions. AI reads", "decisions; AI reads")
+    readme.write_text(aged % old)
+    rat.unlink()
+    for rel in ("docs/a.md", common.KIT_PROSE[0]):
+        common.write(repo / rel, "Run it; then stop.\n")
+    act = acts()
+    ok &= "Humans drive the decisions; AI reads and writes the code." in old and act["ai-policy"]["owner"] == "psxdecomp"
+    fails = sum(f[0] == "FAIL" for f in publish.lint(aged % block, publish.Ctx(repo)))   # the README as ai-policy leaves it
+    ok &= "README: %d lint failure(s)" % fails in act["readme"]["what"] and act["style-ratchet"]["owner"] == "psxdecomp"
+    ok &= apply(repo, True, False) == ["would be changed README.md", "would be created %s" % publish.STYLE_RATCHET_REL]
+    ok &= written_paths(apply(repo, False, False)) == ["README.md", publish.STYLE_RATCHET_REL]
+    rows, skip, head = publish.parse_ratchet(rat.read_text())
+    ok &= readme.read_text() == aged % block and not {"ai-policy", "style-ratchet"} & set(acts())
+    ok &= rows == {"README.md": 1, "docs/a.md": 1} and skip == list(common.KIT_PROSE)   # the README as ai-policy left it
+    ok &= len(head) == 3 and "python3 tools/psxd_publish.py style --update" in head[1]
+    kept = rat.read_text()
+    (repo / "docs/a.md").write_text("Run it; then stop; then go.\n")     # a count changes later: the file is the game's
+    ok &= "style-ratchet" not in acts() and written_paths(apply(repo, False, False)) == [] and rat.read_text() == kept
+    readme.write_text("# G\n")                                                # no block: the README lint's action alone
+    ok &= "ai-policy" not in acts() and "readme" in acts()
+    readme.unlink()
+    pub = repo / PUBLIC_LIST                                             # split mode: the public CI needs the ratchet
+    pub.write_text("README.md\n")
+    ok &= acts()["style-public"]["owner"] == "manual"
+    pub.write_text("README.md\nconfig/style-*.txt\n")
+    ok &= "style-public" not in acts()
+    pub.unlink()
+    left = {"ai-policy", "ste-rule", "style-hook", "style-ratchet", "style-public"} & set(acts())
+    return ok and not left and apply(repo, True, False) == []
+
+
 def self_test() -> int:
     ok = True
     with tempfile.TemporaryDirectory() as td:
@@ -412,6 +567,7 @@ def self_test() -> int:
         readme = next((x for x in plan(repo) if x["key"] == "readme"), None)
         ok &= readme is not None and readme["owner"] == "manual" and "missing ## Description" in readme["what"]
         (repo / "README.md").unlink()
+        ok &= self_test_style(repo)
         ok &= apply(repo, True, False) == []                     # a second apply has nothing to do
         rec = (repo / install.RECORD).read_text()                # an older record: apply bumps its version, only that
         old = rec.replace('version = "%s"' % common.plugin_version(), 'version = "0.1.0"', 1)
