@@ -63,6 +63,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common  # noqa: E402
 import doctor  # noqa: E402
 import fetch_refs  # noqa: E402
+import floor  # noqa: E402
 import install  # noqa: E402
 import publish  # noqa: E402
 
@@ -71,6 +72,9 @@ PUBLIC_LIST = "config/public-paths.txt"
 BUILD_WF = ".github/workflows/build.yml"
 PROFILE_BUILD = common.PLUGIN_ROOT / "profiles" / "psx" / "build.yml"
 
+FLOOR_DOC = "docs/ops/psxdecomp-floor.md"
+OPS_INDEX = "docs/ops/INDEX.md"
+
 # ---- the delivery classes: how each file psxdecomp delivers reaches a game. This table is their one home ------------
 # key: the plan action. cls: owned | once | rule | merge. path: in the game. src: in the plugin (None: generated).
 # own: the [own] key that replaces the delivery. split: delivered in split mode only (config/public-paths.txt).
@@ -78,7 +82,12 @@ Delivery = collections.namedtuple("Delivery", "key cls path src own split")
 DELIVERY = (
     Delivery("publish", "owned", publish.VENDORED, "scripts/publish.py", None, False),
     Delivery("publish", "owned", publish.WORKFLOW, "profiles/psx/psxdecomp-readme.yml", None, False),
+    Delivery("floor", "owned", floor.VENDORED, "scripts/floor.py", None, False),
+    Delivery("floor", "owned", FLOOR_DOC, "profiles/psx/floor.md", None, False),
     Delivery("split-doc", "owned", "docs/ops/psxdecomp-split.md", "profiles/psx/split-mode.md", None, True),
+    Delivery("guard", "once", floor.GUARD, "profiles/psx/guard.tsv", None, False),
+    Delivery("guard-hook", "merge", common.SETTINGS, "profiles/psx/hooks.json", None, False),
+    Delivery("ops-index", "merge", OPS_INDEX, None, None, False),
     Delivery("build", "once", BUILD_WF, "profiles/psx/build.yml", None, True),
     Delivery("style-ratchet", "once", publish.STYLE_RATCHET_REL, None, None, False),
     Delivery("ste-rule", "rule", common.STE_RULE, "profiles/psx/rules/STE1.md", None, False),
@@ -91,6 +100,7 @@ OWNED = {d.path: common.PLUGIN_ROOT / d.src for d in DELIVERY if d.cls == "owned
 SPLIT_OWNED = {d.path: common.PLUGIN_ROOT / d.src for d in DELIVERY if d.cls == "owned" and d.split}
 # an owned action's plan line: (its label, what the files are)
 OWNED_WHAT = {"publish": ("publish", "the README standard's lint and its CI"),
+              "floor": ("floor", "the roadmap, tooling and readability checks, and their reference"),
               "split-doc": ("split", "the release operator's card: ship, the push gate, contributor PRs")}
 # [own]: what a game may hold itself. A key's value is a path in the repository, or the command that runs its own tool.
 OWN_KEYS = ("debt", "names", "gate", "toolchain", "campaign", "matcher")
@@ -190,6 +200,19 @@ def delivered_due(repo: pathlib.Path, take=()) -> dict[str, str]:
     return out
 
 
+def ops_index_due(repo: pathlib.Path) -> str | None:
+    """docs/ops/INDEX.md with a row for each owned docs/ops file that is here, or will be after this apply; None when
+    the index is absent or names them all. Add-only."""
+    idx = repo / OPS_INDEX
+    if not idx.is_file():
+        return None
+    old = text = common.read(idx)
+    for path, (d, state) in owned_due(repo).items():
+        if path.startswith("docs/ops/") and state != "edited":
+            text = common.ops_index_row(text, path.rsplit("/", 1)[1], common.read(common.PLUGIN_ROOT / d.src)) or text
+    return None if text == old else text
+
+
 def host_recipe() -> str:
     import platform
     return os.environ.get("CLAUDE_PLUGIN_OPTION_DOCKER_HOST") or (
@@ -272,6 +295,12 @@ def plan(repo: pathlib.Path) -> list[dict]:
                 "psxdecomp %s's (%s)" % (label, " and ".join(edited), "it" if len(edited) == 1 else "them", key,
                                          "it" if len(edited) == 1 else "them", common.plugin_version(), what),
                 "an owned file with local changes is never overwritten unasked", key + "-edited")
+    if not (repo / floor.GUARD).is_file():
+        add("psxdecomp", "guard: write %s, once (the rules of the guard hook: no edit of asm/, of the hash files, of the "
+            "two baselines)" % floor.GUARD, "the guard hook reads it; from then on the file is the game's own", "guard")
+    if ops_index_due(repo):
+        add("psxdecomp", "ops-index: add the row of psxdecomp's docs/ops file(s) to %s (add-only)" % OPS_INDEX,
+            "PA3's ops index names every file of docs/ops/", "ops-index")
     tables = record_tables(repo)
     if "host" not in tables:
         add("psxdecomp", 'record-tables: add [host] recipe = "%s" to %s' % (host_recipe(), install.RECORD),
@@ -314,10 +343,15 @@ def plan(repo: pathlib.Path) -> list[dict]:
             "profiles/psx/deny.json%s" % (len(missing), common.SETTINGS, " by hand (%s)" % why if why else " (add-only)"),
             "PA3's own deny stops `git push` alone; these forms also reach a push, a PR or a release", "deny")
     hooks, why = common.hooks_missing(repo)
-    if hooks:
-        add("manual" if why else "psxdecomp", "style-hook: add %d hook group(s) to %s hooks from psxdecomp's "
-            "profiles/psx/hooks.json%s" % (len(hooks), common.SETTINGS, " by hand (%s)" % why if why else " (add-only)"),
-            "an agent session reads the writing findings of a public file right after it writes one", "style-hook")
+    for key, reason in (("style-hook", "an agent session reads the writing findings of a public file right after it "
+                         "writes one"),
+                        ("guard-hook", "an agent session is refused an edit of a generated or frozen file before it "
+                         "makes one")):
+        mine = [h for h in hooks if common.hook_kind(h[1]) == key]
+        if mine:
+            add("manual" if why else "psxdecomp", "%s: add %d hook group(s) to %s hooks from psxdecomp's "
+                "profiles/psx/hooks.json%s" % (key, len(mine), common.SETTINGS,
+                                               " by hand (%s)" % why if why else " (add-only)"), reason, key)
     rule = common.ste_rule_state(repo)
     if rule == "manual":
         add("manual", "ste-rule: write %s with PA3's rules_add.py (this repository has no %s); the rule's body is %s"
@@ -484,7 +518,11 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
         written += common.ste_rule_write(repo, common.find_python() or sys.executable, dry)
     if "build" in acts:
         w(BUILD_WF, fill_known(common.read(PROFILE_BUILD), build_values(repo)))
-    if {"deny", "style-hook"} & acts:                # one write of the file when both are due
+    if "guard" in acts:
+        w(floor.GUARD, common.read(common.PROFILE_GUARD))
+    if "ops-index" in acts:
+        w(OPS_INDEX, ops_index_due(repo))
+    if {"deny", "style-hook", "guard-hook"} & acts:  # one write of the file for the three
         w(common.SETTINGS, common.settings_due(repo))
     if "card-conv" in acts:
         w(doctor.CARD, conv_card(repo)[1])
@@ -739,21 +777,28 @@ def self_test_style(repo: pathlib.Path) -> bool:
     # style-hook: beside the game's own group, which stays first; every other key and event stays, in place
     own = {"matcher": "Bash", "hooks": [{"type": "command", "command": "true"}]}
     want = json.loads(common.read(common.PROFILE_HOOKS))["hooks"]["PostToolUse"]
+    pre = json.loads(common.read(common.PROFILE_HOOKS))["hooks"]["PreToolUse"]
+    ok = len(pre) == 1 and pre[0]["hooks"][0]["command"].endswith(" guard --hook || exit 0")
     mine = dict(json.loads(settings.read_text()), hooks={"Stop": [own], "PostToolUse": [own]}, model="m")
     settings.write_text(json.dumps(mine, indent=2) + "\n")
-    ok = rat.is_file() and acts()["style-hook"]["owner"] == "psxdecomp"
+    ok &= rat.is_file() and acts()["style-hook"]["owner"] == "psxdecomp" and acts()["guard-hook"]["owner"] == "psxdecomp"
+    ok &= "add 1 hook group(s)" in acts()["guard-hook"]["what"] and "add 1 hook group(s)" in acts()["style-hook"]["what"]
     apply(repo, False, False)
     got = json.loads(settings.read_text())
-    ok &= got == dict(mine, hooks={"Stop": [own], "PostToolUse": [own] + want}) and list(got) == list(mine)
-    ok &= "style-hook" not in acts()
+    ok &= got == dict(mine, hooks={"Stop": [own], "PostToolUse": [own] + want, "PreToolUse": pre})
+    ok &= list(got) == list(mine) and not {"style-hook", "guard-hook"} & set(acts())
+    part = dict(got, hooks={"PostToolUse": want})                        # the style hook alone: the guard's action alone
+    settings.write_text(json.dumps(part, indent=2) + "\n")
+    ok &= "style-hook" not in acts() and acts()["guard-hook"]["owner"] == "psxdecomp"
     settings.write_text("{}\n")                                          # an empty file: one write, with the deny rules
     out = apply(repo, False, False)
     full = json.loads(settings.read_text())
-    ok &= out.count("changed %s" % common.SETTINGS) == 1 and full["hooks"] == {"PostToolUse": want}
-    ok &= full["permissions"] == mine["permissions"] and not {"deny", "style-hook"} & set(acts())
+    ok &= out.count("changed %s" % common.SETTINGS) == 1 and full["hooks"] == {"PostToolUse": want, "PreToolUse": pre}
+    ok &= full["permissions"] == mine["permissions"] and not {"deny", "style-hook", "guard-hook"} & set(acts())
     (repo / publish.PA3_REL).write_text(json.dumps({"files": {common.SETTINGS: "h"}}))
     settings.write_text("{}\n")
-    ok &= acts()["style-hook"]["owner"] == "manual" and apply(repo, True, False) == []   # PA3's file: never written
+    ok &= acts()["style-hook"]["owner"] == "manual" and acts()["guard-hook"]["owner"] == "manual"
+    ok &= apply(repo, True, False) == []                                 # PA3's file: never written
     (repo / publish.PA3_REL).unlink()
     settings.write_text("[]\n")
     ok &= acts()["style-hook"]["owner"] == "manual"                           # not a JSON object
@@ -812,7 +857,7 @@ def self_test_style(repo: pathlib.Path) -> bool:
     pub.write_text("README.md\nconfig/style-*.txt\n")
     ok &= "style-public" not in acts()
     pub.unlink()
-    left = {"ai-policy", "ste-rule", "style-hook", "style-ratchet", "style-public"} & set(acts())
+    left = {"ai-policy", "ste-rule", "style-hook", "guard-hook", "style-ratchet", "style-public"} & set(acts())
     return ok and not left and apply(repo, True, False) == []
 
 
@@ -857,6 +902,20 @@ def self_test() -> int:
         (repo / publish.PA3_REL).unlink()
         (repo / common.SETTINGS).write_text(json.dumps({"permissions": {"deny": want}}, indent=2) + "\n")
         ok &= (repo / publish.VENDORED).read_bytes() == OWNED[publish.VENDORED].read_bytes()
+        ok &= {"floor", "guard", "guard-hook", "style-hook"} <= keys and not {"floor", "guard", "ops-index"} & keys2
+        ok &= (repo / floor.VENDORED).read_bytes() == OWNED[floor.VENDORED].read_bytes() and os.access(repo / floor.VENDORED, os.X_OK)
+        ok &= (repo / FLOOR_DOC).read_bytes() == OWNED[FLOOR_DOC].read_bytes()
+        ok &= (repo / floor.GUARD).read_text() == common.read(common.PROFILE_GUARD)
+        (repo / floor.GUARD).write_text("# the game's own rules\n")      # once: never rewritten
+        ok &= "guard" not in {x["key"] for x in plan(repo)}
+        idx = repo / OPS_INDEX                                           # the ops index: PA3's grammar, add-only
+        idx.write_text("<!-- docs/ops index: <file> | <heading> | <line count> -->\nrefs.md | Reference library | 76\n")
+        ok &= "ops-index" in {x["key"] for x in plan(repo)}
+        ok &= OPS_INDEX in written_paths(apply(repo, False, False))
+        ok &= idx.read_text().endswith("refs.md | Reference library | 76\npsxdecomp-floor.md | The psxdecomp floor | %d\n"
+                                       % len(common.read(OWNED[FLOOR_DOC]).splitlines()))
+        ok &= "ops-index" not in {x["key"] for x in plan(repo)}
+        idx.unlink()
         (repo / "README.md").write_text("# G\n\n%s\n## Status\n" % common.ai_policy_block())
         readme = next((x for x in plan(repo) if x["key"] == "readme"), None)
         ok &= readme is not None and readme["owner"] == "manual" and "missing ## Description" in readme["what"]

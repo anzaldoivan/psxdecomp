@@ -310,9 +310,27 @@ def with_denies(repo: pathlib.Path, missing: list[str]) -> str:
     return json.dumps(conf, indent=2, ensure_ascii=False) + "\n"
 
 
-# ---- the profile's hooks (profiles/psx/hooks.json: `style --hook` after a write): S10 writes them, upgrade adds any
-# missing. A group is present when a group of the same event holds a hook with its command --------------------------
+# ---- the profile's hooks (profiles/psx/hooks.json: `style --hook` after a write, `guard --hook` before a call): S10
+# writes them, upgrade adds any missing. A group is present when a group of the same event holds a hook with its
+# command. The guard's group ends in `|| exit 0`: a hook that cannot start must never stop a tool call ---------------
 PROFILE_HOOKS = PLUGIN_ROOT / "profiles" / "psx" / "hooks.json"
+PROFILE_GUARD = PLUGIN_ROOT / "profiles" / "psx" / "guard.tsv"
+HOOK_KINDS = (("style-hook", "style --hook"), ("guard-hook", "guard --hook"))   # (upgrade's action, the command's words)
+
+
+def hook_kind(group: dict) -> str:
+    """The upgrade action that adds a hook group of the profile: `style-hook` or `guard-hook`."""
+    cmds = " ".join(h.get("command", "") for h in group.get("hooks", []))
+    return next((key for key, words in HOOK_KINDS if words in cmds), HOOK_KINDS[0][0])
+
+
+def ops_index_row(index: str, name: str, doc: str) -> str | None:
+    """docs/ops/INDEX.md with the row of one docs/ops file, in PA3's ops grammar `<file> | <heading> | <line count>`;
+    None when the index names the file already."""
+    if re.search(r"(?m)^(?:- \[)?%s\b" % re.escape(name), index):
+        return None
+    head = next((l.lstrip("# ").strip() for l in doc.splitlines() if l.startswith("# ")), name)
+    return "%s\n%s | %s | %d\n" % (index.rstrip("\n"), name, head, len(doc.splitlines()))
 
 
 def hooks_missing(repo: pathlib.Path) -> tuple[list[tuple[str, dict]], str | None]:

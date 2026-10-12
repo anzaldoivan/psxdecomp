@@ -81,7 +81,7 @@ def test_s10_writes_the_deny_rules_and_doctor_checks_them(game, tmp_path):
     handoff commit (still 9 commits); doctor's `deny` row is OK, and FAILs on a copy that lacks one rule."""
     want = json.loads((ROOT / "profiles/psx/deny.json").read_text())["permissions"]["deny"]
     have = json.loads((game / ".claude/settings.json").read_text())["permissions"]["deny"]
-    assert set(want) <= set(have) and len(have) > len(want) and len(want) == 18, have
+    assert set(want) <= set(have) and len(have) > len(want) and len(want) == 23, have
     assert run(["git", "-C", game, "status", "--porcelain", ".claude/settings.json"]).stdout == ""
     assert run(["git", "-C", game, "ls-files", ".claude/settings.json"]).stdout.strip()
     assert len(run(["git", "-C", game, "log", "--oneline"]).stdout.splitlines()) == 9
@@ -97,7 +97,7 @@ def test_s10_writes_the_deny_rules_and_doctor_checks_them(game, tmp_path):
     conf["permissions"]["deny"].remove(want[0])
     (bad / ".claude/settings.json").write_text(json.dumps(conf))
     r = run([PY, ROOT / "scripts/doctor.py", "--repo", bad, "--offline"], check=False)
-    assert r.returncode == 1 and re.search(r"DOCTOR deny\s+FAIL\s+1 of 18", r.stdout), r.stdout
+    assert r.returncode == 1 and re.search(r"DOCTOR deny\s+FAIL\s+1 of 23", r.stdout), r.stdout
 
 
 def test_ladder_matches_kit(kit):
@@ -230,6 +230,47 @@ def test_s10_writes_the_style_hook_beside_the_deny_rules(game):
     assert common.SETTINGS in run(["git", "-C", game, "show", "--name-only", "--format=", "HEAD"]).stdout.split()
 
 
+def test_s10_writes_the_guard_beside_the_style_hook(game, tmp_path):
+    """S10 delivers the floor in the handoff commit: tools/psxd_floor.py (byte for byte, executable), its reference in
+    docs/ops/ with a row of the ops index in PA3's grammar, config/guard.tsv, and the PreToolUse group beside the
+    style hook. Doctor's `guard` row is OK. The hook, run as the settings register it, refuses an edit under asm/,
+    allows an edit of a source file, and allows every call when the vendored tool is gone."""
+    import subprocess
+
+    import floor
+    import upgrade
+    conf = json.loads((game / common.SETTINGS).read_text())
+    pre = json.loads(common.read(common.PROFILE_HOOKS))["hooks"]["PreToolUse"]
+    assert conf["hooks"]["PreToolUse"] == pre and pre[0]["matcher"] == "Bash|Edit|Write", conf["hooks"]
+    assert (game / floor.VENDORED).read_bytes() == (ROOT / "scripts/floor.py").read_bytes()
+    assert os.access(game / floor.VENDORED, os.X_OK)
+    assert (game / upgrade.FLOOR_DOC).read_bytes() == (ROOT / "profiles/psx/floor.md").read_bytes()
+    assert (game / floor.GUARD).read_text() == common.read(common.PROFILE_GUARD)
+    rows = [l for l in (game / upgrade.OPS_INDEX).read_text().splitlines() if l.startswith("psxdecomp-floor.md")]
+    assert rows == ["psxdecomp-floor.md | The psxdecomp floor | %d" % len((game / upgrade.FLOOR_DOC).read_text().splitlines())]
+    handoff = set(run(["git", "-C", game, "show", "--name-only", "--format=", "HEAD"]).stdout.split())
+    assert {floor.VENDORED, upgrade.FLOOR_DOC, floor.GUARD, upgrade.OPS_INDEX, common.SETTINGS} <= handoff, handoff
+    r = run([PY, ROOT / "scripts/doctor.py", "--repo", game, "--offline"], check=False)
+    assert re.search(r"DOCTOR guard\s+OK\s+all 2 hook group\(s\)", r.stdout), r.stdout
+    assert re.search(r"DOCTOR publish-tool\s+OK\s+4 owned file\(s\)", r.stdout), r.stdout
+    assert run([PY, floor.VENDORED, "plan"], cwd=game).stdout.startswith("PLAN INFO plan: no GENERATION_PLAN.md")
+
+    def hook(repo, **inp):
+        event = {"hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": inp, "cwd": str(repo)}
+        return subprocess.run(["sh", "-c", pre[0]["hooks"][0]["command"]], input=json.dumps(event), cwd=repo,
+                              capture_output=True, text=True, env=dict(os.environ, CLAUDE_PROJECT_DIR=str(repo)))
+
+    r = hook(game, file_path=str(game / "asm/main/a.s"))
+    assert r.returncode == 0 and json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny", r.stdout
+    r = hook(game, file_path=str(game / "src/a.c"))
+    assert (r.returncode, r.stdout) == (0, ""), (r.stdout, r.stderr)
+    bare = tmp_path / "bare"                                    # no vendored tool: python3 fails, the command exits 0
+    bare.mkdir()
+    r = hook(bare, file_path=str(bare / "asm/a.s"))
+    assert (r.returncode, r.stdout) == (0, ""), (r.returncode, r.stdout)
+    assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+
+
 def test_second_pa3_install_keeps_the_rule_the_ratchet_and_the_hook(toolchain, game, tmp_path):
     """PA3's own `--project` install run again over a copy of the game (the command of S6, from the pinned clone of the
     toolchain fixture) keeps what S10 wrote for the public files: the rule file and its index row, the ratchet, the
@@ -250,6 +291,7 @@ def test_second_pa3_install_keeps_the_rule_the_ratchet_and_the_hook(toolchain, g
     conf = json.loads((copy / common.SETTINGS).read_text())
     assert conf["hooks"]["PostToolUse"].count(_hook_group()) == 1, conf.get("hooks")
     assert common.hooks_missing(copy) == ([], None) and common.deny_missing(copy) == ([], None)
+    assert conf["hooks"]["PreToolUse"] == json.loads(common.read(common.PROFILE_HOOKS))["hooks"]["PreToolUse"]
     assert not [l for l in _headlines(copy) if l.startswith("- STE1")]
     r = run([PY, publish.VENDORED, "style"], cwd=copy, check=False)
     assert r.returncode == 0 and "STYLE CHECK OK" in r.stdout, r.stdout

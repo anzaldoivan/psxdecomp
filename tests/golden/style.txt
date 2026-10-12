@@ -20,4 +20,4 @@
 7 skills/new/reference/investigate.md
 4 skills/new/reference/report-template.md
 13 skills/new/reference/stages.md
-5 skills/upgrade/SKILL.md
+3 skills/upgrade/SKILL.md

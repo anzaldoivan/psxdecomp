@@ -1,0 +1,12 @@
+# config/guard.tsv: what an agent session may not do in this repository. `tools/psxd_floor.py guard --hook` reads it
+# before each Bash, Edit and Write call (.claude/settings.json). The first row that matches a call decides. This file
+# is the game's own: add a row when a session repeats a mistake. One tab separates the columns.
+action	tool	pattern	say
+deny	path	asm/	asm/ is the output of the splitter. Change the split configuration and run the split again.
+deny	path	config/check.*.sha	The build writes the hash files. A new baseline is the decision of the developer.
+deny	path	config/medium.sha1	The hashes of the disc are fixed. Only another dump changes them, and the developer decides that.
+deny	path	config/debt-baseline.txt	Run `python3 tools/psxd_floor.py debt --update`. It writes this file.
+deny	path	config/style-ratchet.txt	Run `python3 tools/psxd_publish.py style --update`. It writes this file.
+# Two examples. Each game has its own targets: remove the `#` and set the pattern.
+# deny	bash	(^|[;&|]\s*)make\s+expected\b	Ask the developer before you write a new baseline.
+# deny	bash	\bsplat\b.*\bsplit\b	Run the split target of this repository. It keeps the forced boundaries.

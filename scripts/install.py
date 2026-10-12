@@ -610,11 +610,18 @@ def s10_handoff(c: Ctx) -> str:
         c.write("docs/prior-art.md", common.read(pa_src))
         paths.append("docs/prior-art.md")
     readme_policy(c)                              # S8 did it; a repo whose S8 predates it gets it here
-    for rel, body, mode in ((publish.VENDORED, common.read(common.PLUGIN_ROOT / "scripts" / "publish.py"), 0o755),
-                            (publish.WORKFLOW, common.read(common.PLUGIN_ROOT / "profiles/psx/psxdecomp-readme.yml"),
-                             None)):
-        c.write(rel, body, mode=mode)
-        paths.append(rel)
+    for d in upgrade.DELIVERY:                    # every owned file: the two vendored tools, the workflow, the floor's doc
+        if d.cls == "owned" and not d.split:
+            c.write(d.path, common.read(common.PLUGIN_ROOT / d.src), mode=0o755 if d.path.endswith(".py") else None)
+            paths.append(d.path)
+            if d.path.startswith("docs/ops/") and c.p(upgrade.OPS_INDEX).is_file():
+                row = common.ops_index_row(common.read(c.p(upgrade.OPS_INDEX)), d.path.rsplit("/", 1)[1],
+                                           common.read(common.PLUGIN_ROOT / d.src))
+                if row:
+                    c.write(upgrade.OPS_INDEX, row)
+    if not c.p(floor.GUARD).exists():             # the guard's rules: written once, before the hook that reads them
+        c.write(floor.GUARD, common.read(common.PROFILE_GUARD))
+    paths += [floor.GUARD, upgrade.OPS_INDEX]
     how = c.p("HOW_WE_WORK.md")
     if how.is_file() and SCOPE_MARK not in common.read(how):
         c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Docs map", scope_line(ans, psyq_v)))
@@ -632,7 +639,7 @@ def s10_handoff(c: Ctx) -> str:
     if why:
         print("     deny rules not written: %s; add profiles/psx/deny.json by hand" % why)
     if hook_why:
-        print("     style hook not written: %s; add profiles/psx/hooks.json by hand" % hook_why)
+        print("     style and guard hooks not written: %s; add profiles/psx/hooks.json by hand" % hook_why)
     if not (why and hook_why):                    # a re-run after a failed S10 finds nothing missing but the file staged
         paths.append(common.SETTINGS)
     if common.ste_rule_state(c.target) == "manual":
@@ -654,9 +661,10 @@ def s10_handoff(c: Ctx) -> str:
         raise common.Fail("doctor: %s" % "; ".join("%s: %s" % (r[0], r[2]) for r in bad))
     card_check(c)
     sha = c.commit(paths, "psxdecomp handoff: the bootstrap record (pins, profile, host recipe), the prior-art table, "
-                          "the README standard's lint and its CI, and the writing rule of the public files (STE1, "
-                          "its hook, the first ratchet)")
-    nxt = ("Next: a bare `claude` in this repository; PA3's planner drafts GENERATION_PLAN.md from the ladder."
+                          "the README standard's lint and its CI, the writing rule of the public files (STE1, "
+                          "its hook, the first ratchet), and the floor (its tool, its reference, the guard)")
+    nxt = ("Next: a bare `claude` in this repository; PA3's planner drafts GENERATION_PLAN.md from the ladder. "
+           "The steps after it: %s." % upgrade.FLOOR_DOC
            + (" Phase 1.2 leads: %s." % (BOOT + "/seeds.txt") if seeds.is_file() else ""))
     return "record %s, commit %s. %s" % (RECORD, sha, nxt)
 

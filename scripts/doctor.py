@@ -21,6 +21,8 @@ the public repository, the pre-push hook is in place, every workflow action is p
 interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
 PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
+guard (the profile's hook groups are in .claude/settings.json and config/guard.tsv parses: FAIL when psxdecomp could
+add a group or a rules line is no rule, WARN when it cannot edit the settings or the rules file is absent);
 hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs; it also counts the
 writing findings, publish.lint_style); card (WARN only: HOW_WE_WORK.md over PA3's cap); progress (WARN only,
 when a workflow builds a decomp.dev report: its safety lint, and whether decomp.dev lists the repo, in split mode the
@@ -54,7 +56,8 @@ import publish  # noqa: E402
 
 NETWORK_ROWS = ("progress", "github", "dev-ci", "private-repo", "public-standard")
 SPLIT_ROWS = ("private-repo", "public-standard")
-ROWS = ("record", "sdk", "pa3", "pa3-drift", "python", "kit", "roadmap", "readme", "publish-tool", "deny", "split-guard",
+ROWS = ("record", "sdk", "pa3", "pa3-drift", "python", "kit", "roadmap", "readme", "publish-tool", "deny", "guard",
+        "split-guard",
         "categories", "ignore", "audit", "fixture", "refs", "refs-ignored", "hygiene", "card") + NETWORK_ROWS
 WIDTH = max(map(len, ROWS))                     # the name column of every printed row (doctor, upgrade audit, S10)
 
@@ -134,6 +137,7 @@ def base_rows(repo: pathlib.Path, add):
     add("readme", *readme_row(common.read(readme) if readme.is_file() else None, repo))
     add("publish-tool", *publish_tool_row(repo))
     add("deny", *deny_row(repo))
+    add("guard", *guard_row(repo))
     guard = split_guard_row(repo)
     if guard:
         add("split-guard", *guard)
@@ -259,19 +263,17 @@ def readme_row(text: str | None, repo: pathlib.Path | None = None) -> tuple[str,
 
 
 def publish_tool_row(repo: pathlib.Path) -> tuple[str, str]:
-    """The vendored lint (tools/psxd_publish.py) and its workflow are psxdecomp's current ones. Never FAIL."""
-    want = {publish.VENDORED: common.PLUGIN_ROOT / "scripts" / "publish.py",
-            publish.WORKFLOW: common.PLUGIN_ROOT / "profiles" / "psx" / "psxdecomp-readme.yml"}
-    off = []
-    for rel, src in want.items():
-        have = repo / rel
-        if not have.is_file():
-            off.append("%s missing" % rel)
-        elif have.read_bytes() != src.read_bytes():
-            off.append("%s differs from psxdecomp %s's" % (rel, common.plugin_version()))
+    """Every file psxdecomp owns here (upgrade.DELIVERY: the two vendored tools, the README workflow, the floor's
+    reference, in split mode the operator's card) is psxdecomp's current one. Never FAIL."""
+    import upgrade
+    due = upgrade.owned_due(repo)
+    off = ["%s %s" % (path, "missing" if not (repo / path).is_file() else
+                      "edited here" if st == "edited" else "differs from psxdecomp %s's" % common.plugin_version())
+           for path, (_, st) in due.items() if st]
     if off:
-        return "WARN", "%s — /psxdecomp:upgrade apply writes them" % "; ".join(off)
-    return "OK", "%s and %s are psxdecomp %s's" % (publish.VENDORED, publish.WORKFLOW, common.plugin_version())
+        return "WARN", "%s — /psxdecomp:upgrade apply writes them%s" % ("; ".join(off), (
+            " (an edited file only with `--take`)" if any(st == "edited" for _, st in due.values()) else ""))
+    return "OK", "%d owned file(s) are psxdecomp %s's: %s" % (len(due), common.plugin_version(), ", ".join(due))
 
 
 def deny_row(repo: pathlib.Path) -> tuple[str, str]:
@@ -284,6 +286,27 @@ def deny_row(repo: pathlib.Path) -> tuple[str, str]:
         return "FAIL", "%d of %d deny rules missing from %s — /psxdecomp:upgrade apply adds them" % (
             len(missing), want, common.SETTINGS)
     return "OK", "all %d deny rules are in %s" % (want, common.SETTINGS)
+
+
+def guard_row(repo: pathlib.Path) -> tuple[str, str]:
+    """The profile's hook groups (the style hook and the guard) are in .claude/settings.json, and config/guard.tsv
+    parses. FAIL when psxdecomp could add a group, or when the rules file has a line that is no rule; WARN when
+    psxdecomp cannot edit the settings, and when there is no rules file (the guard then allows every call)."""
+    want = sum(len(g) for g in json.loads(common.read(common.PROFILE_HOOKS))["hooks"].values())
+    missing, why = common.hooks_missing(repo)
+    text = common.read(repo / floor.GUARD) if (repo / floor.GUARD).is_file() else None
+    errs = floor.guard_errors(text) if text is not None else []
+    if why:
+        return "WARN", "%s; add the hook groups of profiles/psx/hooks.json by hand" % why
+    if missing:
+        return "FAIL", "%d of %d hook group(s) missing from %s (%s) — /psxdecomp:upgrade apply adds them" % (
+            len(missing), want, common.SETTINGS, ", ".join(sorted({common.hook_kind(g) for _, g in missing})))
+    if errs:
+        return "FAIL", "%s: %s" % (floor.GUARD, "; ".join(errs[:3]))
+    if text is None:
+        return "WARN", "no %s: the guard hook allows every call — /psxdecomp:upgrade apply writes the default rules" % floor.GUARD
+    return "OK", "all %d hook group(s) are in %s; %s holds %d rule(s)" % (
+        want, common.SETTINGS, floor.GUARD, len(floor.parse_guard(text)))
 
 
 def split_guard_row(repo: pathlib.Path) -> tuple[str, str] | None:
@@ -995,9 +1018,29 @@ def self_test_deny() -> bool:
         allowed = deny_row(repo)
         (repo / publish.PA3_REL).write_text(json.dumps({"files": {common.SETTINGS: "h"}}))
         managed = deny_row(repo)
+        n = len(json.loads(common.read(common.PROFILE_DENY))["permissions"]["deny"])
+        (repo / publish.PA3_REL).unlink()
+        (repo / common.SETTINGS).write_text(common.settings_due(repo))        # the hook groups: the guard row
+        bare = guard_row(repo)
+        (repo / "config").mkdir()
+        (repo / floor.GUARD).write_text(common.read(common.PROFILE_GUARD))
+        good = guard_row(repo)
+        (repo / floor.GUARD).write_text("deny\tsomething\n")
+        bad = guard_row(repo)
+        conf = json.loads((repo / common.SETTINGS).read_text())
+        conf["hooks"].pop("PreToolUse")
+        (repo / common.SETTINGS).write_text(json.dumps(conf))
+        gone = guard_row(repo)
+        (repo / publish.PA3_REL).write_text(json.dumps({"files": {common.SETTINGS: "h"}}))
+        theirs = guard_row(repo)
     print("  deny: all %s; one removed %s; PA3-managed %s" % (full[0], short[0], managed[0]))
-    return (full[0] == "OK" and short[0] == "FAIL" and "1 of 18" in short[1] and managed[0] == "WARN"
-            and allowed[0] == "FAIL" and "18 of 18" in allowed[1])
+    print("  guard: no rules file %s; the default rules %s; a bad line %s; no guard group %s; PA3-managed %s" % (
+        bare[0], good[0], bad[0], gone[0], theirs[0]))
+    ok = (bare[0] == "WARN" and good[0] == "OK" and "holds 5 rule(s)" in good[1] and bad[0] == "FAIL"
+          and "line 1" in bad[1] and gone[0] == "FAIL" and "1 of 2" in gone[1] and "guard-hook" in gone[1]
+          and theirs[0] == "WARN")
+    return (ok and full[0] == "OK" and short[0] == "FAIL" and "1 of %d" % n in short[1] and managed[0] == "WARN"
+            and allowed[0] == "FAIL" and "%d of %d" % (n, n) in allowed[1] and n == 23)
 
 
 GOOD_WORKFLOW = """name: progress

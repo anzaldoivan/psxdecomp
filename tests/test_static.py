@@ -277,7 +277,7 @@ def test_no_copied_prose():
 
 # The files S10 or upgrade copies into a game (the README template through S8): held at no finding.
 GAME_FILES = ("profiles/psx/hosts/", "profiles/psx/split-mode.md", "profiles/psx/README.md.template",
-              "profiles/psx/private/README.md", "profiles/psx/rules/")
+              "profiles/psx/private/README.md", "profiles/psx/rules/", "profiles/psx/floor.md")
 
 
 def test_style_ratchet():
@@ -521,7 +521,8 @@ def test_game_files_cite_no_foreign_ids():
     rules/G41.md by id, and an id here would answer for it. The -private README cites only the game's G12 and G18."""
     ids = re.compile(r"(?<![A-Za-z0-9_-])[GDKPRT]\d+\b")
     for rel in ("scripts/publish.py", "scripts/floor.py", "profiles/psx/build.yml", "profiles/psx/image/Dockerfile",
-                "profiles/psx/psxdecomp-readme.yml", "profiles/psx/split-mode.md"):
+                "profiles/psx/psxdecomp-readme.yml", "profiles/psx/split-mode.md", "profiles/psx/floor.md",
+                "profiles/psx/guard.tsv"):
         found = ["%d: %s" % (i, l.strip()) for i, l in enumerate((ROOT / rel).read_text().splitlines(), 1) if ids.search(l)]
         assert not found, (rel, found)
     assert set(ids.findall((ROOT / "profiles/psx/private/README.md").read_text())) <= {"G12", "G18"}
@@ -626,11 +627,11 @@ def test_style_hook_output(tmp_path):
 
 def test_style_profile_files():
     """profiles/psx/hooks.json holds one PostToolUse group whose command runs the vendored `style --hook` with
-    `python3` from the project directory. profiles/psx/rules/STE1.md is a rule body with no title line: the game's
+    `python3` from the project directory (the PreToolUse group is the guard's: test_guard_profile_files). profiles/psx/rules/STE1.md is a rule body with no title line: the game's
     rules_add.py writes the title. It says what it is (in the style of ASD-STE100) and claims no compliance."""
     conf = json.loads((ROOT / "profiles/psx/hooks.json").read_text())
     assert conf == json.loads(common.read(common.PROFILE_HOOKS)) and list(conf) == ["hooks"], list(conf)
-    assert list(conf["hooks"]) == ["PostToolUse"] and len(conf["hooks"]["PostToolUse"]) == 1, conf["hooks"]
+    assert list(conf["hooks"]) == ["PostToolUse", "PreToolUse"] and len(conf["hooks"]["PostToolUse"]) == 1, conf["hooks"]
     group = conf["hooks"]["PostToolUse"][0]
     assert set(group["matcher"].split("|")) == {"Write", "Edit", "Bash"}, group["matcher"]
     assert [h["type"] for h in group["hooks"]] == ["command"], group["hooks"]
@@ -811,3 +812,43 @@ def test_delivery_table():
     for key, (path, _) in upgrade.OWN_DETECT.items():
         assert "| `%s` | `%s` |" % (key, path) in harvest, key
     assert set(upgrade.OWN_KEYS) - set(upgrade.OWN_DETECT) == {"gate"} and '`upgrade own gate "<command>"`' in harvest
+
+
+def test_guard_profile_files():
+    """The guard as the profile ships it. hooks.json: one PreToolUse group for Bash, Edit and Write whose command runs
+    the vendored `guard --hook` and ends in `|| exit 0`, so a hook that cannot start never blocks a call. guard.tsv:
+    the header line, five default `path` rules that parse, two examples as comments. deny.json: one `Edit(/...)` rule
+    per default path, in Claude Code's rule syntax (a leading `/` is the project root)."""
+    conf = json.loads((ROOT / "profiles/psx/hooks.json").read_text())["hooks"]["PreToolUse"]
+    assert len(conf) == 1 and conf[0]["matcher"] == "Bash|Edit|Write" and len(conf[0]["hooks"]) == 1, conf
+    cmd = conf[0]["hooks"][0]["command"]
+    assert cmd == 'python3 "$CLAUDE_PROJECT_DIR/%s" guard --hook || exit 0' % floor.VENDORED, cmd
+    assert common.hook_kind(conf[0]) == "guard-hook"
+    post = json.loads((ROOT / "profiles/psx/hooks.json").read_text())["hooks"]["PostToolUse"][0]
+    assert common.hook_kind(post) == "style-hook"
+    text = common.PROFILE_GUARD.read_text()
+    rules = floor.parse_guard(text)
+    assert floor.guard_errors(text) == [] and "\t".join(floor.GUARD_COLUMNS) in text.splitlines()
+    assert [r[:2] for r in rules] == [("deny", "path")] * 5 and all(r[3] for r in rules), rules
+    assert len([l for l in text.splitlines() if l.startswith("# deny\tbash\t")]) == 2
+    paths = [r[2] for r in rules]
+    assert paths == ["asm/", "config/check.*.sha", "config/medium.sha1", floor.BASELINE, publish.STYLE_RATCHET_REL]
+    deny = json.loads((ROOT / "profiles/psx/deny.json").read_text())["permissions"]["deny"]
+    edits = [r for r in deny if r.startswith("Edit(")]
+    assert edits == ["Edit(/%s)" % (p + "**" if p.endswith("/") else p) for p in paths], edits
+
+
+def test_floor_doc_names_the_ladder():
+    """profiles/psx/floor.md is the one home of the numbering: its table holds floor.LADDER row for row (the id 1.n,
+    the kit's name, the words the milestone keeps), it starts with "After the bootstrap", and it documents every plan
+    check and every guard column."""
+    doc = (ROOT / "profiles/psx/floor.md").read_text()
+    for n, name, _, must in floor.LADDER:
+        assert "| 1.%d | %s | %s|" % (n, name, "`%s` " % must if must else "") in doc, n
+    heads = [l[3:] for l in doc.splitlines() if l.startswith("## ")]
+    assert heads[:2] == ["After the bootstrap", "Numbering"], heads
+    for check in ("grammar", "ladder", "numbering", "frozen", "criteria", "paths", "markers"):
+        assert "| `%s` | " % check in doc and "  %s " % check in floor.__doc__, check
+    assert all("| `%s` |" % c in doc for c in floor.GUARD_COLUMNS)
+    import upgrade
+    assert all("| `%s` |" % k in doc for k in upgrade.OWN_KEYS)

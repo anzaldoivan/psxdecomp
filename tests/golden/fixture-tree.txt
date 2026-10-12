@@ -42,6 +42,7 @@ README.md
 config/decomp-hooks.snippet.json
 config/firewall-fixture.sha1
 config/firewall.txt
+config/guard.tsv
 config/mcp.json.template
 config/psxdecomp.profile.toml
 config/psxdecomp.toml
@@ -64,6 +65,7 @@ docs/ops/INDEX.md
 docs/ops/decomp-environment.md
 docs/ops/disassembler-mcp.md
 docs/ops/host-recipe.md
+docs/ops/psxdecomp-floor.md
 docs/ops/refs.md
 docs/project-architect.md
 docs/retired/HOW_WE_WORK.inputs.md
@@ -219,6 +221,7 @@ tools/outline.py
 tools/pa3_update.py
 tools/phaseend_index.py
 tools/plan_edit.py
+tools/psxd_floor.py
 tools/psxd_publish.py
 tools/research_add.py
 tools/rules_add.py

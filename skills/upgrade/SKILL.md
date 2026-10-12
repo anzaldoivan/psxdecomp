@@ -13,7 +13,7 @@ psxrecomp's migrate shape: **audit → plan → apply --dry-run → apply**. `PS
 2. `"$PSXD" upgrade plan --repo <repo>` — show the numbered actions. `[psxdecomp]` actions are applied by the script;
    `[manual]` ones (a PA3 or kit update, a pin to decide) are the developer's: give the command, never run it. In
    split mode the script also owns `docs/ops/psxdecomp-split.md`, the developer's release card (ship, the push gate,
-   contributor PRs); it rewrites that file whenever it differs. The writing rule of the public files is four more
+   contributor PRs). The writing rule of the public files is four more
    actions: `ai-policy`, `ste-rule`, `style-hook` and `style-ratchet`. `style-public` is always `[manual]`: the
    developer adds `config/style-ratchet.txt` to `config/public-paths.txt`.
 3. `"$PSXD" upgrade apply --dry-run --repo <repo>` — the exact writes.
