@@ -1,6 +1,6 @@
 ---
 name: scout-web
-description: Researches ONE prior-art question about a PS1 game for psxdecomp's S3 (existing decomps, sibling toolchains, symbol/RAM maps, ports, versions, SDK-era compiler triples) and writes a dated report. Spawned by /psxdecomp:new only.
+description: Researches ONE prior-art question about a PS1 game for psxdecomp's S3 (existing decomps, sibling toolchains, symbol/RAM maps, ports, versions, SDK-era compiler triples, name sources) and writes a dated report. Spawned by /psxdecomp:new only.
 tools: WebSearch, WebFetch, Write
 ---
 

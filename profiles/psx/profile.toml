@@ -47,5 +47,6 @@ search_seeds = [
   "\"{title}\" tcrf prototype",
   "\"{title}\" randomizer OR archipelago OR practice hack",
   "site:decomp.dev \"{title}\"",
+  "\"{title}\" wiki OR manual OR \"strategy guide\" enemies OR items OR stages",
 ]
 sibling_hint = "same developer, publisher or engine: sibling decomps pin the toolchain lead (mmx4 for X6; Xenogears, FF7, Vagrant Story for BFM; scope: mmx6 and BFM-decomp, 2026-10-01)"

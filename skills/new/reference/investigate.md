@@ -3,7 +3,7 @@
 Inputs: the title, region/version and serial (from `.run/bootstrap/interview.json` or `answers.txt`, and
 `medium.json` when S2 ran). Seeds: `profiles/psx/profile.toml [research].search_seeds` (fill `{title}`, `{serial}`).
 
-## The six questions — one `scout-web` agent each, launched in parallel in ONE message
+## The seven questions — one `scout-web` agent each, launched in parallel in ONE message
 
 1. **existing** — an existing decompilation or disassembly of this game (GitHub, decomp.dev, forums). Before the
    scouts, run `"$PSXD" decompdev lookup --title "<title>" --serial <serial>`. Then run it without `--serial`. Hand
@@ -33,6 +33,12 @@ Inputs: the title, region/version and serial (from `.run/bootstrap/interview.jso
 6. **sdk** — for the detected SDK stamp (`medium.json psyq.version`). Start from its rows in
    `profiles/psx/psyq.toml`. Then find the matching triples (compiler + aspsx + flags) it lacks, and where each was
    proven.
+7. **names** — where the game's own words come from. Search for a game wiki, the manual and a strategy guide.
+   Search for symbols in another release too: a debug build, a prototype, another platform. Rules for a lead:
+   - A wiki or a manual becomes a `link` row. A symbol file becomes a `facts` row with `tier = "optional"`.
+   - Each row has `topics = ["names"]` and a `covers` value that names the release it speaks for.
+   - A source of names proves no address and no behaviour. It gives the word for a thing that the bytes prove.
+   - A name from another release is a lead until an address or a string of this release agrees with it.
 
 **GitHub search.** Right after the decomp.dev lookup, run
 `"$PSXD" ghsearch --title "<title>" --serial "<serial>" --exe <TARGET_BINARY>`. Add `--exclude "<value>"` (quoted)

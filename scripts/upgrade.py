@@ -213,6 +213,15 @@ def delivered_due(repo: pathlib.Path, take=()) -> dict[str, str]:
     return out
 
 
+def refs_meta_due(have: dict, names: set) -> tuple[list[dict], list[dict]]:
+    """(the [[authority]] tables, the [[trap]] tables) of the profile that a game's refs.toml lacks: an authority by
+    its topic, and only when the game holds every row it orders; a trap by its `what`. Add-only."""
+    prof = fetch_refs.load_doc(PROFILE_REFS)
+    topics, whats = {a.get("topic") for a in have["authority"]}, {t.get("what") for t in have["traps"]}
+    return ([a for a in prof["authority"] if a["topic"] not in topics and set(a["order"]) <= names],
+            [t for t in prof["traps"] if t["what"] not in whats])
+
+
 def ledgers_due(repo: pathlib.Path) -> list[str]:
     """The ledgers (config/names.tsv, config/asm-evidence.tsv) that are absent and that no [own] key replaces."""
     own = own_keys(repo)
@@ -286,10 +295,11 @@ def plan(repo: pathlib.Path) -> list[dict]:
         new = sorted(set(default) - set(mine))
         if new:
             add("psxdecomp", "refs: add rows %s" % ", ".join(new), "the profile gained rows", "refs-rows")
-        doc = fetch_refs.load_doc(refs)
-        if not doc["authority"] or not doc["traps"]:
-            add("psxdecomp", "refs: add the profile's [[authority]] and [[trap]] tables", "which source wins per topic, "
-                "and the contradictions already paid for", "refs-meta")
+        auth, traps = refs_meta_due(fetch_refs.load_doc(refs), set(mine) | set(new))
+        if auth or traps:
+            add("psxdecomp", "refs: add %d [[authority]] and %d [[trap]] table(s) of the profile (add-only: a topic or a "
+                "trap this file does not hold)" % (len(auth), len(traps)), "which source wins per topic, and the "
+                "contradictions already paid for", "refs-meta")
         gone = sorted(set(mine) - set(default))
         if gone:
             add("manual", "refs: rows not in the profile any more: %s (dropped by the curation audit, or your own "
@@ -548,11 +558,9 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
         if "refs-rows" in acts:
             extra += [toml_table("ref", r) for r in prof["rows"] if r["name"] not in mine]
         if "refs-meta" in acts:
-            have = fetch_refs.load_doc(repo / "config/refs.toml")
-            if not have["authority"]:
-                extra += [toml_table("authority", a) for a in prof["authority"]]
-            if not have["traps"]:
-                extra += [toml_table("trap", t) for t in prof["traps"]]
+            auth, traps = refs_meta_due(fetch_refs.load_doc(repo / "config/refs.toml"), mine | {r["name"] for r in prof["rows"]}
+                                        if "refs-rows" in acts else mine)
+            extra += [toml_table("authority", a) for a in auth] + [toml_table("trap", t) for t in traps]
         w("config/refs.toml", cur.rstrip("\n") + "\n\n# ---- added by /psxdecomp:upgrade %s ----\n" % common.today()
           + "\n".join(extra))
     for d in owned:
@@ -1068,6 +1076,16 @@ def self_test() -> int:
         apply(repo, False, False)
         doc = fetch_refs.load_doc(repo / "config/refs.toml")
         ok &= fetch_refs.lint_doc(doc) == [] and bool(doc["authority"]) and bool(doc["traps"])
+        text = (repo / "config/refs.toml").read_text()                    # one trap and one topic gone: added alone
+        gone_trap, gone_topic = doc["traps"][0]["what"], doc["authority"][0]["topic"]
+        (repo / "config/refs.toml").write_text(text.replace(json.dumps(gone_trap, ensure_ascii=False), '"an older wording"')
+                                               .replace(json.dumps(gone_topic, ensure_ascii=False), '"an older topic"'))
+        act = next(x for x in plan(repo) if x["key"] == "refs-meta")
+        ok &= "add 1 [[authority]] and 1 [[trap]] table(s)" in act["what"]
+        apply(repo, False, False)
+        doc = fetch_refs.load_doc(repo / "config/refs.toml")
+        ok &= [t["what"] for t in doc["traps"]].count(gone_trap) == 1 and "an older wording" in (repo / "config/refs.toml").read_text()
+        ok &= fetch_refs.lint_doc(doc) == [] and "refs-meta" not in {x["key"] for x in plan(repo)}
         ok &= {x["key"] for x in plan(repo)} == {"refs-gone", "pa3", "python", "kit", "record-psyq"}
     return common.self_test_banner("upgrade", ok)
 

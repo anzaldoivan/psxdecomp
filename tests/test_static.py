@@ -935,3 +935,37 @@ def test_report_honesty(tmp_path):
     units["units"][0]["metadata"]["source_path"] = "asm/main/boot.s"
     r = validate(units)
     assert r.returncode == 1 and "REPORT ERROR units[0] (main/boot): its source 'asm/main/boot.s' is not a C file" in r.stdout
+
+
+def test_readme_workflow_names_the_ladder():
+    """The README's Workflow section follows the kit's eleven phases: six stages whose ranges cover 1.0 to 1.10 with no
+    gap, the link to the one home of the numbering, and the sentence that keeps matched apart from finished."""
+    readme = (ROOT / "README.md").read_text()
+    section = readme.split("\n## Workflow\n", 1)[1].split("\n## ", 1)[0]
+    stages = re.findall(r"(?m)^\d\. \*\*(\w+) \(1\.(\d+)(?: to 1\.(\d+))?\)\.\*\*", section)
+    assert [s[0] for s in stages] == ["Foundation", "Compiler", "Instruments", "Campaign", "Publication", "Readability"]
+    covered = [n for _, a, b in stages for n in range(int(a), int(b or a) + 1)]
+    assert covered == [n for n, _, _, _ in floor.LADDER], covered
+    assert "(profiles/psx/floor.md#numbering)" in section and "## Numbering" in (ROOT / "profiles/psx/floor.md").read_text()
+    assert "A matched function is not a finished one." in section and "```mermaid" in section
+
+
+def test_exemplar_credit():
+    """The three exemplar projects are credited where a reader looks: the README's Thanks, a row of the ecosystem
+    ledger with the commit and the licence read, and a `link` row of the profile's reference library. The reuse rules
+    say what a repository without a licence gives."""
+    readme = (ROOT / "README.md").read_text().split("\n## Thanks\n", 1)[1].split("\n## ", 1)[0]
+    eco = (ROOT / "docs/ECOSYSTEM.md").read_text()
+    rows = {r["name"]: r for r in fetch_refs.load_rows(ROOT / "profiles/psx/refs.toml")}
+    for owner, repo, licence in (("khasinski", "parasite-eve-decomp", "none selected"),
+                                 ("sushi-shi", "kings-field-decomp", "CC0-1.0"),
+                                 ("cdlewis", "snowboardkids2-decomp", "none")):
+        url = "https://github.com/%s/%s" % (owner, repo)
+        assert "(%s) by %s" % (url, owner) in readme or "(%s) and its sibling projects by %s" % (url, owner) in readme
+        line = next(l for l in eco.splitlines() if l.startswith("| [%s/%s](%s) |" % (owner, repo, url)))
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        assert re.fullmatch(r"`[0-9a-f]{7}`", cells[1]) and cells[2] == "2026-10-12" and cells[4].startswith(licence), cells
+        row = rows[repo]
+        assert row["class"] == "link" and row["url"] == url and "exemplar" in row["topics"], row
+        assert cells[1].strip("`") in row["licence"] and "psxdecomp 0.6.0" in row["used_by"], row
+    assert "gives ideas only" in eco.split("## Rules for reuse", 1)[1]

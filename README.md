@@ -42,6 +42,62 @@ Each backtest replays a real bootstrap with its community leads blanked; the res
   `refs/`, which git ignores and agents can still search, with a committed index by licence class.
 - **Handoff.** A health check and a bootstrap record. The next session opens on Project Architect's planner.
 
+## Workflow
+
+A matching decompilation has three parts. psxdecomp does part 1 one time. Project Architect and the kit do parts 2
+and 3 in the game repository, one phase after the other.
+
+```mermaid
+flowchart TD
+    dump(["Your disc dump"]) --> b1
+
+    subgraph boot["Part 1: Bootstrap (psxdecomp, one time)"]
+        b1["Identify the disc and research prior work"]
+        b2{{"You confirm the report"}}
+        b3["Create the repository: the firewall first, then Project Architect"]
+        b4["Install the kit and the reference library"]
+        b1 --> b2 --> b3 --> b4
+    end
+
+    subgraph plan["Part 2: Plan (Project Architect)"]
+        p1["The planner drafts the roadmap: phases and milestones"]
+        p2["The planner drafts the tasks of one phase"]
+        p3{{"You approve the plan"}}
+        p1 --> p2 --> p3
+    end
+
+    subgraph work["Part 3: Work (one phase)"]
+        w1["One expert agent does each task"]
+        w2["Coder agents edit, build and test"]
+        w3{{"A check proves the milestone"}}
+        w1 --> w2 --> w3
+    end
+
+    b4 --> p1
+    p3 --> w1
+    w3 -- "next phase" --> p2
+    w3 -- "last phase" --> done(["A byte-identical build from readable C"])
+```
+
+The six-sided boxes are the gates. Agents stop there and continue only after your decision or a passed check.
+
+The roadmap of each game is its own, but it follows the kit's ladder of eleven phases. A game numbers them `1.0` to
+`1.10` ([the numbering](profiles/psx/floor.md#numbering)). psxdecomp checks that the plan keeps every phase.
+
+1. **Foundation (1.0 to 1.3).** Prove the firewall. Extract the disc with one command. Find the load addresses.
+   Split the binaries into assembly and make the build byte-identical.
+2. **Compiler (1.4).** Find the one compiler and assembler that give the same bytes for a small set of functions.
+3. **Instruments (1.5 to 1.7).** Count the functions. Build the tools that find duplicates, share types and explain
+   compiler output.
+4. **Campaign (1.8).** Agents write C for the functions in groups. A function stays in the build only if the bytes
+   are the same.
+5. **Publication (1.9).** Prove the build from a fresh clone. Publish the progress report.
+6. **Readability (1.10).** Remove what matching left behind: forced registers, raw offsets, names with no evidence.
+
+A matched function is not a finished one. From the first C file, psxdecomp counts what each file still needs
+([the floor](profiles/psx/floor.md)). You make the decisions and you push the commits. The agents do the work
+between the gates.
+
 ## Getting started
 
 ### Requirements
@@ -147,6 +203,16 @@ psxdecomp builds on:
   [psy-q-decomp](https://github.com/sozud/psy-q-decomp), [sotn-decomp](https://github.com/Xeeynamo/sotn-decomp),
   [PCSX-Redux](https://github.com/grumpycoders/pcsx-redux), [psx-spx](https://github.com/psx-spx/psx-spx.github.io),
   [decomp.me](https://decomp.me), [decomp.dev](https://decomp.dev) and [Redump](http://redump.org/).
+
+- Three projects whose practice shaped the roadmap and readability checks of version 0.6.0. psxdecomp took ideas
+  and wrote each file fresh:
+  - [parasite-eve-decomp](https://github.com/khasinski/parasite-eve-decomp) by khasinski. A debt baseline that must
+    equal the tree, and one `verify` gate. An evidence record for each assembly function. A pinned toolchain that
+    refuses a patched checkout.
+  - [kings-field-decomp](https://github.com/sushi-shi/kings-field-decomp) and its sibling projects by sushi-shi. The
+    naming ledger with evidence and a decision. The bank ledger, the two budgets and the triage order.
+  - [snowboardkids2-decomp](https://github.com/cdlewis/snowboardkids2-decomp) by cdlewis: hooks that refuse an edit
+    of assembly and hash files, and a fixed report when an agent gives up on a function.
 
 [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md) records the commit each was checked at.
 

@@ -233,6 +233,35 @@ topics   = ["gcc-patterns", "codegen-idioms", "platform-notes"]
 covers   = "technique leads; its PSX gcc 'generally 2.6-2.8' is contradicted by PsyQ 4.6 shipping gcc 2.95.2 (psyq.toml, seen 2026-10-01)"
 used_by  = "BFM docs/matching-cookbook.md 28a (GCC patterns, PS1-applicable subset; 7 citations)"
 
+# ---- exemplar projects: how other agent-driven decompilations keep "matched" apart from "finished". Links only:
+# read them for practice, copy nothing (the licence of each row says what may be adapted) -------------------------
+[[ref]]
+name     = "parasite-eve-decomp"
+url      = "https://github.com/khasinski/parasite-eve-decomp"
+class    = "link"
+licence  = "none selected (its LICENSE.md, read 2026-10-12 at commit a357ac0c): ideas only, no text and no code"
+topics   = ["exemplar", "debt-baseline", "verify-gate", "asm-evidence", "pinned-toolchain"]
+covers   = "practice on a PS1 project (seen 2026-10-12): debt baselines that must equal the tree, one verify gate, an evidence record for each assembly function, a toolchain that refuses a patched checkout"
+used_by  = "psxdecomp 0.6.0 (2026-10-12): the equal-baseline rule of the debt check, the `make verify` convention, the dirty-checkout check of the toolchain pins"
+
+[[ref]]
+name     = "kings-field-decomp"
+url      = "https://github.com/sushi-shi/kings-field-decomp"
+class    = "link"
+licence  = "CC0-1.0 (read 2026-10-12 at commit e4930cd2; kings-field-2-decomp 7a8e5f04 and homm2-decomp 716e50b3 are CC0-1.0 too)"
+topics   = ["exemplar", "names-ledger", "bank-ledger", "budgets", "triage-order"]
+covers   = "practice on two PS1 projects and one PC project of the same author (seen 2026-10-12): a naming-review ledger with evidence and a decision, a bank with a high-water mark, a time and an attempt budget for each function"
+used_by  = "psxdecomp 0.6.0 (2026-10-12): the columns of config/names.tsv, the budgets and the triage order of the campaign templates"
+
+[[ref]]
+name     = "snowboardkids2-decomp"
+url      = "https://github.com/cdlewis/snowboardkids2-decomp"
+class    = "link"
+licence  = "none (no licence file, read 2026-10-12 at commit 3b1bd5db): ideas only, no text and no code"
+topics   = ["exemplar", "guard-hooks", "give-up-report", "agent-workflow"]
+covers   = "practice on an N64 project (seen 2026-10-12): hooks that refuse an edit of assembly and hash files, a fixed report when an agent gives up on a function"
+used_by  = "psxdecomp 0.6.0 (2026-10-12): the guard hook and its default rules, the give-up report of the campaign templates"
+
 # ---- which source wins, per topic ---------------------------------------------------------------------------------
 
 [[authority]]
@@ -267,6 +296,11 @@ order = ["psyq-sdk", "psy-q-decomp", "sotn-decomp"]
 rule  = "the byo SDK of the stamped version wins; psy-q-decomp only at that version; sotn's psxsdk is a fallback with non-Sony extensions"
 
 [[authority]]
+topic = "the exact name of a PsyQ library function"
+order = ["ghidra-psx-ldr", "psyq-sdk", "psy-q-decomp"]
+rule  = "take the name as the signature or the SDK header of the linked version spells it; never invent, translate or shorten an SDK name"
+
+[[authority]]
 topic = "hardware"
 order = ["psx-spx"]
 rule  = "psx-spx over any SDK header comment"
@@ -292,6 +326,11 @@ do       = "gcc-2.7.2-src pins the /old-gnu/ tarball by sha256"
 what     = "sotn-decomp's include/psxsdk/libgte.h adds 7 gte_* macros Sony's inline_c.h does not have"
 evidence = "BFM Phase 36 log"
 do       = "treat sotn's psxsdk headers as a project's, not Sony's; check the byo SDK"
+
+[[trap]]
+what     = "a byte-identical match proves what the code does, not what it is called: a model named a 5-to-1 autowin rule as the weaker side fleeing"
+evidence = "the author of homm2-decomp, in a public discussion (read 2026-10-12): the variables matched and their names contradicted a game rule"
+do       = "record every name with its evidence in config/names.tsv; check a game term against a source in this file before it is accepted"
 
 [[trap]]
 what     = "a build rule's name is not its toolchain: mmx4's cc1_263/aspsx_263 rules run gcc 2.7.2 and maspsx 2.56"
