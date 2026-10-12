@@ -341,13 +341,14 @@ def self_test_card(repo: pathlib.Path) -> bool:
     done = how.read_text()
     ok = done.count(line) == 1 and "card-conv" not in {x["key"] for x in plan(repo)}
     bare = done.replace(line + "\n", "")
-    how.write_text(bare + "x" * (7000 - len(bare) - len(line)) + "\n")       # two characters short of the room the line needs
+    # two characters short of the room the line needs; the filler is not ASCII: PA3's cap counts characters, not bytes
+    how.write_text(bare + "\u00e9" * (7000 - len(bare) - len(line)) + "\n", encoding="utf-8")
     act = next(x for x in plan(repo) if x["key"] == "card-conv")
     ok &= act["owner"] == "manual" and "free 2 character(s)" in act["what"] and apply(repo, True, False) == []
-    how.write_text(how.read_text().replace("xx\n", "\n"))                     # two freed: it fits, to the character
+    how.write_text(common.read(how).replace("\u00e9\u00e9\n", "\n"), encoding="utf-8")     # two freed: it fits, to the character
     ok &= next(x for x in plan(repo) if x["key"] == "card-conv")["owner"] == "psxdecomp"
     out = apply(repo, False, False)
-    ok &= len(how.read_text()) == 7000 and line in how.read_text() and "changed %s" % doctor.CARD in out
+    ok &= len(common.read(how)) == 7000 and line in common.read(how) and "changed %s" % doctor.CARD in out
     ok &= written_paths(out) == [doctor.CARD] and written_paths(["would be changed x", "card check rc 0: []"]) == []
     how.write_text(done.replace(line, "%s an older pointer." % install.CONV_MARK))
     ok &= next(x for x in plan(repo) if x["key"] == "card-conv")["owner"] == "psxdecomp"
@@ -383,8 +384,9 @@ def self_test() -> int:
         before = sorted(p.name for p in repo.rglob("*") if ".git" not in p.parts)
         dry = apply(repo, True, False)
         ok &= sorted(p.name for p in repo.rglob("*") if ".git" not in p.parts) == before and len(dry) >= 4
-        apply(repo, False, False)
+        first = apply(repo, False, False)
         ok &= (repo / "config/refs.toml").is_file() and (repo / "docs/ops/refs.md").is_file()
+        ok &= "docs/ops/refs.md" in written_paths(first)                  # a new index is a path to commit
         ok &= install.REFS_RULE in (repo / "HOW_WE_WORK.md").read_text()
         ok &= self_test_card(repo)
         keys2 = {x["key"] for x in plan(repo)}

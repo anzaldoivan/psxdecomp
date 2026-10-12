@@ -859,6 +859,7 @@ def self_test() -> int:
         (repo / ".claude").mkdir()
         (repo / ".claude" / "pa.json").write_text('{"card": {"max_chars": 8000}}')
         raised = card_row(repo)
+        ok &= [r[:2] for r in check(repo, only=["card"], offline=True)] == [("card", "OK")]     # the row is wired in
         print("  card: at the cap %s; one over %s; PA3's own cap %s" % (full[0], over[1][:44], raised[1][:38]))
         ok &= full == ("OK", "HOW_WE_WORK.md 7000 of 7000 characters (0 free)") and over[0] == "WARN" and \
             "free 1 " in over[1] and raised[0] == "OK" and "7001 of 8000" in raised[1]
