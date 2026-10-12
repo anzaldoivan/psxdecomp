@@ -1,7 +1,7 @@
 # S1 — the interview
 
 AskUserQuestion, **rounds of at most 4 questions**, recommended option first. If AskUserQuestion is not available
-(a headless or eval run), put the round's questions in your reply as a numbered list with the options, and stop there:
+(a headless or eval run), put the round's questions in your reply as a numbered list with the options. Stop there:
 the developer answers and resumes with `/psxdecomp:new --resume`. Ask only what the probe and the research
 cannot answer. Write the result to `.run/bootstrap/interview.json` (keys below), then
 `"$PSXD" install mark S1 --target . --note "<title>, <region/version>, dump given|not given"`.
@@ -20,12 +20,13 @@ cannot answer. Write the result to `.run/bootstrap/interview.json` (keys below),
 
 1. **Goals** — default: "Every code binary on the disc rebuilt byte-identical from readable, evidenced C, with the hash
    check inside the build, reproducible by anyone with their own dump from the README alone."
-2. **Licence** for the project's own tools and docs, plus the statement over the decompiled source — options:
-   `MIT` (recommended for a new project), `AGPL-3.0` (needed to adapt AGPL sources such as sotn-decomp or mmx4),
-   `GPL-3.0`, `Other`. Name the licence-compatibility consequence for any `copyleft` lead S3 may find.
+2. **Licence** for the project's own tools and docs, plus the statement over the decompiled source. Options:
+   `MIT` (recommended for a new project), `AGPL-3.0`, `GPL-3.0`, `Other`.
+   `AGPL-3.0` is needed to adapt AGPL sources such as sotn-decomp or mmx4.
+   Name the licence-compatibility consequence for any `copyleft` lead S3 may find.
 3. **Visibility** on day one — `private` / `public` (the firewall applies either way).
 4. **AI disclosure** — default: psxdecomp's AI policy, verbatim (`"$PSXD" answers policy` prints it). S8 puts it in
-   the game README as the AI policy block, in place of the kit's disclosure paragraph; a sentence of the developer's
+   the game README as the AI policy block, in place of the kit's disclosure paragraph. A sentence of the developer's
    own stays as written, below the block.
 
 No PsyQ question here: S4 asks it, once S2 has read the version the game links (`reference/gate.md`).
