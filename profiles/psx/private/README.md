@@ -1,14 +1,14 @@
 # {{GAME}}-private
 
 The only place the game's files exist outside the developer's machine. It is a split-mode repository (psxdecomp
-`docs/PUBLISHING.md`, Split mode). The public `{{GAME}}` and the private `{{GAME}}-dev` never hold a game byte (G12);
-this repository holds the files the public CI needs, and nothing else.
+`docs/PUBLISHING.md`, Split mode). The public `{{GAME}}` and the private `{{GAME}}-dev` never hold a game byte (G12).
+This repository holds the files the public CI needs, and nothing else.
 
 ## What it holds
 
 | Path | What | Changes when |
 |---|---|---|
-| `inputs/` | The files the build reads, at the repository-relative paths the game's Makefile expects (mirrored: `inputs/disks/us/SLUS_000.00` lands at `disks/us/SLUS_000.00`) | never (the disc doesn't change) |
+| `inputs/` | The files the build reads, at the repository-relative paths the game's Makefile expects (mirrored: `inputs/disks/us/SLUS_000.00` lands at `disks/us/SLUS_000.00`) | never (the disc does not change) |
 | `check/<EXE>.sha1` | The canonical hash list per executable, `sha1sum` format, repository-relative paths. CI checks the build against this copy, never a PR's | never, unless an executable is added |
 | `backup/` | Optional: the reverse-engineering database export (G18's private archive) | when the developer takes a backup |
 

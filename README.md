@@ -14,7 +14,7 @@ is a repository ready for its first planning phase, and it keeps working without
 
 <!-- psxdecomp: ai-policy -->
 > [!IMPORTANT]
-> **AI policy:** LLMs produce negligible decompilation results without good guidance. Investigate and familiarize yourself with the console's architecture and the game you are decompiling, and always use your own judgment. Humans drive the decisions; AI reads and writes the code.
+> **AI policy:** LLMs produce negligible decompilation results without good guidance. Investigate and familiarize yourself with the console's architecture and the game you are decompiling, and always use your own judgment. Humans drive the decisions. AI reads and writes the code.
 
 PlayStation 1 only, at version 0.5.0. Other consoles are planned as profiles ([docs/PROFILES.md](docs/PROFILES.md)).
 

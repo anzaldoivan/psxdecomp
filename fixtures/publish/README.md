@@ -7,14 +7,14 @@ like a real repository's and hashes that belong to no disc. psxdecomp's tier 0 l
 
 <!-- psxdecomp: ai-policy -->
 > [!IMPORTANT]
-> **AI policy:** LLMs produce negligible decompilation results without good guidance. Investigate and familiarize yourself with the console's architecture and the game you are decompiling, and always use your own judgment. Humans drive the decisions; AI reads and writes the code.
+> **AI policy:** LLMs produce negligible decompilation results without good guidance. Investigate and familiarize yourself with the console's architecture and the game you are decompiling, and always use your own judgment. Humans drive the decisions. AI reads and writes the code.
 
 <!-- psxdecomp:disc:begin -->
 | Disc | Serial | Executable | SHA-1 of the data track |
 |---|---|---|---|
 | Disc 1 | PSXD-00001 | `PSXD_000.01` | `0123456789abcdef0123456789abcdef01234567` |
 
-The target `PSXD_000.01` has SHA-1 `89abcdef0123456789abcdef0123456789abcdef` (`config/check.PSXD_000.01.sha`); every build checks its rebuild against it.
+The target `PSXD_000.01` has SHA-1 `89abcdef0123456789abcdef0123456789abcdef` (`config/check.PSXD_000.01.sha`). Every build checks its rebuild against it.
 <!-- psxdecomp:disc:end -->
 
 > [!IMPORTANT]

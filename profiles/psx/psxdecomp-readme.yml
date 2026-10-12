@@ -1,6 +1,8 @@
-# .github/workflows/psxdecomp-readme.yml — the README standard and the frozen category ids (written by psxdecomp's S10
-# and /psxdecomp:upgrade, which own this file; the standard is psxdecomp's docs/PUBLISHING.md). No game data needed:
-# it reads README.md, config/categories.tsv, config/discs.tsv and the tracked hash records.
+# .github/workflows/psxdecomp-readme.yml — the README standard, the writing style of the public prose files and the
+# frozen category ids (written by psxdecomp's S10 and /psxdecomp:upgrade, which own this file; the standard is
+# psxdecomp's docs/PUBLISHING.md). No game data needed: it reads README.md, the public prose files (every published
+# `.md` file), config/style-ratchet.txt, config/public-paths.txt, config/categories.tsv, config/discs.tsv and the
+# tracked hash records.
 name: psxdecomp-readme
 
 on:
@@ -24,5 +26,7 @@ jobs:
           persist-credentials: false
       - name: README lint (sections, AI policy, generated blocks fresh, badges, paths, links)
         run: python3 tools/psxd_publish.py lint README.md
+      - name: "writing style of the public prose files (a count may only fall: config/style-ratchet.txt)"
+        run: python3 tools/psxd_publish.py style
       - name: category ids frozen (retired, never deleted or renamed)
         run: python3 tools/psxd_publish.py categories config/categories.tsv --history

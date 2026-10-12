@@ -83,7 +83,7 @@ import urllib.parse
 # ---- the AI policy (its one home; scripts/common.py re-exports it, the plugin's README carries it verbatim) -------
 AI_POLICY = ("LLMs produce negligible decompilation results without good guidance. Investigate and familiarize "
              "yourself with the console's architecture and the game you are decompiling, and always use your own "
-             "judgment. Humans drive the decisions; AI reads and writes the code.")
+             "judgment. Humans drive the decisions. AI reads and writes the code.")
 AI_POLICY_MARK = "<!-- psxdecomp: ai-policy -->"
 # The start of the disclosure sentence the interview offered before AI_POLICY (the canned answers still carry it).
 OLD_DISCLOSURE = "This project is developed with substantial AI assistance"
@@ -424,7 +424,7 @@ def progress_row(slug: str, r: dict) -> str:
 def render_progress(ctx: Ctx) -> list[str]:
     if ctx.categories is None:
         return ["*Not published yet.* The progress table and its [decomp.dev](%s) badges appear here with the "
-                "project's first progress report; `config/categories.tsv` names what they count." % DECOMPDEV]
+                "project's first progress report. `config/categories.tsv` names what they count." % DECOMPDEV]
     if ctx.categories_errs:
         raise RenderError("config/categories.tsv: %s" % ctx.categories_errs[0])
     if not ctx.slug:
@@ -467,7 +467,7 @@ def render_disc(ctx: Ctx) -> list[str]:
         seen.append(d["executable"])
         t = target_sha(ctx.repo, d["executable"])
         if t:
-            out += ["", "The target `%s` has SHA-1 `%s` (`%s`); every build checks its rebuild against it."
+            out += ["", "The target `%s` has SHA-1 `%s` (`%s`). Every build checks its rebuild against it."
                     % (d["executable"], t[0], t[1])]
     return out
 

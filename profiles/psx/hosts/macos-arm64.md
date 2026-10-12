@@ -1,18 +1,18 @@
 # Host recipe — macOS arm64 + Docker Desktop
 
-Proven on mmx6 and DC2 (2026-10-01). Claude Code, PA3 and the oracles run on the Mac; the build runs in an amd64
+Proven on mmx6 and DC2 (2026-10-01). Claude Code, PA3 and the oracles run on the Mac. The build runs in an amd64
 container with the source in a named volume.
 
-- **Claude Code + PA3** on the Mac; the repository on the Mac's disk. Python >= 3.12 for the hooks (the installer
+- **Claude Code + PA3** on the Mac, and the repository on the Mac's disk. Python >= 3.12 for the hooks (the installer
   resolves the interpreter per machine and writes it into `.claude/pa.json`).
 - **Docker Desktop**, context `desktop-linux`, amd64 emulation on (`--platform linux/amd64`): the old cc1 builds are
   static i386 ELF binaries.
 - **One tree, a disposable copy:** a named volume holds a copy of the tracked and the untracked, not ignored files.
   A `sync` refreshes it before each run. Outputs come back by name only. No host path is bind-mounted. Firewall
   paths never leave the container. The reference shape as of 2026-10-01 is mmx6's
-  `tools/docker/mx.sh build|sync|pull|disc|run`; phase 1.0 builds it.
+  `tools/docker/mx.sh build|sync|pull|disc|run`, and phase 1.0 builds it.
 - **The dump** is loaded once into its own read-only volume (`disc`), top-level `*.cue`/`*.bin` only.
-- **Oracles on the host:** Ghidra + ghidra_psx_ldr + an MCP server (static); PCSX-Redux with Lua (runtime).
+- **Oracles on the host:** Ghidra + ghidra_psx_ldr + an MCP server (static), and PCSX-Redux with Lua (runtime).
 
 ## Install
 
@@ -23,6 +23,6 @@ brew install --cask claude-code docker-desktop
 brew install ghidra openjdk@21             # the static oracle (Ghidra needs a JDK)
 ```
 
-Start Docker Desktop once; amd64 images then run under emulation (Settings → General → "Use Rosetta" makes them
+Start Docker Desktop once. Then amd64 images run under emulation (Settings → General → "Use Rosetta" makes them
 faster). PCSX-Redux has no Homebrew package: take its macOS build from the project's releases page. The PsyQ SDK is
-never installed this way; see `docs/ops/refs.md` (psyq-sdk row).
+never installed this way. See `docs/ops/refs.md` (psyq-sdk row).
