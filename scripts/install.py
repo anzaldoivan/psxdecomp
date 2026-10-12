@@ -617,7 +617,7 @@ def s10_handoff(c: Ctx) -> str:
     rows = doctor.check(c.target)
     bad = [r for r in rows if r[1] == "FAIL"]
     for r in rows:
-        print("     doctor %-12s %-4s %s" % r)
+        print("     doctor %-*s %-4s %s" % (doctor.WIDTH, *r))
     if bad:
         raise common.Fail("doctor: %s" % "; ".join("%s: %s" % (r[0], r[2]) for r in bad))
     card_check(c)

@@ -265,7 +265,7 @@ def main(argv=None) -> int:
     repo = pathlib.Path(a.repo).resolve()
     if a.cmd == "audit":
         for r in doctor.check(repo):
-            print("AUDIT %-12s %-4s %s" % r)
+            print("AUDIT %-*s %-4s %s" % (doctor.WIDTH, *r))
         acts = plan(repo)
         print("AUDIT %d action(s): %d psxdecomp, %d manual" % (len(acts), sum(x["owner"] == "psxdecomp" for x in acts),
                                                               sum(x["owner"] == "manual" for x in acts)))

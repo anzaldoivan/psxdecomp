@@ -2,7 +2,8 @@
 """doctor.py — is this game repository healthy against the current psxdecomp pins? Read-only.
 
     doctor.py [--repo DIR] [--json] [--only ROW[,ROW]] [--offline]
-                                           one row per check: OK / WARN / FAIL / SKIP; exit 1 on any FAIL
+                                           one row per check: OK / WARN / FAIL / SKIP; exit 1 on any FAIL, 2 on a
+                                           row name that does not exist; --json prints the rows alone on stdout
                                            SKIP: the check did not run (offline, logged out); it is counted in the
                                            last line and never reported as OK
     doctor.py --self-test
@@ -17,7 +18,8 @@ the public repository, the pre-push hook is in place, every workflow action is p
 interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
 PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
-hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs); progress (WARN only,
+hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs; it also counts
+the sentences over the writing limits); card (WARN only: HOW_WE_WORK.md over PA3's cap); progress (WARN only,
 when a workflow builds a decomp.dev report: its safety lint, and whether decomp.dev lists the repo, in split mode the
 public [public].repo); github (WARN only, through `gh api`, skipped offline or logged out: the repository's security
 settings, each with the `gh api` command that fixes it; doctor never applies one). `--only github` runs just that row,
@@ -48,6 +50,9 @@ import publish  # noqa: E402
 
 NETWORK_ROWS = ("progress", "github", "dev-ci", "private-repo", "public-standard")
 SPLIT_ROWS = ("private-repo", "public-standard")
+ROWS = ("record", "sdk", "pa3", "pa3-drift", "python", "kit", "readme", "publish-tool", "deny", "split-guard",
+        "categories", "ignore", "audit", "fixture", "refs", "refs-ignored", "hygiene", "card") + NETWORK_ROWS
+WIDTH = max(map(len, ROWS))                     # the name column of every printed row (doctor, upgrade audit, S10)
 
 
 def check(repo, only=None, offline=False) -> list[tuple[str, str, str]]:
@@ -158,6 +163,9 @@ def base_rows(repo: pathlib.Path, add):
     else:
         add("refs", "WARN", "no config/refs.toml (no reference library)")
     add("hygiene", *hygiene_row(repo))
+    card = card_row(repo)
+    if card:
+        add("card", *card)
 
 
 def machine_pa3_version() -> str | None:
@@ -307,11 +315,38 @@ def hygiene_row(repo: pathlib.Path) -> tuple[str, str]:
         for w in where:
             f = w.rsplit(":", 1)[0]
             per[f] = per.get(f, 0) + 1
+    long = " %d sentence(s) or paragraph(s) over psxdecomp's writing limits (counted, never a WARN)." % sum(
+        len(fetch_refs.lint_style(common.read(p))) for p in paths if p.suffix == ".md")
     if not scope and not dupes:
-        return "OK", "%d tracked docs: no unscoped claim, no copied sentence" % len(paths)
+        return "OK", "%d tracked docs: no unscoped claim, no copied sentence.%s" % (len(paths), long)
     top = sorted(per.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
-    return "WARN", "%d unscoped claim(s), %d copied sentence(s) over %d tracked docs; top: %s" % (
-        scope, len(dupes), len(paths), ", ".join("%s (%d)" % kv for kv in top))
+    return "WARN", "%d unscoped claim(s), %d copied sentence(s) over %d tracked docs; top: %s.%s" % (
+        scope, len(dupes), len(paths), ", ".join("%s (%d)" % kv for kv in top), long)
+
+
+CARD = "HOW_WE_WORK.md"
+
+
+def card_chars(repo: pathlib.Path) -> tuple[int, int] | None:
+    """(characters, cap) of PA3's card: the count and the cap (.claude/pa.json `card.max_chars`, else 7000) of PA3's
+    `tools/card.py check`, read here because that check writes a credit note and doctor writes nothing."""
+    how, pa = repo / CARD, repo / ".claude" / "pa.json"
+    if not how.is_file():
+        return None
+    conf = json.loads(common.read(pa)) if pa.is_file() else {}
+    return len(common.read(how)), int((conf.get("card") or {}).get("max_chars", 7000))
+
+
+def card_row(repo: pathlib.Path) -> tuple[str, str] | None:
+    """WARN only: the card is PA3's and the game's. Over its cap, PA3's check refuses every later card write."""
+    got = card_chars(repo)
+    if not got:
+        return None
+    n, cap = got
+    if n <= cap:
+        return "OK", "%s %d of %d characters (%d free)" % (CARD, n, cap, cap - n)
+    return "WARN", "%s %d of %d characters: free %d (move a section to docs/ops/ and link it); PA3's " \
+                   "`tools/card.py check` refuses a card write until then" % (CARD, n, cap, n - cap)
 
 
 def sdk_row(psyq: dict | None, repo: pathlib.Path, byo: str | None) -> tuple[str, str] | None:
@@ -761,16 +796,22 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.self_test:
         return self_test()
-    rows = check(a.repo, only=a.only.split(",") if a.only else None, offline=a.offline)
+    only = a.only.split(",") if a.only else None
+    unknown = [n for n in only or [] if n not in ROWS]
+    if unknown:
+        print("DOCTOR no row named %s; the rows: %s" % (", ".join(unknown), ", ".join(ROWS)), file=sys.stderr)
+        return 2
+    rows = check(a.repo, only=only, offline=a.offline)
     if a.json:
         print(json.dumps([dict(zip(("check", "status", "detail"), r)) for r in rows], indent=2))
     else:
         for r in rows:
-            print("DOCTOR %-12s %-4s %s" % r)
+            print("DOCTOR %-*s %-4s %s" % (WIDTH, *r))
     fails = sum(r[1] == "FAIL" for r in rows)
     skips = sum(r[1] == "SKIP" for r in rows)
     print("DOCTOR %s (%d warn%s)" % ("OK" if not fails else "FAIL %d" % fails, sum(r[1] == "WARN" for r in rows),
-                                     ", %d not run" % skips if skips else ""))
+                                     ", %d not run" % skips if skips else ""),
+          file=sys.stderr if a.json else sys.stdout)         # --json: stdout is the JSON alone
     return 1 if fails else 0
 
 
@@ -779,6 +820,7 @@ def self_test() -> int:
         common.git(td, "init", "--quiet")
         rows = dict((r[0], r[1]) for r in check(td))
     ok = rows.get("pa3") == "FAIL" and rows.get("record") == "WARN" and rows.get("audit") == "FAIL"
+    ok &= set(rows) <= set(ROWS)                                        # --only refuses a name that is not in ROWS
     ok &= rows.get("readme") == "WARN"
     with tempfile.TemporaryDirectory() as td:
         repo = pathlib.Path(td).resolve()
@@ -803,6 +845,24 @@ def self_test() -> int:
         planted = hygiene_row(repo)
         print("  hygiene: clean %s; planted %s" % (clean[0], planted[1]))
         ok &= clean[0] == "OK" and planted[0] == "WARN" and "PROJECT_CONTEXT.md (1)" in planted[1]
+        ok &= " 0 sentence(s)" in clean[1] and " 0 sentence(s)" in planted[1]
+        (repo / "docs" / "long.md").write_text("Word " + "word " * 25 + "end.\n")     # 27 words: counted, still OK
+        common.git(repo, "add", "-A")
+        (repo / "PROJECT_CONTEXT.md").unlink()
+        counted = hygiene_row(repo)
+        ok &= counted[0] == "OK" and " 1 sentence(s)" in counted[1]
+        ok &= card_row(repo) is None                                    # no card: no row
+        (repo / CARD).write_text("x" * 7000)
+        full = card_row(repo)
+        (repo / CARD).write_text("x" * 7001)
+        over = card_row(repo)
+        (repo / ".claude").mkdir()
+        (repo / ".claude" / "pa.json").write_text('{"card": {"max_chars": 8000}}')
+        raised = card_row(repo)
+        print("  card: at the cap %s; one over %s; PA3's own cap %s" % (full[0], over[1][:44], raised[1][:38]))
+        ok &= full == ("OK", "HOW_WE_WORK.md 7000 of 7000 characters (0 free)") and over[0] == "WARN" and \
+            "free 1 " in over[1] and raised[0] == "OK" and "7001 of 8000" in raised[1]
+        ok &= not list((repo / ".run").glob("**/*")) if (repo / ".run").exists() else True   # doctor wrote nothing
     pin = "3.14.2"
     drift = [pa3_drift_row({"upgrade": "ask"}, pin, pin), pa3_drift_row({"upgrade": "ask"}, None, pin),
              pa3_drift_row({}, pin, pin), pa3_drift_row({"upgrade": "ask"}, "3.15.2", pin)]
@@ -1129,9 +1189,11 @@ def self_test_summary() -> bool:
     import contextlib
     import io
 
+    err = io.StringIO()
+
     def run(*argv):
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
             rc = main(list(argv))
         return rc, buf.getvalue()
     ok = True
@@ -1140,15 +1202,19 @@ def self_test_summary() -> bool:
         (repo / publish.CONFIG_REL).write_text('[public]\nrepo = "example/synthetic-decomp"\n')
         rc, out = run("--repo", str(repo), "--offline", "--only", "github,public-standard")
         ok &= rc == 0 and out.splitlines()[-1] == "DOCTOR OK (0 warn, 2 not run)" and " SKIP " in out
+        ok &= len({l.index(" SKIP ") for l in out.splitlines()[:2]}) == 1                # one column for every name
         rc, out = run("--repo", str(repo), "--offline", "--only", "github,public-standard", "--json")
-        ok &= rc == 0 and out.count('"status": "SKIP"') == 2
+        ok &= rc == 0 and [r["status"] for r in json.loads(out)] == ["SKIP", "SKIP"]      # stdout parses as it is
+        ok &= err.getvalue() == "DOCTOR OK (0 warn, 2 not run)\n"                       # the summary: stderr
+        rc, out = run("--repo", str(repo), "--offline", "--only", "github,nosuch")
+        ok &= rc == 2 and out == "" and "no row named nosuch" in err.getvalue() and "hygiene" in err.getvalue()
     with tempfile.TemporaryDirectory() as td:
         common.git(td, "init", "--quiet")
         rc, out = run("--repo", td, "--offline", "--only", "github")       # no origin, nothing skipped: no suffix
         ok &= rc == 0 and out.splitlines()[-1] == "DOCTOR OK (0 warn)"
         rc, out = run("--repo", td, "--offline", "--only", "pa3,github")
         ok &= rc == 1 and out.splitlines()[-1].startswith("DOCTOR FAIL 1")
-    print("  main(): skips exit 0 and are counted; a FAIL exits 1")
+    print("  main(): skips exit 0 and are counted; a FAIL exits 1; an unknown --only name exits 2; --json parses")
     return ok
 
 

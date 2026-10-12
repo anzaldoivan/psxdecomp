@@ -87,6 +87,10 @@ def test_s10_writes_the_deny_rules_and_doctor_checks_them(game, tmp_path):
     assert len(run(["git", "-C", game, "log", "--oneline"]).stdout.splitlines()) == 9
     ok = run([PY, ROOT / "scripts/doctor.py", "--repo", game, "--offline"], check=False)
     assert re.search(r"DOCTOR deny\s+OK", ok.stdout), ok.stdout
+    import doctor
+    names = re.findall(r"^DOCTOR (\S+) +(?:OK|WARN|FAIL|SKIP) ", ok.stdout, re.M)
+    assert len(names) >= 15 and set(names) <= set(doctor.ROWS), names        # --only knows every row a game prints
+    assert re.search(r"DOCTOR card\s+OK\s+HOW_WE_WORK.md \d+ of 7000 characters", ok.stdout), ok.stdout
     bad = tmp_path / "copy"
     shutil.copytree(game, bad)
     conf = json.loads((bad / ".claude/settings.json").read_text())
