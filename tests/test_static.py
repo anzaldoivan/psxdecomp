@@ -795,3 +795,19 @@ def test_guard_hook_output(tmp_path):
     (repo / "config/guard.tsv").unlink()
     r = _floor("guard", "--hook", cwd=tmp_path, stdin=ev("Edit", file_path=str(repo / "asm/a.s")))
     assert (r.returncode, r.stdout) == (0, ""), r.stdout
+
+
+def test_delivery_table():
+    """scripts/upgrade.py DELIVERY is the one table of what psxdecomp delivers and how: each row has a known class and
+    a source that exists, each class is described in the script's docstring, and docs/HARVEST.md names every path
+    that proposes an `[own]` key."""
+    import upgrade
+    assert {d.cls for d in upgrade.DELIVERY} <= set(upgrade.CLASSES)
+    for d in upgrade.DELIVERY:
+        assert d.src is None or (ROOT / d.src).is_file(), d
+        assert d.own is None or d.own in upgrade.OWN_KEYS, d
+    assert all("`%s`" % c in upgrade.__doc__ for c in upgrade.CLASSES)
+    harvest = (ROOT / "docs/HARVEST.md").read_text()
+    for key, (path, _) in upgrade.OWN_DETECT.items():
+        assert "| `%s` | `%s` |" % (key, path) in harvest, key
+    assert set(upgrade.OWN_KEYS) - set(upgrade.OWN_DETECT) == {"gate"} and '`upgrade own gate "<command>"`' in harvest

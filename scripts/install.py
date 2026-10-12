@@ -593,8 +593,13 @@ def s10_handoff(c: Ctx) -> str:
     medium = json.loads(common.read(med)) if med.is_file() else None
     psyq_lines, psyq_v = psyq_record(medium)
     rec += psyq_lines
+    import upgrade                                  # the delivery table: the hash of each owned file S10 writes
+    record = "\n".join(rec)
+    for d in upgrade.DELIVERY:
+        if d.cls == "owned" and not d.split:
+            record = upgrade.record_set(record, "delivered", d.path, upgrade._sha((common.PLUGIN_ROOT / d.src).read_bytes()))
     # written once: a re-run on a later day leaves the record alone (/psxdecomp:upgrade is what rewrites it)
-    for rel, body in ((RECORD, "\n".join(rec)),
+    for rel, body in ((RECORD, record),
                       ("config/psxdecomp.profile.toml", common.read(common.PLUGIN_ROOT / "profiles/psx/profile.toml")),
                       ("docs/ops/host-recipe.md", common.read(common.PLUGIN_ROOT / ("profiles/psx/hosts/%s.md" % recipe)))):
         if not c.p(rel).exists():

@@ -11,6 +11,25 @@ bootstrap should start with. They come back here only as **reviewed pull request
 | A host arrangement that worked | `docs/ops/*hosts*` | a `profiles/<id>/hosts/<recipe>.md` |
 | A byo SDK a project verified (deferred until one is in hand) | its file list and checksums | a per-version sha256 manifest the doctor's `sdk` row checks, and stamp scanning of the SDK's LIB files |
 | A research lead class S3 missed | a backtest miss | a search seed in `[research]` and, when it generalises, a backtest eval |
+| A debt class that a game's scanner proved | mmx5 `tools/readability/scan.py` (commits `198d2e2`, `077fc91`, read 2026-10-12) | a kind of `scripts/floor.py debt`, written fresh, with a planted file in its self-test |
+| A tool of its own that does a delivery's work | one of the paths below | an `OWN_DETECT` entry in `scripts/upgrade.py` |
+
+## What a game keeps as its own
+
+`/psxdecomp:upgrade` proposes an `[own]` key in `config/psxdecomp.toml` when a game holds one of these exact paths.
+psxdecomp then delivers nothing for that key. The doctor checks that the path exists.
+
+The list as of 2026-10-12. mmx5 was the first game to hold each path.
+
+| `[own]` key | Path | What psxdecomp would deliver in its place |
+|---|---|---|
+| `debt` | `tools/readability/scan.py` | the debt baseline |
+| `names` | `config/names.basis.tsv` | the names ledger |
+| `toolchain` | `tools/toolchain/fetch.sh` | the toolchain pin table |
+| `campaign` | `tools/wave/ledger.py` | the campaign templates |
+| `matcher` | `.claude/skills/wave-draft-coders` | the offered matcher skill |
+
+`gate` has no path: the developer records the gate command with `upgrade own gate "<command>"`.
 
 Not harvested: PA3's or the kit's own rules and cookbook entries (they go upstream to their own repositories), and
 anything derived from a game's bytes.

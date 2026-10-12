@@ -21,3 +21,10 @@ psxrecomp's migrate shape: **audit → plan → apply --dry-run → apply**. `PS
    `"$PSXD" upgrade apply --repo <repo>` (add `--fetch` to clone `refs/` too).
 5. The script never commits. Its last line, `COMMIT ...`, is the command that commits the paths it wrote.
    Run that command on the developer's word. If a router session is running in that repository, do not apply; say so.
+
+Two kinds of action need a word to the developer:
+
+- An action that ends in `-edited` names a psxdecomp file that the game edited. The script never overwrites it unasked.
+  Show the difference. `apply --take <action>` overwrites the file on the developer's word.
+- `own` records a tool of the game's own in `[own]` of `config/psxdecomp.toml`. psxdecomp then delivers nothing in
+  its place.

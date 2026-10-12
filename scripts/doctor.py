@@ -99,8 +99,11 @@ def base_rows(repo: pathlib.Path, add):
     rec = repo / "config" / "psxdecomp.toml"
     if rec.is_file():
         r = common.load_toml(rec)
-        add("record", "OK", "psxdecomp %s, profile %s, bootstrapped %s" % (
-            r["psxdecomp"]["version"], r["psxdecomp"]["profile"], r["psxdecomp"]["bootstrapped"]))
+        gone = own_missing(repo, r.get("own") or {})
+        add("record", "WARN" if gone else "OK", "psxdecomp %s, profile %s, bootstrapped %s%s" % (
+            r["psxdecomp"]["version"], r["psxdecomp"]["profile"], r["psxdecomp"]["bootstrapped"],
+            "; [own] names what this repository does not hold: %s (psxdecomp delivers nothing for these keys)"
+            % ", ".join(gone) if gone else ""))
         sdk = sdk_row(r.get("psyq"), repo, os.environ.get("PSXDECOMP_BYO_PSYQ_PATH"))
         if sdk:
             add("sdk", *sdk)
@@ -171,6 +174,25 @@ def base_rows(repo: pathlib.Path, add):
     card = card_row(repo)
     if card:
         add("card", *card)
+
+
+def own_missing(repo: pathlib.Path, own: dict) -> list[str]:
+    """`<key> = <value>` for each [own] entry that names nothing here. A value is a path, or a command: `make <target>`
+    needs the target in a makefile of the repository, any other command needs its last word that is a path."""
+    out = []
+    for key, value in own.items():
+        words = str(value).split()
+        if words[:1] == ["make"] and len(words) > 1:
+            target = next((w for w in words[1:] if not w.startswith("-") and "=" not in w), "")
+            files = [repo / "Makefile"] + sorted(repo.glob("*.mk")) + sorted(repo.glob("mk/*.mk")) + sorted(repo.glob("config/*.mk"))
+            ok = bool(target) and any(re.search(r"^%s\b[^=\n]*:" % re.escape(target), common.read(f), re.M)
+                                      for f in files if f.is_file())
+        else:
+            path = next((w for w in reversed(words) if "/" in w or (repo / w).exists()), "")
+            ok = bool(path) and (repo / path).exists()
+        if not ok:
+            out.append("%s = %s" % (key, value))
+    return out
 
 
 def roadmap_row(repo: pathlib.Path) -> tuple[str, str]:

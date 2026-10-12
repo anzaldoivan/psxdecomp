@@ -132,6 +132,20 @@ def test_roadmap_row_waits_before_the_plan(game):
     assert "PROJECT_CONTEXT.md names 2 of the 11 ladder phases; not named: 1.2, 1.3" in rec, rec
 
 
+def test_upgrade_has_nothing_to_do_after_the_bootstrap(game):
+    """`upgrade plan` on the game S10 just handed off lists no action of psxdecomp's: S10 and upgrade deliver the same
+    files, and the record holds the hash of each owned one."""
+    import tomllib
+
+    import upgrade
+    r = run([PY, ROOT / "scripts/upgrade.py", "plan", "--repo", game])
+    assert "[psxdecomp]" not in r.stdout and re.search(r"^PLAN \d+ action\(s\)", r.stdout, re.M), r.stdout
+    rec = tomllib.loads((game / "config/psxdecomp.toml").read_text())
+    assert set(rec["delivered"]) == set(upgrade.OWNED) and "own" not in rec, rec.get("delivered")
+    assert all(len(v) == 64 for v in rec["delivered"].values())
+    assert run([PY, ROOT / "scripts/upgrade.py", "apply", "--dry-run", "--repo", game]).stdout.startswith("APPLY DRY RUN 0 ")
+
+
 def _headlines(game):
     """The lines of the project-architect skill's headline section: from the first heading that holds "headline" or
     "11" to the next heading (the section the game's `rules_add.py promote` writes to)."""
