@@ -518,16 +518,13 @@ def insert_in_section(text: str, heading: str, line: str) -> str:
 
 SCOPE_MARK = "- **This repo:**"
 CONV_MARK = "- **C conventions:**"
-# The one drafting rule a benchmark earned (its numbers: docs/ECOSYSTEM.md rows K22 and M15). The card is always read,
-# so the rule sits there; the expert copies it into each drafter brief.
-DRAFT_RULE = ("Fields by name. Read and write struct members as `p->field`: no byte-offset arithmetic, no `M2C_FIELD`, "
-              "no macro that hides one. If a header lacks the struct or the field, say which one in your last message.")
 
 
 def conventions_line(prior: bool) -> str:
-    """The card's conventions line, at most 400 characters: the kit's C rules by pointer, DRAFT_RULE whole."""
-    return '%s `CONTRIBUTING.md`. Put this line in each drafter brief: "%s"%s' % (
-        CONV_MARK, DRAFT_RULE, " Prior-art rules and the decision: `docs/prior-art.md`." if prior else "")
+    """The card's conventions line: pointers, no rule text. The one drafting rule that was measured (fields by name)
+    is not written here: in a game's own brief it cost a match and 59% more per draft (docs/ECOSYSTEM.md rows K22
+    and M15, which hold its wording for a game that adopts it)."""
+    return "%s `CONTRIBUTING.md`.%s" % (CONV_MARK, " Prior-art rules and the decision: `docs/prior-art.md`." if prior else "")
 
 
 def with_conventions(card: str, line: str) -> str:
@@ -848,7 +845,7 @@ def self_test() -> int:
     ok &= json.loads(with_upgrade_ask(pa.replace('"x"', '"x", "upgrade": "auto"')))["upgrade"] == "ask"
     ok &= "--resume" in RESTART and "--agent plain" in RESTART
     conv = conventions_line(True)
-    ok &= len(conv) <= 400 and DRAFT_RULE in conv and "docs/prior-art.md" not in conventions_line(False)
+    ok &= len(conv) <= 120 and "`CONTRIBUTING.md`" in conv and "docs/prior-art.md" not in conventions_line(False)
     card = "# C\n## Conventions\n- a\n\n## Next\n- b\n"
     ok &= with_conventions(card, conv) == "# C\n## Conventions\n- a\n%s\n\n## Next\n- b\n" % conv
     old = card.replace("- a", "- a\n%s an older pointer.\n- c\n%s twice." % (CONV_MARK, CONV_MARK))

@@ -195,10 +195,11 @@ def test_scoped_outputs(game):
     assert "PsyQ 4.7" in line and len(line) <= 300
     conv = how[how.index("## Conventions"):].split("\n## ")[0]      # S10's line sits in the card's conventions section
     cline = [l for l in conv.splitlines() if l.startswith(install.CONV_MARK)]
-    assert len(cline) == 1 and len(cline[0]) <= 400 and install.DRAFT_RULE in cline[0], cline
+    assert len(cline) == 1 and len(cline[0]) <= 120, cline
+    assert "Fields by name" not in how              # M3: the measured drafting rule is not shipped (ECOSYSTEM K22, M15)
     assert "`CONTRIBUTING.md`" in cline[0] and "## Names, types and formatting" in (game / "CONTRIBUTING.md").read_text()
     assert ("docs/prior-art.md" in conv) == (game / "docs/prior-art.md").is_file()   # never a pointer to a missing file
-    assert not (game / "docs/ops/drafting.md").exists()             # the rule has one home in a game: the card
+    assert not (game / "docs/ops/drafting.md").exists()
     env = next(l for l in (game / "docs/ops/decomp-environment.md").read_text().splitlines()
                if l.startswith("| Candidate compiler family"))
     assert env.split("|")[2].strip().startswith("Candidate (S4"), env

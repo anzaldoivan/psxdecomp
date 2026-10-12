@@ -10,8 +10,8 @@ apply. psxrecomp's migrate shape, our own code.
     upgrade.py --self-test
 
 psxdecomp owns: config/psxdecomp.toml (apply sets its [psxdecomp].version to this plugin's), config/refs.toml, docs/ops/refs.md, its .gitignore block, its firewall purge
-line, the one HOW_WE_WORK references line and its C-conventions line (`card-conv`: written when the card has room
-under PA3's cap, else a `manual` action naming the characters to free), the docs/ops/INDEX.md row, tools/psxd_publish.py,
+line, the one HOW_WE_WORK references line and its C-conventions pointer line (`card-conv`: written when the card has
+room under PA3's cap, else a `manual` action naming the characters to free), the docs/ops/INDEX.md row, tools/psxd_publish.py,
 .github/workflows/psxdecomp-readme.yml (the README standard's lint and its CI) and the agents' deny rules
 (profiles/psx/deny.json, added to .claude/settings.json `permissions.deny`, never removed; the bootstrap's S10 writes
 them first, this adds any that are missing later). The README's prose is
@@ -133,8 +133,8 @@ def plan(repo: pathlib.Path) -> list[dict]:
     if conv:
         over = len(conv[1]) - doctor.card_chars(repo)[1]
         if over <= 0:
-            add("psxdecomp", "card-conv: write the C-conventions line of %s (the one measured drafting rule, for each "
-                "drafter brief)" % doctor.CARD, "missing or older than psxdecomp %s's" % common.plugin_version(), "card-conv")
+            add("psxdecomp", "card-conv: write the C-conventions line of %s (pointers to CONTRIBUTING.md and the "
+                "prior-art decision)" % doctor.CARD, "missing or older than psxdecomp %s's" % common.plugin_version(), "card-conv")
         else:
             add("manual", "card-conv: free %d character(s) in %s, then apply again; the C-conventions line needs %d and "
                 "PA3's cap is %d" % (over, doctor.CARD, len(conv[1]) - len(conv[0]), doctor.card_chars(repo)[1]),
