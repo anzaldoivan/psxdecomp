@@ -15,6 +15,7 @@ from conftest import GIT_ENV, PY, ROOT, check_golden, front, hook_stdout, run
 import answers
 import common
 import fetch_refs
+import floor
 import publish
 
 
@@ -519,7 +520,7 @@ def test_game_files_cite_no_foreign_ids():
     """The files psxdecomp writes into a game cite no bare rule-like id (G41, D5, T2, ...): a game greps its own
     rules/G41.md by id, and an id here would answer for it. The -private README cites only the game's G12 and G18."""
     ids = re.compile(r"(?<![A-Za-z0-9_-])[GDKPRT]\d+\b")
-    for rel in ("scripts/publish.py", "profiles/psx/build.yml", "profiles/psx/image/Dockerfile",
+    for rel in ("scripts/publish.py", "scripts/floor.py", "profiles/psx/build.yml", "profiles/psx/image/Dockerfile",
                 "profiles/psx/psxdecomp-readme.yml", "profiles/psx/split-mode.md"):
         found = ["%d: %s" % (i, l.strip()) for i, l in enumerate((ROOT / rel).read_text().splitlines(), 1) if ids.search(l)]
         assert not found, (rel, found)
@@ -653,3 +654,144 @@ def test_style_workflow_step():
     lint, style = "run: python3 %s lint README.md" % publish.VENDORED, "run: python3 %s style" % publish.VENDORED
     assert runs.count(lint) == 1 and runs.count(style) == 1 and runs.index(lint) < runs.index(style), runs
     assert lines[lines.index(style) - 1].startswith("- name: ") and "style" in lines[lines.index(style) - 1]
+
+
+# ---- the floor (scripts/floor.py, vendored into a game as tools/psxd_floor.py) --------------------------------------
+
+def _floor(*args, cwd=None, stdin=None):
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", **GIT_ENV)
+    env.pop("CLAUDE_PROJECT_DIR", None)
+    return subprocess.run([PY, str(ROOT / "scripts/floor.py"), *map(str, args)], input=stdin, cwd=cwd,
+                          capture_output=True, text=True, env=env)
+
+
+def test_floor_is_vendorable():
+    """scripts/floor.py runs alone in a game repository: standard library only, nothing from the plugin. It imports
+    tomllib inside a function only, so `guard --hook` also runs on a python3 that has none."""
+    text = (ROOT / "scripts/floor.py").read_text()
+    mods = set(re.findall(r"^(?:import|from) ([\w.]+)", text, re.M))
+    assert mods == {"__future__", "argparse", "fnmatch", "hashlib", "json", "os", "pathlib", "re", "subprocess", "sys",
+                    "tempfile"}, mods
+    assert re.search(r"^ +import tomllib$", text, re.M) and floor.VENDORED == "tools/psxd_floor.py"
+    assert len(floor.LADDER) == 11 and [r[0] for r in floor.LADDER] == list(range(11))
+
+
+def test_plan_grammar_cases(tmp_path):
+    """`floor.py plan` on synthetic plans: the ladder as written passes; a slice stands for its phase; a merge with a
+    `## Changes` line passes; a dropped phase exits 1 with a `ladder` FAIL; a generation-2 plan reads the ladder from
+    the closed generation's record; a line with a lost key exits 1 with a `grammar` FAIL."""
+    repo = _style_repo(tmp_path, {"GENERATION_PLAN.md": floor.self_plan(closed=0)})
+    plan = repo / "GENERATION_PLAN.md"
+    r = _floor("plan", "--repo", repo)
+    assert r.returncode == 0 and r.stdout.endswith("PLAN OK (0 fail, 0 warn)\n"), r.stdout
+    assert "PLAN INFO state: generation 1; ladder phases open 0; pending 1,2,3,4,5,6,7,8,9,10\n" in r.stdout, r.stdout
+    slices = [floor._phase("1.8.1", "The campaign, slice 1", milestone="0 stubs", depends="1.7"),
+              floor._phase("1.8.2", "The campaign, slice 2", depends="1.8.1")]
+    plan.write_text(floor.self_plan(closed=0, drop=(8,), extra=slices).replace("depends: 1.8 |", "depends: 1.8.2 |"))
+    assert _floor("plan", "--repo", repo).returncode == 0
+    dropped = floor.self_plan(closed=0, drop=(6,)).replace("depends: 1.6 |", "depends: 1.5 |")
+    plan.write_text(dropped)
+    r = _floor("plan", "--repo", repo)
+    assert r.returncode == 1 and "PLAN FAIL ladder: no line 1.6 (The multipliers)" in r.stdout, r.stdout
+    assert r.stdout.endswith("PLAN FAIL (1 fail, 0 warn)\n"), r.stdout
+    plan.write_text(dropped + "- 2026-01-02 developer: phases 1.5 and 1.6 merged into 1.5 — a small game\n")
+    assert _floor("plan", "--repo", repo).returncode == 0
+    plan.write_text(floor.self_plan(closed=0).replace(" | scope: s", "", 1))
+    r = _floor("plan", "--repo", repo)
+    assert r.returncode == 1 and "PLAN FAIL grammar: line 11 (1.0): no `scope:`" in r.stdout, r.stdout
+    plan.write_text("# Generation 2 — next\n\nGoal: g\nDone-criteria: d\n\n## Phases\n\n%s\n\n## Changes\n"
+                    % floor._phase("2.1", "The round-trip disc"))
+    r = _floor("plan", "--repo", repo)
+    assert r.returncode == 0 and "PLAN WARN ladder: generation 2 and no phase-ends/GenerationEnd_1.md" in r.stdout
+    (repo / "phase-ends").mkdir()
+    (repo / "phase-ends/GenerationEnd_1.md").write_text("# GenerationEnd\n\n## Phases\n" + "".join(
+        "- 1.%d | %s | milestone: m\n" % (n, name) for n, name, _, _ in floor.LADDER))
+    r = _floor("plan", "--repo", repo)
+    assert r.returncode == 0 and r.stdout.endswith("PLAN OK (0 fail, 0 warn)\n"), r.stdout
+    plan.unlink()
+    r = _floor("plan", "--repo", repo)
+    assert r.returncode == 0 and r.stdout.startswith("PLAN INFO plan: no GENERATION_PLAN.md"), r.stdout
+    assert _floor("ladder", ROOT / "fixtures/PROJECT_CONTEXT.fixture.md").returncode == 1      # the fixture names two
+
+
+def test_debt_kinds(tmp_path):
+    """One planted file per debt kind and one clean control in a git repository: the first baseline holds exactly the
+    planted counts, and `debt` passes against it."""
+    files = {"src/clean.c": floor.C_CLEAN}
+    files.update({"src/%s.c" % kind: text for kind, (text, _) in floor.C_DEBT.items()})
+    repo = _style_repo(tmp_path, files)
+    rows, skip, mode, head = floor.parse_baseline(floor.first_baseline(repo))
+    want = {(k, "src/%s.c" % kind): n for kind, (_, got) in floor.C_DEBT.items() for k, n in got.items()}
+    assert rows == want and mode == "admit" and skip == ["include/include_asm.h"] and len(head) == 5, rows
+    assert {k for k, _ in rows} == set(floor.KINDS) - {"unbased"}
+    (repo / "config").mkdir()
+    (repo / floor.BASELINE).write_text(floor.first_baseline(repo))
+    r = _floor("debt", "--repo", repo)
+    assert r.returncode == 0 and r.stdout.endswith("DEBT CHECK OK (0 rise(s), 0 stale row(s); mode admit)\n"), r.stdout
+    _floor("names", "--init", "--repo", repo)                           # the ledger exists: every other name is unbased
+    r = _floor("debt", "--repo", repo)
+    assert r.returncode == 1 and "DEBT FAIL rise unbased src/clean.c: 1, its row is 0\n" in r.stdout, r.stdout
+
+
+def test_debt_baseline_command(tmp_path):
+    """The equal-baseline rule through the command line: a rise exits 1, `--update` refuses it without `--admit`,
+    `--admit` prints it, a stale row exits 1, `--down` is one way and then no rise is admitted."""
+    repo = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], "config/debt-baseline.txt": "mode admit\n"})
+    debt = lambda *a: _floor("debt", "--repo", repo, *a)  # noqa: E731
+    r = debt()
+    assert r.returncode == 1 and "DEBT FAIL rise goto src/a.c: 1, its row is 0\n" in r.stdout, r.stdout
+    assert debt("--update").returncode == 1 and (repo / floor.BASELINE).read_text() == "mode admit\n"
+    r = debt("--update", "--admit")
+    assert r.returncode == 0 and "DEBT ADMIT goto src/a.c: 0 -> 1\n" in r.stdout, r.stdout
+    assert (repo / floor.BASELINE).read_text().endswith("mode admit\n1 goto src/a.c\n") and debt().returncode == 0
+    (repo / "src/a.c").write_text(floor.C_CLEAN)
+    r = debt()
+    assert r.returncode == 1 and "DEBT FAIL stale goto src/a.c: 0, its row is 1" in r.stdout, r.stdout
+    assert debt("--down").returncode == 1 and debt("--update").returncode == 0 and debt("--down").returncode == 0
+    assert "mode down\n" in (repo / floor.BASELINE).read_text()
+    (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0])
+    r = debt("--update", "--admit")
+    assert r.returncode == 1 and "`mode down` admits none" in r.stdout, r.stdout
+
+
+def test_debt_agrees_with_the_corpus_lint():
+    """The debt kinds reuse the definitions of fixtures/c-corpus/lint.py (which the tier 5a container runs alone): every
+    twin that the lint flags, `floor.file_debt` flags as the same kind, and a truth has none of the five."""
+    sys.path.insert(0, str(ROOT / "fixtures/c-corpus"))
+    import lint
+    same = {"register-pin": "pin", "goto": "goto", "offset-cast": "offset", "abs-address": "address", "struct-def": "struct"}
+    assert set(same) == set(lint.KINDS)
+    twins = 0
+    for d in sorted((ROOT / "fixtures/c-corpus/truth").iterdir()):
+        assert not set(floor.file_debt("src/t.c", (d / "truth.c").read_text())) & set(same.values()), d.name
+        for twin in d.glob("twin.*.c"):
+            got = floor.file_debt("src/t.c", twin.read_text())
+            for kind in {f[0] for f in lint.findings(twin.read_text())}:
+                assert same[kind] in got, (twin, kind, got)
+                twins += 1
+    assert twins >= 15, twins
+
+
+def test_guard_hook_output(tmp_path):
+    """`floor.py guard --hook` as a PreToolUse hook: a denied call is one JSON object on stdout with the rule's text,
+    exit code 0. An allowed call, bad JSON, no event, and a repository with no rules file print nothing, exit code 0:
+    the guard never stops a session by failing."""
+    rules = "action\ttool\tpattern\tsay\ndeny\tpath\tasm/\tasm/ is generated\ndeny\tbash\tmake +expected\task first\n"
+    repo = _style_repo(tmp_path, {"config/guard.tsv": rules, "src/a.c": "x\n"})
+    ev = lambda tool, **inp: json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": inp,  # noqa: E731
+                                         "cwd": str(repo)})
+    for stdin, want in ((ev("Edit", file_path=str(repo / "asm/a.s")), "asm/ is generated"),
+                        (ev("Bash", command="make  expected"), "ask first")):
+        r = _floor("guard", "--hook", cwd=tmp_path, stdin=stdin)
+        assert r.returncode == 0 and r.stderr == "" and len(r.stdout.splitlines()) == 1, (r.stdout, r.stderr)
+        out = json.loads(r.stdout)["hookSpecificOutput"]
+        assert out["hookEventName"] == "PreToolUse" and out["permissionDecision"] == "deny", out
+        assert want in out["permissionDecisionReason"] and "config/guard.tsv" in out["permissionDecisionReason"], out
+    silent = {"an allowed edit": ev("Edit", file_path=str(repo / "src/a.c")), "an allowed command": ev("Bash", command="ls"),
+              "bad JSON": "{not json", "no event": ""}
+    for name, stdin in silent.items():
+        r = _floor("guard", "--hook", cwd=tmp_path, stdin=stdin)
+        assert (r.returncode, r.stdout) == (0, ""), (name, r.stdout, r.stderr)
+    (repo / "config/guard.tsv").unlink()
+    r = _floor("guard", "--hook", cwd=tmp_path, stdin=ev("Edit", file_path=str(repo / "asm/a.s")))
+    assert (r.returncode, r.stdout) == (0, ""), r.stdout
