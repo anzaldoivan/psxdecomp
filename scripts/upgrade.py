@@ -6,11 +6,12 @@ apply. psxrecomp's migrate shape, our own code.
     upgrade.py plan  [--repo DIR]                 numbered actions; each is `psxdecomp` (apply does it) or `manual`
     upgrade.py apply --dry-run [--repo DIR]       the exact writes, nothing written
     upgrade.py apply [--repo DIR] [--fetch]       the psxdecomp-owned writes only; never commits, never touches PA3's
-                                                  or the kit's files; prints the paths to commit
+                                                  or the kit's files; its last line is the commit command
     upgrade.py --self-test
 
 psxdecomp owns: config/psxdecomp.toml (apply sets its [psxdecomp].version to this plugin's), config/refs.toml, docs/ops/refs.md, its .gitignore block, its firewall purge
-line, the one HOW_WE_WORK references line, the docs/ops/INDEX.md row, tools/psxd_publish.py,
+line, the one HOW_WE_WORK references line and its C-conventions line (`card-conv`: written when the card has room
+under PA3's cap, else a `manual` action naming the characters to free), the docs/ops/INDEX.md row, tools/psxd_publish.py,
 .github/workflows/psxdecomp-readme.yml (the README standard's lint and its CI) and the agents' deny rules
 (profiles/psx/deny.json, added to .claude/settings.json `permissions.deny`, never removed; the bootstrap's S10 writes
 them first, this adds any that are missing later). The README's prose is
@@ -31,6 +32,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import sys
 import tomllib
 import tempfile
@@ -127,6 +129,16 @@ def plan(repo: pathlib.Path) -> list[dict]:
         if left:
             add("manual", "build: fill %s in %s by hand (the game's own values; psxdecomp's docs/PUBLISHING.md)"
                 % (", ".join("{{%s}}" % k for k in left), BUILD_WF), "upgrade cannot read them", "build-fill")
+    conv = conv_card(repo)
+    if conv:
+        over = len(conv[1]) - doctor.card_chars(repo)[1]
+        if over <= 0:
+            add("psxdecomp", "card-conv: write the C-conventions line of %s (the one measured drafting rule, for each "
+                "drafter brief)" % doctor.CARD, "missing or older than psxdecomp %s's" % common.plugin_version(), "card-conv")
+        else:
+            add("manual", "card-conv: free %d character(s) in %s, then apply again; the C-conventions line needs %d and "
+                "PA3's cap is %d" % (over, doctor.CARD, len(conv[1]) - len(conv[0]), doctor.card_chars(repo)[1]),
+                "the card is full; which line moves to docs/ops/ is the game's choice", "card-conv")
     missing, why = common.deny_missing(repo)
     if missing:
         add("manual" if why else "psxdecomp", "deny: add %d rule(s) to %s permissions.deny from psxdecomp's "
@@ -161,6 +173,25 @@ def plan(repo: pathlib.Path) -> list[dict]:
     return acts
 
 
+def conv_card(repo: pathlib.Path) -> tuple[str, str] | None:
+    """(the card, the card with the current C-conventions line), or None when it has that line or there is no card."""
+    how = repo / doctor.CARD
+    if not how.is_file():
+        return None
+    old = common.read(how)
+    new = install.with_conventions(old, install.conventions_line((repo / "docs/prior-art.md").is_file()))
+    return None if new == old else (old, new)
+
+
+def commit_command(repo: pathlib.Path, paths: list[str]) -> str:
+    """One command that commits exactly what apply wrote: PA3's own commit path when the repository has it."""
+    msg = "upgrade to psxdecomp %s" % common.plugin_version()
+    args = " ".join(shlex.quote(p) for p in dict.fromkeys(paths))
+    if (repo / "tools/commit_task.sh").is_file():
+        return "bash tools/commit_task.sh psxdecomp %s %s" % (shlex.quote(msg), args)
+    return "git add -- %s && git commit -m %s -- %s" % (args, shlex.quote("psxdecomp: " + msg), args)
+
+
 VERSION_RE = re.compile(r'(\[psxdecomp\][^\[]*?^version = ")([^"]*)"', re.M | re.S)
 
 
@@ -175,6 +206,11 @@ def toml_table(kind: str, d: dict) -> str:
     for k, v in d.items():
         lines.append("%s = %s" % (k, json.dumps(v, ensure_ascii=False)))
     return "\n".join(lines) + "\n"
+
+
+def written_paths(written: list[str]) -> list[str]:
+    """The repository paths in apply's lines (`created <path>`, `changed <path>`, `index <path> (...)`)."""
+    return [m[1] for x in written for m in [re.match(r"(?:created|changed|index) (\S+)", x)] if m]
 
 
 def apply(repo: pathlib.Path, dry: bool, fetch: bool) -> list[str]:
@@ -226,6 +262,8 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool) -> list[str]:
         w(BUILD_WF, fill_known(common.read(PROFILE_BUILD), build_values(repo)))
     if "deny" in acts:
         w(common.SETTINGS, common.with_denies(repo, common.deny_missing(repo)[0]))
+    if "card-conv" in acts:
+        w(doctor.CARD, conv_card(repo)[1])
     if "refs-add" in acts or "ignore" in acts:
         gi = common.read(repo / ".gitignore") if (repo / ".gitignore").is_file() else ""
         if "/refs/" not in gi.splitlines():
@@ -246,7 +284,9 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool) -> list[str]:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             fetch_refs.main(["--repo", str(repo)] + ([] if fetch else ["--index-only"]))
-        written.append("index docs/ops/refs.md (%s)" % buf.getvalue().strip().splitlines()[-1])
+        fresh = " unchanged" in next((l for l in buf.getvalue().splitlines() if l.startswith("INDEX ")), "")
+        written.append("%s docs/ops/refs.md (%s)" % ("unchanged index" if fresh else "index",
+                                                     buf.getvalue().strip().splitlines()[-1]))
     elif dry and ("refs-add" in acts or "refs-rows" in acts):
         written.append("would write docs/ops/refs.md (the index)")
     return written
@@ -283,11 +323,49 @@ def main(argv=None) -> int:
         manual = [x for x in plan(repo) if x["owner"] == "manual"] if not a.dry_run else []
         for x in manual:
             print("MANUAL %s" % x["what"])
-        print("APPLY %s %d write(s); nothing committed%s" % ("DRY RUN" if a.dry_run else "OK", len(written),
-                                                           "" if a.dry_run else " (review, then commit the paths above)"))
+        paths = written_paths(written)
+        print("APPLY %s %d write(s); nothing committed" % (
+            "DRY RUN" if a.dry_run else "OK", sum(x.startswith("would be ") for x in written) if a.dry_run else len(paths)))
+        if paths and not a.dry_run:
+            print("COMMIT %s" % commit_command(repo, paths))
         return 0
     ap.print_help()
     return 2
+
+
+def self_test_card(repo: pathlib.Path) -> bool:
+    """card-conv on a card with room, on a full card (manual, the exact characters to free) and on an older line; the
+    commit command. The card is put back as apply left it."""
+    how = repo / doctor.CARD
+    line = install.conventions_line(False)
+    done = how.read_text()
+    ok = done.count(line) == 1 and "card-conv" not in {x["key"] for x in plan(repo)}
+    bare = done.replace(line + "\n", "")
+    how.write_text(bare + "x" * (7000 - len(bare) - len(line)) + "\n")       # two characters short of the room the line needs
+    act = next(x for x in plan(repo) if x["key"] == "card-conv")
+    ok &= act["owner"] == "manual" and "free 2 character(s)" in act["what"] and apply(repo, True, False) == []
+    how.write_text(how.read_text().replace("xx\n", "\n"))                     # two freed: it fits, to the character
+    ok &= next(x for x in plan(repo) if x["key"] == "card-conv")["owner"] == "psxdecomp"
+    out = apply(repo, False, False)
+    ok &= len(how.read_text()) == 7000 and line in how.read_text() and "changed %s" % doctor.CARD in out
+    ok &= written_paths(out) == [doctor.CARD] and written_paths(["would be changed x", "card check rc 0: []"]) == []
+    how.write_text(done.replace(line, "%s an older pointer." % install.CONV_MARK))
+    ok &= next(x for x in plan(repo) if x["key"] == "card-conv")["owner"] == "psxdecomp"
+    apply(repo, False, False)
+    ok &= how.read_text() == done                                            # an older line: replaced where it stood
+    cmd = commit_command(repo, ["a b", "c", "c"])
+    ok &= cmd == "git add -- 'a b' c && git commit -m 'psxdecomp: upgrade to psxdecomp %s' -- 'a b' c" % common.plugin_version()
+    (repo / "tools/commit_task.sh").write_text("")
+    ok &= commit_command(repo, ["c"]) == "bash tools/commit_task.sh psxdecomp 'upgrade to psxdecomp %s' c" % common.plugin_version()
+    (repo / "tools/commit_task.sh").unlink()
+    how.write_text(bare)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        main(["apply", "--repo", str(repo)])
+    last = buf.getvalue().strip().splitlines()[-1]
+    ok &= "APPLY OK 1 write(s); nothing committed" in buf.getvalue()         # the card; the unchanged index is no write
+    print("  card-conv: %s; last line: %s" % (act["what"][:44], last[:60]))
+    return ok and how.read_text() == done and last.startswith("COMMIT git add -- %s && git commit -m " % doctor.CARD)
 
 
 def self_test() -> int:
@@ -301,13 +379,14 @@ def self_test() -> int:
         (repo / ".claude").mkdir()
         (repo / ".claude/pa.json").write_text(json.dumps({"pa_version": "3.14.1", "python": "/nonexistent/python"}))
         keys = {x["key"] for x in plan(repo)}
-        ok &= {"adopt", "refs-add", "ignore", "pa3", "python", "kit", "publish"} <= keys
+        ok &= {"adopt", "refs-add", "ignore", "pa3", "python", "kit", "publish", "card-conv"} <= keys
         before = sorted(p.name for p in repo.rglob("*") if ".git" not in p.parts)
         dry = apply(repo, True, False)
         ok &= sorted(p.name for p in repo.rglob("*") if ".git" not in p.parts) == before and len(dry) >= 4
         apply(repo, False, False)
         ok &= (repo / "config/refs.toml").is_file() and (repo / "docs/ops/refs.md").is_file()
         ok &= install.REFS_RULE in (repo / "HOW_WE_WORK.md").read_text()
+        ok &= self_test_card(repo)
         keys2 = {x["key"] for x in plan(repo)}
         ok &= "deny" in keys and not ({"adopt", "refs-add", "ignore", "publish", "deny"} & keys2)
         want = json.loads(common.read(common.PROFILE_DENY))["permissions"]["deny"]

@@ -530,6 +530,17 @@ def conventions_line(prior: bool) -> str:
         CONV_MARK, DRAFT_RULE, " Prior-art rules and the decision: `docs/prior-art.md`." if prior else "")
 
 
+def with_conventions(card: str, line: str) -> str:
+    """The card with `line` as its one C-conventions line: an older line is replaced where it stands, else the line
+    ends the conventions section. S10 and upgrade's `card-conv` both write through here."""
+    lines = card.split("\n")
+    at = [i for i, l in enumerate(lines) if l.startswith(CONV_MARK)]
+    if not at:
+        return insert_in_section(card, "## Conventions", line)
+    lines[at[0]] = line
+    return "\n".join(l for i, l in enumerate(lines) if i not in at[1:])
+
+
 def psyq_record(medium: dict | None) -> tuple[list[str], str]:
     """The game's one psyq.toml row as config/psxdecomp.toml [psyq] lines, and the version for the scope line."""
     if not medium:
@@ -597,11 +608,9 @@ def s10_handoff(c: Ctx) -> str:
     how = c.p("HOW_WE_WORK.md")
     if how.is_file() and SCOPE_MARK not in common.read(how):
         c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Docs map", scope_line(ans, psyq_v)))
-        paths.append("HOW_WE_WORK.md")
     if how.is_file() and CONV_MARK not in common.read(how):     # the card's conventions slot is empty after S7
-        c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Conventions",
-                                                    conventions_line(c.p("docs/prior-art.md").exists())))
-        paths.append("HOW_WE_WORK.md")
+        c.write("HOW_WE_WORK.md", with_conventions(common.read(how), conventions_line(c.p("docs/prior-art.md").exists())))
+    paths.append("HOW_WE_WORK.md")                  # always: a run that failed after these writes left the card dirty
     seeds = c.boot("seeds.txt")
     if c.dry:
         return "would write the record, the profile, the host recipe and docs/prior-art.md"
@@ -840,6 +849,11 @@ def self_test() -> int:
     ok &= "--resume" in RESTART and "--agent plain" in RESTART
     conv = conventions_line(True)
     ok &= len(conv) <= 400 and DRAFT_RULE in conv and "docs/prior-art.md" not in conventions_line(False)
+    card = "# C\n## Conventions\n- a\n\n## Next\n- b\n"
+    ok &= with_conventions(card, conv) == "# C\n## Conventions\n- a\n%s\n\n## Next\n- b\n" % conv
+    old = card.replace("- a", "- a\n%s an older pointer.\n- c\n%s twice." % (CONV_MARK, CONV_MARK))
+    ok &= with_conventions(old, conv) == card.replace("- a", "- a\n%s\n- c" % conv)      # replaced in place, once
+    ok &= with_conventions(with_conventions(card, conv), conv) == with_conventions(card, conv)
     readme = "# G\n\nLead.\n\n## How this project is made\n\n%s\n\nThe standard.\n" % common.OLD_DISCLOSURE
     swapped = common.with_ai_policy(readme, replace=common.OLD_DISCLOSURE)
     ok &= common.OLD_DISCLOSURE not in swapped and swapped.count(common.AI_POLICY_MARK) == 1

@@ -272,3 +272,25 @@ def test_resume_from_every_stage(toolchain, tmp_path, until):
     r = bootstrap(toolchain, target)
     assert "BOOTSTRAP OK through S10" in r.stdout
     assert tree(target) == GOLDEN.read_text().splitlines()
+
+
+def test_resumed_s10_commits_the_card(toolchain, tmp_path):
+    """An S10 that fails after its writes (here: doctor's fixture row) and is run again leaves nothing behind: the card
+    with both of S10's lines is in the handoff commit, the tree is clean and equals the golden tree."""
+    import install
+    target = tmp_path / "resume-s10"
+    bootstrap(toolchain, target, "--until", "S9")
+    sha1 = target / "config/firewall-fixture.sha1"
+    kept = sha1.read_bytes()
+    sha1.unlink()
+    r = bootstrap(toolchain, target, check=False)
+    assert r.returncode == 1 and "fixture: planted-fixture hash missing" in r.stdout, r.stdout
+    assert install.CONV_MARK in (target / "HOW_WE_WORK.md").read_text()          # the failed run wrote the card
+    assert install.CONV_MARK not in run(["git", "-C", target, "show", "HEAD:HOW_WE_WORK.md"]).stdout
+    sha1.write_bytes(kept)
+    r = bootstrap(toolchain, target)
+    assert "BOOTSTRAP OK through S10" in r.stdout
+    assert run(["git", "-C", target, "status", "--porcelain"]).stdout == ""
+    card = run(["git", "-C", target, "show", "HEAD:HOW_WE_WORK.md"]).stdout
+    assert install.CONV_MARK in card and install.SCOPE_MARK in card
+    assert tree(target) == GOLDEN.read_text().splitlines()

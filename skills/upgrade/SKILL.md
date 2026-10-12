@@ -17,6 +17,5 @@ psxrecomp's migrate shape: **audit → plan → apply --dry-run → apply**. `PS
 3. `"$PSXD" upgrade apply --dry-run --repo <repo>` — the exact writes.
 4. Stop here when `--dry-run` was given. Otherwise ask (AskUserQuestion: `Apply` recommended / `Stop`), then
    `"$PSXD" upgrade apply --repo <repo>` (add `--fetch` to clone `refs/` too).
-5. The script never commits. In a PA3 repository commit through the project's own path (`tools/commit_task.sh` when
-   it exists, else an explicit-path `git commit`), only the paths `APPLY` printed. If a router session is running in
-   that repository, do not apply; say so.
+5. The script never commits. Its last line, `COMMIT ...`, is the command that commits the paths it wrote.
+   Run that command on the developer's word. If a router session is running in that repository, do not apply; say so.
