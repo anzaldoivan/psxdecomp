@@ -10,8 +10,10 @@ apply. psxrecomp's migrate shape, our own code.
     upgrade.py --self-test
 
 psxdecomp owns: config/psxdecomp.toml (apply sets its [psxdecomp].version to this plugin's), config/refs.toml, docs/ops/refs.md, its .gitignore block, its firewall purge
-line, the one HOW_WE_WORK references line and its C-conventions pointer line (`card-conv`: written when the card has
-room under PA3's cap, else a `manual` action naming the characters to free), the docs/ops/INDEX.md row, tools/psxd_publish.py,
+line, the one HOW_WE_WORK references line and its C-conventions pointer line (`card-conv`: in a bootstrapped
+repository only, written when the card has room under PA3's cap, else a `manual` action naming the characters to free.
+An adopted repository gets no `card-conv` action and no such write: its card is the game's own text. Adopted means
+`bootstrapped = "adopted <date>"` in the record, or no record yet), the docs/ops/INDEX.md row, tools/psxd_publish.py,
 .github/workflows/psxdecomp-readme.yml (the README standard's lint and its CI) and the agents' deny rules
 (profiles/psx/deny.json, added to .claude/settings.json `permissions.deny`, never removed; the bootstrap's S10 writes
 them first, this adds any that are missing later). The README's prose is
@@ -136,7 +138,7 @@ def plan(repo: pathlib.Path) -> list[dict]:
         if left:
             add("manual", "build: fill %s in %s by hand (the game's own values; psxdecomp's docs/PUBLISHING.md)"
                 % (", ".join("{{%s}}" % k for k in left), BUILD_WF), "upgrade cannot read them", "build-fill")
-    conv = conv_card(repo)
+    conv = None if adopted(repo) else conv_card(repo)    # an adopted card is the game's own text: no action, no write
     if conv:
         over = len(conv[1]) - doctor.card_chars(repo)[1]
         if over <= 0:
@@ -204,6 +206,20 @@ def plan(repo: pathlib.Path) -> list[dict]:
         add("manual", "kit: no decomp-architect install record; the kit installs on PA3 repositories with its own "
             "installer", "no kit", "kit")
     return acts
+
+
+def adopted(repo: pathlib.Path) -> bool:
+    """True when psxdecomp did not bootstrap the repository: the record's [psxdecomp].bootstrapped starts with `adopted`
+    (the `adopt` action's value), or there is no record yet (`adopt` is in the same plan). A record that is not TOML
+    counts as adopted: upgrade then writes nothing into the card."""
+    rec = repo / install.RECORD
+    if not rec.is_file():
+        return True
+    try:
+        table = tomllib.loads(common.read(rec)).get("psxdecomp", {})
+    except tomllib.TOMLDecodeError:
+        return True
+    return str(table.get("bootstrapped", "") if isinstance(table, dict) else "").startswith("adopted")
 
 
 def conv_card(repo: pathlib.Path) -> tuple[str, str] | None:
@@ -377,12 +393,29 @@ def main(argv=None) -> int:
 
 
 def self_test_card(repo: pathlib.Path) -> bool:
-    """card-conv on a card with room, on a full card (manual, the exact characters to free) and on an older line; the
-    commit command. The card is put back as apply left it."""
-    how = repo / doctor.CARD
+    """card-conv. On entry the record is the one `adopt` wrote: no action and no write of the card, with room and on a
+    full card. Then the record is a bootstrapped one for the cases that follow: a card with room, a full card (manual,
+    the exact characters to free), an older line, the commit command. On return the record and the card are the
+    adopted ones again."""
+    how, rec = repo / doctor.CARD, repo / install.RECORD
     line = install.conventions_line(False)
+    keys = lambda: {x["key"] for x in plan(repo)}  # noqa: E731
+    asis, adopt_rec = how.read_text(), common.read(rec)
+    ok = 'bootstrapped = "adopted %s"' % common.today() in adopt_rec and adopted(repo)
+    ok &= install.CONV_MARK not in asis and conv_card(repo) is not None        # the card lacks the line, and stays so
+    ok &= "card-conv" not in keys() and written_paths(apply(repo, False, False)) == [] and how.read_text() == asis
+    full = asis + "é" * (7000 - len(asis)) + "\n"                    # adopted and full: no manual action either
+    how.write_text(full, encoding="utf-8")
+    ok &= "card-conv" not in keys() and written_paths(apply(repo, False, False)) == []
+    ok &= how.read_text(encoding="utf-8") == full
+    how.write_text(asis)
+    rec.write_text("[psxdecomp\n", encoding="utf-8")                      # not TOML: read as adopted, the card stays
+    ok &= adopted(repo) and "card-conv" not in keys()
+    rec.write_text(adopt_rec.replace('bootstrapped = "adopted ', 'bootstrapped = "'), encoding="utf-8")
+    ok &= not adopted(repo) and next(x for x in plan(repo) if x["key"] == "card-conv")["owner"] == "psxdecomp"
+    ok &= written_paths(apply(repo, False, False)) == [doctor.CARD]       # bootstrapped: written, as before
     done = how.read_text()
-    ok = done.count(line) == 1 and "card-conv" not in {x["key"] for x in plan(repo)}
+    ok &= done.count(line) == 1 and "card-conv" not in keys()
     bare = done.replace(line + "\n", "")
     # two characters short of the room the line needs; the filler is not ASCII: PA3's cap counts characters, not bytes
     how.write_text(bare + "\u00e9" * (7000 - len(bare) - len(line)) + "\n", encoding="utf-8")
@@ -409,7 +442,10 @@ def self_test_card(repo: pathlib.Path) -> bool:
     last = buf.getvalue().strip().splitlines()[-1]
     ok &= "APPLY OK 1 write(s); nothing committed" in buf.getvalue()         # the card; the unchanged index is no write
     print("  card-conv: %s; last line: %s" % (act["what"][:44], last[:60]))
-    return ok and how.read_text() == done and last.startswith("COMMIT git add -- %s && git commit -m " % doctor.CARD)
+    ok &= how.read_text() == done and last.startswith("COMMIT git add -- %s && git commit -m " % doctor.CARD)
+    how.write_text(asis)
+    rec.write_text(adopt_rec, encoding="utf-8")
+    return ok and "card-conv" not in keys()
 
 
 # A stand-in for PA3's tools/rules_add.py in the self-test: `add` alone, the real tool's two files and their format.
@@ -535,7 +571,8 @@ def self_test() -> int:
         (repo / ".claude").mkdir()
         (repo / ".claude/pa.json").write_text(json.dumps({"pa_version": "3.14.1", "python": "/nonexistent/python"}))
         keys = {x["key"] for x in plan(repo)}
-        ok &= {"adopt", "refs-add", "ignore", "pa3", "python", "kit", "publish", "card-conv"} <= keys
+        ok &= {"adopt", "refs-add", "ignore", "pa3", "python", "kit", "publish"} <= keys
+        ok &= "card-conv" not in keys and conv_card(repo) is not None     # no record yet: adopted, the card is the game's
         before = sorted(p.name for p in repo.rglob("*") if ".git" not in p.parts)
         dry = apply(repo, True, False)
         ok &= sorted(p.name for p in repo.rglob("*") if ".git" not in p.parts) == before and len(dry) >= 4
