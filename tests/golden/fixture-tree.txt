@@ -46,6 +46,7 @@ config/mcp.json.template
 config/psxdecomp.profile.toml
 config/psxdecomp.toml
 config/refs.toml
+config/style-ratchet.txt
 cookbook/C0001.md
 cookbook/C0002.md
 cookbook/C0003.md
@@ -171,6 +172,7 @@ rules/P5.md
 rules/P7.md
 rules/P8.md
 rules/P9.md
+rules/STE1.md
 rules/X2.md
 rules/X3.md
 rules/X4.md

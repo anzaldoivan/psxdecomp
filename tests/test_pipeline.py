@@ -100,6 +100,115 @@ def test_s10_writes_the_deny_rules_and_doctor_checks_them(game, tmp_path):
     assert r.returncode == 1 and re.search(r"DOCTOR deny\s+FAIL\s+1 of 18", r.stdout), r.stdout
 
 
+def _headlines(game):
+    """The lines of the project-architect skill's headline section: from the first heading that holds "headline" or
+    "11" to the next heading (the section the game's `rules_add.py promote` writes to)."""
+    lines = (game / ".claude/skills/project-architect/SKILL.md").read_text().splitlines()
+    start = next(i for i, l in enumerate(lines) if l.startswith("#") and ("headline" in l.lower()
+                                                                           or re.search(r"[§#]\s?11\b", l)))
+    end = next((j for j in range(start + 1, len(lines)) if lines[j].startswith("#")), len(lines))
+    return lines[start + 1:end]
+
+
+def _hook_group():
+    groups = json.loads(common.read(common.PROFILE_HOOKS))["hooks"]["PostToolUse"]
+    assert len(groups) == 1 and groups[0]["hooks"][0]["command"].endswith("style --hook"), groups
+    return groups[0]
+
+
+def _ste_body(repo):
+    """rules/STE1.md after its two header lines (the title line and the dated metadata line of rules_add.py)."""
+    head, meta, body = (repo / common.STE_RULE).read_text().split("\n", 2)
+    assert head == "# STE1 — %s" % common.STE_TITLE and meta.startswith("id: STE1 · group: STE · "), (head, meta)
+    return body.strip()
+
+
+def test_s10_writes_the_rule_and_does_not_promote_it(game):
+    """S10 has the game's own rules_add.py write rules/STE1.md (the profile's body under the tool's two header lines)
+    and its row of rules/INDEX.md. It never promotes the rule: the headline section of the project-architect skill,
+    which every session loads, holds the kit's headlines and no STE1 line. Both files are in the handoff commit."""
+    assert _ste_body(game) == common.read(common.PROFILE_STE).strip()
+    index = (game / common.STE_INDEX).read_text().splitlines()
+    assert index.count("STE1 | %s | writing,public | active | psxdecomp" % common.STE_TITLE) == 1, index[-3:]
+    assert len([l for l in index if l.startswith("STE1 ")]) == 1
+    heads = [l for l in _headlines(game) if l.startswith("- ")]
+    assert any(re.match(r"- [A-Z]+\d+ — ", l) for l in heads), heads       # the section the kit promoted its rules to
+    assert not [l for l in heads if l.startswith("- STE1")], heads
+    assert "STE1" not in (game / ".claude/skills/project-architect/SKILL.md").read_text()
+    assert common.ste_rule_state(game) is None
+    handoff = run(["git", "-C", game, "show", "--name-only", "--format=", "HEAD"]).stdout.split()
+    assert {common.STE_RULE, common.STE_INDEX} <= set(handoff), handoff
+
+
+def test_s10_writes_the_first_ratchet_and_style_passes(game):
+    """S10 writes config/style-ratchet.txt last, in the handoff commit: one `skip` line for each of the kit's five
+    files and one row per other public prose file with a finding, at its count of now. The vendored `style` (the CI
+    step of the README workflow) exits 0 in the game, and exits 1 when a public file gains one finding."""
+    import publish
+    rat = game / publish.STYLE_RATCHET_REL
+    rows, skip, head = publish.parse_ratchet(rat.read_text())
+    assert skip == list(common.KIT_PROSE) and len(skip) == 5 and all((game / k).is_file() for k in skip), skip
+    lines = rat.read_text().splitlines()
+    assert [l for l in lines if l.startswith("skip ")] == ["skip %s" % k for k in common.KIT_PROSE], lines
+    assert head and all(l.startswith("#") for l in head) and "style --update" in "\n".join(head), head
+    assert rows and rows == publish.style_counts(game, skip) and not set(rows) & set(skip), rows
+    assert run(["git", "-C", game, "ls-files", publish.STYLE_RATCHET_REL]).stdout.strip() == publish.STYLE_RATCHET_REL
+    assert publish.STYLE_RATCHET_REL in run(["git", "-C", game, "show", "--name-only", "--format=", "HEAD"]).stdout
+    r = run([PY, publish.VENDORED, "style"], cwd=game, check=False)
+    assert r.returncode == 0 and r.stdout.startswith("STYLE CHECK OK (") and "0 over their row" in r.stdout, r.stdout
+    assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+    readme, row = (game / "README.md").read_bytes(), rows.get("README.md", 0)
+    try:                                                    # the negative control: one more semicolon in the README
+        (game / "README.md").write_bytes(readme + b"\nOne part; two parts.\n")
+        r = run([PY, publish.VENDORED, "style"], cwd=game, check=False)
+        want = "STYLE FAIL README.md: %d finding(s), its row is %d\n" % (row + 1, row)
+        assert r.returncode == 1 and want in r.stdout, r.stdout
+    finally:
+        (game / "README.md").write_bytes(readme)
+    assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+
+
+def test_s10_writes_the_style_hook_beside_the_deny_rules(game):
+    """S10 puts the hook group of profiles/psx/hooks.json into the tracked .claude/settings.json in the same write as
+    the deny rules: PA3's own keys stay, the file is tracked and clean, and the handoff is still one commit of 9."""
+    conf = json.loads((game / common.SETTINGS).read_text())
+    assert conf["hooks"]["PostToolUse"].count(_hook_group()) == 1, conf.get("hooks")
+    want = json.loads((ROOT / "profiles/psx/deny.json").read_text())["permissions"]["deny"]
+    assert set(want) <= set(conf["permissions"]["deny"]) and conf["agent"] == "pa-session", conf
+    assert common.hooks_missing(game) == ([], None) and common.settings_due(game) is None
+    assert run(["git", "-C", game, "status", "--porcelain", common.SETTINGS]).stdout == ""
+    assert run(["git", "-C", game, "ls-files", common.SETTINGS]).stdout.strip() == common.SETTINGS
+    assert json.loads(run(["git", "-C", game, "show", "HEAD:" + common.SETTINGS]).stdout) == conf
+    log = run(["git", "-C", game, "log", "--format=%s"]).stdout.splitlines()
+    assert len(log) == 9 and log[0].startswith("psxdecomp handoff:") and "STE1" in log[0], log
+    assert common.SETTINGS in run(["git", "-C", game, "show", "--name-only", "--format=", "HEAD"]).stdout.split()
+
+
+def test_second_pa3_install_keeps_the_rule_the_ratchet_and_the_hook(toolchain, game, tmp_path):
+    """PA3's own `--project` install run again over a copy of the game (the command of S6, from the pinned clone of the
+    toolchain fixture) keeps what S10 wrote for the public files: the rule file and its index row, the ratchet, the
+    hook group and the deny rules. It promotes no STE1 headline."""
+    import publish
+    copy = tmp_path / "copy"
+    shutil.copytree(game, copy, symlinks=True)
+    pa = json.loads((copy / ".claude/pa.json").read_text())
+    kept = {rel: (copy / rel).read_bytes() for rel in (common.STE_RULE, publish.STYLE_RATCHET_REL)}
+    row = next(l for l in (copy / common.STE_INDEX).read_text().splitlines() if l.startswith("STE1 "))
+    r = run([PY, toolchain["pkg"] / "pa_install.py", "--project", copy, "--yes", "--name", pa["project"], "--python",
+             pa["python"], "--config-dir", toolchain["cfg"], "--pa3-dir", toolchain["cfg"] / "pa3"], check=False)
+    assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-2000:]
+    assert json.loads((copy / ".claude/pa.json").read_text())["pa_version"] == pa["pa_version"]
+    assert {rel: (copy / rel).read_bytes() for rel in kept} == kept, r.stdout[-3000:]
+    assert common.ste_rule_state(copy) is None and _ste_body(copy) == common.read(common.PROFILE_STE).strip()
+    assert (copy / common.STE_INDEX).read_text().splitlines().count(row) == 1
+    conf = json.loads((copy / common.SETTINGS).read_text())
+    assert conf["hooks"]["PostToolUse"].count(_hook_group()) == 1, conf.get("hooks")
+    assert common.hooks_missing(copy) == ([], None) and common.deny_missing(copy) == ([], None)
+    assert not [l for l in _headlines(copy) if l.startswith("- STE1")]
+    r = run([PY, publish.VENDORED, "style"], cwd=copy, check=False)
+    assert r.returncode == 0 and "STYLE CHECK OK" in r.stdout, r.stdout
+
+
 def test_s6_root_hint_pins_the_clone(toolchain, tmp_path):
     """No PA3 on the machine: S6 prints the --root command with --no-clone (the pinned copy, not upstream's branch)."""
     target = tmp_path / "noroot"

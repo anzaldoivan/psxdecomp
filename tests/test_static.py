@@ -1,18 +1,21 @@
 """Tier 0: free, every push. Manifests, schemas, invocation-only skills, links, the repo's own firewall."""
 import json
+import os
 import pathlib
 import re
 import shutil
+import subprocess
 import sys
 import tomllib
 
 import pytest
 
-from conftest import PY, ROOT, check_golden, front, hook_stdout, run
+from conftest import GIT_ENV, PY, ROOT, check_golden, front, hook_stdout, run
 
 import answers
 import common
 import fetch_refs
+import publish
 
 
 def test_plugin_validates():
@@ -248,20 +251,22 @@ def test_no_copied_prose():
 
 # The files S10 or upgrade copies into a game (the README template through S8): held at no finding.
 GAME_FILES = ("profiles/psx/hosts/", "profiles/psx/split-mode.md", "profiles/psx/README.md.template",
-              "profiles/psx/private/README.md")
+              "profiles/psx/private/README.md", "profiles/psx/rules/")
 
 
 def test_style_ratchet():
     """The writing standard (CONTRIBUTING.md "Writing"): tests/golden/style.txt holds one `<count> <path>` line per
-    document with a finding of fetch_refs.lint_style. A count may only fall: the update switch refuses a higher one.
-    A file that a game receives has none."""
+    document with a finding of publish.lint_style. It counts four rules: a sentence over its word limit, a paragraph
+    over 6 sentences, a semicolon, a contraction. A count may only fall: the update switch refuses a higher one. A
+    file that a game receives has none (GAME_FILES, the rule file of the public files among them)."""
     golden = ROOT / "tests" / "golden" / "style.txt"
     docs = [p for p in _docs((".md", ".template")) if p.relative_to(ROOT).parts[0] not in ("evals", "fixtures", "tests")]
-    found = {p.relative_to(ROOT).as_posix(): fetch_refs.lint_style(p.read_text()) for p in docs}
+    found = {p.relative_to(ROOT).as_posix(): publish.lint_style(p.read_text()) for p in docs}
     was = {rel: int(n) for n, rel in (l.split(" ", 1) for l in golden.read_text().splitlines())}
     rose = ["%s:%d: %s" % (rel, n, m) for rel, f in found.items() if len(f) > was.get(rel, 0) for n, m in f]
     assert not rose, rose
     assert not [rel for rel, f in found.items() if f and rel.startswith(GAME_FILES)]
+    assert all(any(rel.startswith(g) for rel in found) for g in GAME_FILES), "a GAME_FILES entry names no document"
     check_golden(golden, {rel: "." * len(f) for rel, f in found.items() if f})       # the count as the item's length
 
 
@@ -496,3 +501,130 @@ def test_game_files_cite_no_foreign_ids():
     assert set(ids.findall((ROOT / "profiles/psx/private/README.md").read_text())) <= {"G12", "G18"}
     assert ids.search("see G41.") and ids.search("(D5)") and not ids.search("sha-G41x") and not ids.search("20260901T000000Z")
 
+
+# ---- the writing rule of the public files (publish.py `style`; profiles/psx/rules/STE1.md, hooks.json) -------------
+
+SEMI = "a semicolon (write two sentences)"
+
+
+def test_style_rules():
+    """The semicolon and the contraction through publish.lint_style, apart from the script's own self-test: one
+    finding each, on the line of its unit. A record line is a row, so the second line keeps its own number. A marker
+    block hides its lines, and only with its end line. A code span and a link target do not count."""
+    block = "%s\nOne part; two parts.\n%s\n" % (publish.marker("disc"), publish.marker("disc", True))
+    cases = {
+        "one semicolon": ("# T\n\nThe build runs; the gate reads it.\n", [(3, SEMI)]),
+        "one contraction": ("The build doesn't run.\n", [(1, 'a contraction: "doesn\'t"')]),
+        "no finding": ("The build runs. The gate reads it. It does not fail.\n", []),
+        "a record line": ("C0001 | a; b | x\nC0002 | c | y; z\n", [(1, SEMI), (2, SEMI)]),
+        "a marker block": (block, []),
+        "a marker block, then prose": (block + "\nThree; four.\n", [(5, SEMI)]),
+        "a begin line with no end line": (block.replace(publish.marker("disc", True) + "\n", ""), [(2, SEMI)]),
+        "a code span": ("Run `make a; make b`, then `don't` is an argument.\n", []),
+        "a link target": ("See [the map](docs/map.md;v=2).\n", []),
+        "a link text": ("See [the map; all of it](docs/map.md).\n", [(1, SEMI)]),
+    }
+    for name, (text, want) in cases.items():
+        assert publish.lint_style(text) == want, name
+
+
+def _style_repo(root, files):
+    """A committed throwaway repository with no public list: each of its `.md` files is a public prose file."""
+    for rel, body in files.items():
+        (root / "staging" / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / "staging" / rel).write_text(body)
+    return _git_copy(root / "staging", root / "game")
+
+
+def test_style_ratchet_command(tmp_path):
+    """`publish.py style` in a git repository: a count under its row passes, a count over it exits 1 and names the
+    file, `--update` lowers a row and refuses a rise, a `skip` line takes a file out of the check."""
+    repo = _style_repo(tmp_path, {"README.md": "# R\n\nOne; two; three.\n", "docs/a.md": "One; two.\n",
+                                  "docs/kit.md": "One; two.\n", "docs/clean.md": "Clean.\n"})
+    rat, head = repo / publish.STYLE_RATCHET_REL, "# the ratchet\nskip docs/kit.md\n"
+    style = lambda *a: run([PY, ROOT / "scripts/publish.py", "style", "--repo", repo, *a], check=False)  # noqa: E731
+    rat.parent.mkdir()
+    rat.write_text(head + "3 README.md\n1 docs/a.md\n")
+    r = style()                                                 # README.md holds 2 findings under a row of 3
+    assert (r.returncode, r.stdout) == (0, "STYLE CHECK OK (3 file(s), 3 finding(s), 0 over their row)\n"), r.stdout
+    assert rat.read_text() == head + "3 README.md\n1 docs/a.md\n"      # a check writes nothing
+    r = style("--update")
+    assert r.returncode == 0 and "STYLE INFO README.md: 3 -> 2\n" in r.stdout, r.stdout
+    assert "STYLE UPDATE written %s (2 row(s), 1 fell, 0 went)\n" % publish.STYLE_RATCHET_REL in r.stdout, r.stdout
+    assert rat.read_text() == head + "2 README.md\n1 docs/a.md\n"
+    (repo / "docs/a.md").write_text("One; two; three.\n")       # a count over its row
+    r = style()
+    assert r.returncode == 1 and "docs/a.md:1: " + SEMI in r.stdout and "README.md:" not in r.stdout, r.stdout
+    assert "STYLE FAIL docs/a.md: 2 finding(s), its row is 1\n" in r.stdout, r.stdout
+    assert r.stdout.endswith("STYLE CHECK FAIL (3 file(s), 4 finding(s), 1 over their row)\n"), r.stdout
+    r = style("--update")
+    assert r.returncode == 1 and "STYLE UPDATE refused" in r.stdout, r.stdout
+    assert rat.read_text() == head + "2 README.md\n1 docs/a.md\n"
+    (repo / "docs/a.md").write_text("One; two.\n")
+    r = style()                                                 # the `skip` line: docs/kit.md has a finding and no row
+    assert r.returncode == 0 and "docs/kit.md" not in r.stdout, r.stdout
+    rat.write_text("2 README.md\n1 docs/a.md\n")
+    r = style()
+    assert r.returncode == 1 and "STYLE FAIL docs/kit.md: 1 finding(s), its row is 0\n" in r.stdout, r.stdout
+
+
+def test_style_hook_output(tmp_path):
+    """`publish.py style --hook` with a Write event for a public file with a finding: exit code 0 and one JSON object
+    on stdout, a PostToolUse answer whose context names the file, the line and the rule. A file with no finding and
+    bad JSON on stdin: no output, exit code 0."""
+    repo = _style_repo(tmp_path, {"README.md": "# R\n\nClean.\n"})
+    (repo / "docs").mkdir()
+    (repo / "docs/w.md").write_text("Clean.\n\nOne part; two parts.\n")
+    (repo / "docs/clean.md").write_text("Clean.\n")
+
+    def hook(stdin):
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", **GIT_ENV)
+        return subprocess.run([PY, str(ROOT / "scripts/publish.py"), "style", "--hook"], input=stdin, cwd=tmp_path,
+                              capture_output=True, text=True, env=env)
+
+    def event(rel):
+        return json.dumps({"hook_event_name": "PostToolUse", "session_id": "tier0", "cwd": str(repo),
+                           "tool_name": "Write", "tool_input": {"file_path": str(repo / rel), "content": "x"}})
+
+    r = hook(event("docs/w.md"))
+    assert r.returncode == 0 and r.stderr == "" and len(r.stdout.splitlines()) == 1, (r.stdout, r.stderr)
+    out = json.loads(r.stdout)
+    assert list(out) == ["hookSpecificOutput"] and out["hookSpecificOutput"]["hookEventName"] == "PostToolUse", out
+    said = out["hookSpecificOutput"]["additionalContext"]
+    assert "docs/w.md:3: " + SEMI in said and common.STE_RULE in said and "1 finding(s)" in said, said
+    silent = {"a file with no finding": event("docs/clean.md"), "bad JSON": "{not json", "no event": ""}
+    for name, stdin in silent.items():
+        r = hook(stdin)
+        assert (r.returncode, r.stdout) == (0, ""), (name, r.stdout, r.stderr)
+
+
+def test_style_profile_files():
+    """profiles/psx/hooks.json holds one PostToolUse group whose command runs the vendored `style --hook` with
+    `python3` from the project directory. profiles/psx/rules/STE1.md is a rule body with no title line: the game's
+    rules_add.py writes the title. It says what it is (in the style of ASD-STE100) and claims no compliance."""
+    conf = json.loads((ROOT / "profiles/psx/hooks.json").read_text())
+    assert conf == json.loads(common.read(common.PROFILE_HOOKS)) and list(conf) == ["hooks"], list(conf)
+    assert list(conf["hooks"]) == ["PostToolUse"] and len(conf["hooks"]["PostToolUse"]) == 1, conf["hooks"]
+    group = conf["hooks"]["PostToolUse"][0]
+    assert set(group["matcher"].split("|")) == {"Write", "Edit", "Bash"}, group["matcher"]
+    assert [h["type"] for h in group["hooks"]] == ["command"], group["hooks"]
+    cmd = group["hooks"][0]["command"]
+    assert cmd.startswith("python3 ") and cmd.endswith(" style --hook"), cmd
+    assert '"$CLAUDE_PROJECT_DIR/%s"' % publish.VENDORED in cmd and publish.VENDORED == "tools/psxd_publish.py", cmd
+    assert common.PROFILE_STE == ROOT / "profiles/psx/rules/STE1.md"
+    rule = common.PROFILE_STE.read_text()
+    flat = " ".join(rule.split())
+    assert not rule.startswith("#") and rule.splitlines()[0].strip(), rule[:80]
+    assert "in the style of ASD-STE100" in flat and "`python3 %s style <file>`" % publish.VENDORED in flat
+    assert "compliant" not in flat.lower()
+    assert common.STE_RULE in publish.style_hook_message([]) and common.STE_RULE == "rules/STE1.md"
+
+
+def test_style_workflow_step():
+    """The game's README workflow runs `style` (every public prose file against the ratchet), in a step of its own
+    after the README lint step."""
+    lines = [l.strip() for l in (ROOT / "profiles/psx/psxdecomp-readme.yml").read_text().splitlines()]
+    runs = [l for l in lines if l.startswith("run: ")]
+    lint, style = "run: python3 %s lint README.md" % publish.VENDORED, "run: python3 %s style" % publish.VENDORED
+    assert runs.count(lint) == 1 and runs.count(style) == 1 and runs.index(lint) < runs.index(style), runs
+    assert lines[lines.index(style) - 1].startswith("- name: ") and "style" in lines[lines.index(style) - 1]
