@@ -24,10 +24,15 @@ Follow [docs/RELEASING.md](docs/RELEASING.md). A PA3 or kit bump changes `compat
 
 ## Writing
 
-ASD-STE100 subset. Tier 0 counts the first two (`fetch_refs.lint_style`). The count never rises.
+In the style of ASD-STE100 (a subset). Tier 0 counts the first four rules (`publish.lint_style`). The count never rises.
 - A numbered step has at most 20 words. Any other sentence has at most 25.
 - A paragraph has at most 6 sentences.
+- No semicolon. Write two sentences, or name the relation.
+- No contraction. Write the two words in full.
 - One instruction per sentence. Use the imperative.
 - Use the active voice. Name who or what acts.
 - State the rule and its number. Do not tell how you found it.
 - A file that S10 copies into a game has no finding.
+
+A game gets the same checker as `python3 tools/psxd_publish.py style`. It has its own ratchet,
+`config/style-ratchet.txt`, and a hook that tells an agent the findings in the public text it changed.
