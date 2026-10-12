@@ -38,6 +38,14 @@
                                           release projection: in a clean ubuntu:24.04 container, or on this machine
                                           when the steps start containers themselves (build.yml; --private: a local
                                           <game>-private, --image: the toolchain image in [public].image's place)
+    publish.py style FILE...              the writing findings of each file, one `<file>:<line>: <finding>` line each;
+                                          exit 1 when there is one
+    publish.py style [--update] [--repo DIR]
+                                          every public prose file against config/style-ratchet.txt (`<count> <path>`
+                                          rows, `skip <entry>` lines): exit 1 when a count is over its row; --update
+                                          rewrites the rows to the counts of now and refuses a rise
+    publish.py style --hook               a Claude Code PostToolUse hook (stdin: the event): tells the session the
+                                          findings in the public text it changed; never blocks, always exits 0
     publish.py --self-test
 
 One file, standard library only, no import from the plugin: S10 and /psxdecomp:upgrade copy it byte for byte into a
@@ -53,9 +61,11 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+import difflib
 import fnmatch
 import functools
 import glob
+import hashlib
 import io
 import json
 import os
@@ -2967,6 +2977,251 @@ def lint_style(text: str) -> list[tuple[int, str]]:
     return [(a, m) for a, _, m in lint_spans(text)]
 
 
+# ---- style: the ratchet of the public prose files, and the hook of an agent session --------------------------------
+# A public prose file is a `.md` file of the work tree, tracked or untracked and not ignored, that the repository
+# publishes. With a public list, that is what a release publishes: an entry covers it and no entry of the deny set
+# does (AGENT_DENY, the paths PA3 manages, [public].deny). With none, all of the repository is public: no AGENT_DENY
+# entry covers it and PA3 does not manage it.
+# The ratchet holds one `<count> <path>` row per file with a finding and `skip <entry>` lines in the syntax of the
+# public list. A file with no row has row 0. A count may only fall. A file that a `skip` entry covers is not checked.
+STYLE_RATCHET_REL = "config/style-ratchet.txt"
+STYLE_HOOK_MAX = 30                              # findings in one hook message
+STYLE_HOOK_STATE = "psxd-style-hook"             # a folder of the work tree's git directory: one JSON file per session
+STYLE_HOOK_KEEP = 7 * 86400                      # seconds a state file lives after its last write
+
+
+def _published(repo):
+    """The test `path -> bool` of what the repository publishes (the comment above)."""
+    text, cfg = _read(pathlib.Path(repo) / PUBLIC_PATHS_REL), None
+    if text is not None:
+        try:
+            cfg = load_public(repo)
+        except Fail:                                   # no [public] table that a release reads: no deny of its own
+            pass
+    deny = deny_set(_read(pathlib.Path(repo) / PA3_REL), cfg)
+    if text is None:
+        return lambda p: not is_denied(deny, p)
+    entries = tuple(parse_public_paths(text))
+    return lambda p: is_listed(entries, p) and not is_denied(deny, p)
+
+
+def public_prose(repo, skip=(), only: str | None = None) -> list[str]:
+    """The public prose files of the work tree `repo` (its top level) that no `skip` entry covers, sorted. `only`
+    asks about one path. Raises Fail when `repo` is not a work tree."""
+    r = _git(repo, "--literal-pathspecs", "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+             *(("--", only) if only else ()))
+    if r.returncode != 0:
+        raise Fail("%s: not a git work tree" % repo)
+    public = _published(repo)
+    return sorted(p for p in set(r.stdout.split("\0")) if p.endswith(".md") and public(p)
+                  and not is_listed(skip, p) and (pathlib.Path(repo) / p).is_file())
+
+
+def parse_ratchet(text: str | None) -> tuple[dict[str, int], list[str], list[str]]:
+    """(the rows {path: count}, the `skip` entries, the leading comment lines) of a ratchet's text. None is the empty
+    ratchet. A line that is no row, no `skip` line, no `#` comment and not blank raises Fail with its number, and so
+    does the second row of one path."""
+    rows, skip, head, top = {}, [], [], True
+    for n, raw in enumerate((text or "").splitlines(), 1):
+        l = raw.strip()
+        if not l:
+            continue
+        m = re.fullmatch(r"(\d+) (\S.*)", l)
+        if l.startswith("#"):
+            head += [l] if top else []
+        elif l.startswith("skip ") and l[5:].strip():
+            skip.append(l[5:].strip())
+        elif m and m[2] not in rows:
+            rows[m[2]] = int(m[1])
+        else:
+            raise Fail("%s:%d: %s" % (STYLE_RATCHET_REL, n, "%s has two rows" % m[2] if m else
+                                      "not `<count> <path>`, `skip <entry>` or a `#` comment"))
+        top = top and l.startswith("#")
+    return rows, skip, head
+
+
+def style_findings(repo, skip=()) -> dict[str, list[tuple[int, str]]]:
+    """{path: [(line, finding)]} for every public prose file that no `skip` entry covers. A file that is not UTF-8
+    text has none."""
+    return {p: lint_style(_read(pathlib.Path(repo) / p) or "") for p in public_prose(repo, skip)}
+
+
+def style_counts(repo, skip=()) -> dict[str, int]:
+    """{path: count} for the public prose files with a finding: the rows of a ratchet written now."""
+    return {p: len(f) for p, f in style_findings(repo, skip).items() if f}
+
+
+def ratchet_text(counts: dict, skip=(), head=()) -> str:
+    """A ratchet's text: the comment lines, the `skip` lines, then one `<count> <path>` row per file with a count
+    above zero, sorted by path."""
+    lines = [l if l.startswith("#") else "# " + l for l in head] + ["skip %s" % e for e in skip]
+    lines += ["%d %s" % (counts[p], p) for p in sorted(counts) if counts[p] > 0]
+    return "".join(l + "\n" for l in lines)
+
+
+def style_files(files) -> int:
+    """`style FILE...`: every finding of each named file, whatever its path. 2 when a file is not readable."""
+    found = bad = 0
+    for path in files:
+        text = _read(path)
+        if text is None:
+            _line("STYLE", "FAIL", "%s: not readable" % path)
+            bad += 1
+            continue
+        for n, m in lint_style(text):
+            print("%s:%d: %s" % (path, n, m))
+            found += 1
+    return 2 if bad else 1 if found else 0
+
+
+def cmd_style(files=(), repo=".", update=False) -> int:
+    """`style`: the named files, or every public prose file against the ratchet. `update` rewrites the ratchet to
+    the counts of now when no count is over its row."""
+    if files:
+        return style_files(files)
+    try:
+        repo = repo_root(repo)
+        text = _read(repo / STYLE_RATCHET_REL)
+        rows, skip, head = parse_ratchet(text)
+        found = style_findings(repo, skip)
+    except Fail as e:
+        _line("STYLE", "FAIL", str(e))
+        return 2
+    over = [p for p, f in found.items() if len(f) > rows.get(p, 0)]
+    for p in over:
+        for n, m in found[p]:
+            print("%s:%d: %s" % (p, n, m))
+        _line("STYLE", "FAIL", "%s: %d finding(s), its row is %d" % (p, len(found[p]), rows.get(p, 0)))
+    print("STYLE CHECK %s (%d file(s), %d finding(s), %d over their row)" % (
+        "FAIL" if over else "OK", len(found), sum(map(len, found.values())), len(over)))
+    if not update:
+        return 1 if over else 0
+    if text is None:
+        print("STYLE UPDATE nothing written: no %s (S10 or /psxdecomp:upgrade writes the first one)"
+              % STYLE_RATCHET_REL)
+        return 1 if over else 0
+    if over:
+        print("STYLE UPDATE refused: a count is over its row, %s is unchanged" % STYLE_RATCHET_REL)
+        return 1
+    counts = {p: len(f) for p, f in found.items() if f}
+    fell = went = 0
+    for p in sorted(rows):
+        if counts.get(p):
+            if counts[p] < rows[p]:
+                fell += 1
+                _line("STYLE", "INFO", "%s: %d -> %d" % (p, rows[p], counts[p]))
+            continue
+        went += 1
+        why = ("a `skip` entry covers it" if is_listed(skip, p) else "no such file" if not (repo / p).is_file() else
+               "no finding" if p in found else "not a public prose file")
+        _line("STYLE", "INFO", "%s: %d -> no row (%s)" % (p, rows[p], why))
+    new = ratchet_text(counts, skip, head)
+    if new != text:
+        (repo / STYLE_RATCHET_REL).write_text(new, encoding="utf-8")
+    print("STYLE UPDATE %s %s (%d row(s), %d fell, %d went)" % ("written" if new != text else "unchanged",
+                                                               STYLE_RATCHET_REL, len(counts), fell, went))
+    return 0
+
+
+def changed_lines(before: str, after: str) -> set[int]:
+    """1-based lines of `after` that are new or changed and not blank."""
+    a = after.split("\n")
+    out = set()
+    for tag, _, _, j1, j2 in difflib.SequenceMatcher(None, before.split("\n"), a, autojunk=False).get_opcodes():
+        if tag in ("replace", "insert"):
+            out.update(j + 1 for j in range(j1, j2) if a[j].strip())
+    return out
+
+
+def style_hook_message(found: list[str]) -> str:
+    more = "\n... and %d more." % (len(found) - STYLE_HOOK_MAX) if len(found) > STYLE_HOOK_MAX else ""
+    return ("psxd style: %d finding(s) in the public text that you changed. Rule: rules/STE1.md. Correct each "
+            "finding before you finish.\n%s%s" % (len(found), "\n".join(found[:STYLE_HOOK_MAX]), more))
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def style_hook_findings(event: dict) -> list[str]:
+    """The `<path>:<line>: <finding>` lines that one PostToolUse event owes its session, and the session's new state.
+    Candidates: the file a Write or an Edit names, else every dirty public prose file whose content this session has
+    not seen and no other session's state holds. Of a candidate: the findings of the units that hold a line that
+    differs from HEAD (every finding when HEAD lacks the file), unless the session was last told the same ones.
+    After a Write or an Edit the state takes the named file alone: what a command changed in the background stays
+    unseen until the next event of another tool. After any other event it takes every dirty public prose file."""
+    inp = event.get("tool_input") or {}
+    edit = event.get("tool_name") in ("Write", "Edit")
+    target = pathlib.Path(event.get("cwd") or ".", inp["file_path"]).resolve() if edit else None
+    r = _git(target.parent if edit else event.get("cwd") or ".", "rev-parse", "--path-format=absolute",
+             "--show-toplevel", "--git-path", STYLE_HOOK_STATE)
+    if r.returncode != 0:
+        return []
+    root, state = (pathlib.Path(p) for p in r.stdout.splitlines()[:2])
+    skip, dirty = parse_ratchet(_read(root / STYLE_RATCHET_REL))[1], {}
+    # the states: this session's, and what the other sessions of this work tree have seen
+    name = re.sub(r"[^A-Za-z0-9_-]", "_", str(event.get("session_id") or ""))[:100] or "none"
+    mine, own, others, now = state / (name + ".json"), {}, {}, time.time()
+    for f in sorted(state.iterdir()) if state.is_dir() else ():
+        try:
+            if now - f.stat().st_mtime > STYLE_HOOK_KEEP:
+                f.unlink()
+                continue
+            data = json.loads(f.read_text(encoding="utf-8")) if f.suffix == ".json" else None
+        except (OSError, ValueError):
+            continue
+        data = {p: v for p, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+        if f == mine:
+            own = data
+        for p, v in data.items() if f != mine else ():
+            others.setdefault(p, set()).add(v.get("seen"))
+    if edit:
+        cands, new = public_prose(root, skip, target.relative_to(root).as_posix()), dict(own)
+    else:
+        public = _published(root)
+        st = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+        for row in st.stdout.split("\0") if st.returncode == 0 else ():
+            code, p = row[:2], row[3:]
+            if p.endswith(".md") and "D" not in code and public(p) and not is_listed(skip, p):
+                text = _read(root / p)
+                if text is not None:
+                    dirty[p] = text
+        cands = sorted(p for p, t in dirty.items()
+                       if _sha(t) != own.get(p, {}).get("seen") and _sha(t) not in others.get(p, ()))
+        new = {p: {"seen": _sha(t), "told": own.get(p, {}).get("told")} for p, t in dirty.items()}
+    found = []
+    for p in cands:
+        text = dirty[p] if p in dirty else _read(root / p)
+        if text is None:
+            continue
+        head = _git(root, "show", "HEAD:" + p)
+        lines = None if head.returncode else changed_lines(head.stdout, text)
+        told = ["%s:%d: %s" % (p, a, m) for a, b, m in lint_spans(text)
+                if lines is None or any(a <= n <= b for n in lines)]
+        if told and _sha("\n".join(told)) != own.get(p, {}).get("told"):
+            found += told
+        new[p] = {"seen": _sha(text), "told": _sha("\n".join(told))}
+    if new != own:
+        state.mkdir(parents=True, exist_ok=True)
+        tmp = mine.with_name("%s.%d.tmp" % (mine.name, os.getpid()))      # two calls of one session may overlap
+        tmp.write_text(json.dumps(new, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, mine)
+    return found
+
+
+def style_hook(stdin=None) -> int:
+    """`style --hook`: print the hook's JSON answer when the event owes its session a finding. It never blocks: bad
+    JSON, no repository or any other failure prints nothing, and the exit code is always 0."""
+    try:
+        found = style_hook_findings(json.loads((stdin or sys.stdin).read()))
+        if found:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                                     "additionalContext": style_hook_message(found)}}))
+    except Exception:                                  # a hook that fails must not stop the session
+        pass
+    return 0
+
+
 # ---- self-test --------------------------------------------------------------------------------------------------
 
 SELF_TSV = ("# id\tparent\tname\tstatus — the synthetic game's categories\nid\tparent\tname\tstatus\n"
@@ -4274,6 +4529,249 @@ def _style_self_test(check):
         check(name, got == [(1, 2)], got)
 
 
+def _ratchet_self_test(check, td: str):
+    """`style` on throwaway repositories: the public prose files, the ratchet, then the hook and its state."""
+    root = pathlib.Path(td).resolve()
+    saved, real_stdin = dict(os.environ), sys.stdin
+    os.environ.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t.invalid", GIT_COMMITTER_NAME="t",
+                      GIT_COMMITTER_EMAIL="t@t.invalid", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+                      GIT_CEILING_DIRECTORIES=str(root))           # no repository above the throwaway ones answers
+    semi, one, two = "a semicolon (write two sentences)", "One; two.\n", "One; two; three.\n"
+
+    def call(fn, *a, **k):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = fn(*a, **k)
+        return rc, buf.getvalue()
+
+    def put(repo, files: dict):
+        for rel, body in files.items():
+            f = pathlib.Path(repo) / rel
+            if body is None:
+                f.unlink()
+                continue
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(body, encoding="utf-8")
+
+    def make(name, files: dict) -> pathlib.Path:
+        repo = root / name
+        repo.mkdir()
+        _git(repo, "init", "-q")
+        put(repo, files)
+        _git(repo, "add", "-A")
+        _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "x")
+        return repo
+
+    def style(repo, *a):
+        return call(main, ["style", "--repo", str(repo), *a])
+
+    try:
+        # the public prose files: listed, not an agent path, not ignored, `.md`, tracked or not
+        rt = make("ratchet", {
+            PUBLIC_PATHS_REL: "# the list\nREADME.md\ndocs/\nkit/\nrules/\n", "README.md": "# R\n\n" + two,
+            "docs/clean.md": "Clean.\n", "docs/gen.md": one, "kit/k.md": one, "rules/x.md": one, "notes/n.md": one,
+            "docs/a.txt": one, ".gitignore": "docs/ignored.md\n", "docs/ignored.md": one})
+        put(rt, {"docs/a.md": one})
+        rat, skips = rt / STYLE_RATCHET_REL, ("docs/gen.md", "kit/")
+        head = "# the ratchet\n# a count may only fall\nskip docs/gen.md\nskip kit/\n"
+        counts = style_counts(rt, skips)
+        check("style counts: the public prose files", counts == {"README.md": 2, "docs/a.md": 1}, counts)
+        check("style counts: no skip entry", style_counts(rt) == {**counts, "docs/gen.md": 1, "kit/k.md": 1},
+              style_counts(rt))
+        got = ratchet_text({**counts, "z.md": 0}, skips, ("# the ratchet", "a count may only fall"))
+        check("ratchet text: comments, skips, sorted rows", got == head + "2 README.md\n1 docs/a.md\n", got)
+        # a count that falls, a row of a missing file, a row at zero, the two skip entries
+        put(rt, {STYLE_RATCHET_REL: head + "3 README.md\n1 docs/a.md\n2 docs/gone.md\n0 docs/clean.md\n"})
+        rc, out = style(rt)
+        check("style: a count under its row passes", (rc, out) == (
+            0, "STYLE CHECK OK (3 file(s), 3 finding(s), 0 over their row)\n"), out)
+        rc, out = style(rt, "--update")
+        check("style --update lowers a row and prints it", rc == 0 and "STYLE INFO README.md: 3 -> 2\n" in out
+              and rat.read_text(encoding="utf-8") == head + "2 README.md\n1 docs/a.md\n", out)
+        check("style --update drops a missing file's row", "docs/gone.md: 2 -> no row (no such file)" in out
+              and "docs/clean.md: 0 -> no row (no finding)" in out and "(2 row(s), 1 fell, 2 went)" in out, out)
+        os.utime(rat, (1, 1))
+        rc, out = style(rt, "--update")
+        check("style --update: counts that stay, no write", rc == 0 and "STYLE UPDATE unchanged" in out
+              and rat.stat().st_mtime == 1, out)
+        # a count that rises
+        put(rt, {"README.md": "# R\n\n" + two + "\nMore; text.\n"})
+        was = rat.read_bytes()
+        rc, out = style(rt)
+        check("style: a count over its row fails", rc == 1 and "README.md:3: " + semi in out
+              and "README.md:5: " + semi in out and "STYLE FAIL README.md: 3 finding(s), its row is 2\n" in out
+              and "docs/a.md:" not in out
+              and out.endswith("STYLE CHECK FAIL (3 file(s), 4 finding(s), 1 over their row)\n"), out)
+        rc, out = style(rt, "--update")
+        check("style --update refuses a rise", rc == 1 and "STYLE UPDATE refused" in out and rat.read_bytes() == was
+              and rat.stat().st_mtime == 1, out)
+        put(rt, {"README.md": "# R\n\n" + two, "docs/new.md": one})
+        rc, out = style(rt)
+        check("style: a new file with a finding fails", rc == 1
+              and "STYLE FAIL docs/new.md: 1 finding(s), its row is 0\n" in out, out)
+        put(rt, {"docs/new.md": "Clean.\n"})
+        check("style: a new file with no finding passes", style(rt)[0] == 0, style(rt))
+        put(rt, {STYLE_RATCHET_REL: "2 README.md\n1 docs/a.md\n"})
+        rc, out = style(rt)
+        check("style: no skip line, both files fail", rc == 1 and "STYLE FAIL docs/gen.md: 1" in out
+              and "STYLE FAIL kit/k.md: 1" in out, out)
+        put(rt, {STYLE_RATCHET_REL: head + "2 README.md\n1 docs/a.md\n1 docs/gen.md\n"})
+        rc, out = style(rt, "--update")
+        check("style --update drops a skipped file's row", "docs/gen.md: 1 -> no row (a `skip` entry covers it)" in out
+              and rc == 0 and rat.read_text(encoding="utf-8") == head + "2 README.md\n1 docs/a.md\n", out)
+        for name, text, want in (("a malformed line", head + "two README.md\n", ":5: not `<count> <path>`"),
+                                 ("two rows of one path", "1 docs/a.md\n\n3 docs/a.md\n", ":3: docs/a.md has two"),
+                                 ("a skip line with no entry", "skip\n", ":1: not `<count> <path>`")):
+            put(rt, {STYLE_RATCHET_REL: text})
+            got = [style(rt), style(rt, "--update")]
+            check("style ratchet: %s, exit 2" % name, rat.read_text(encoding="utf-8") == text and all(
+                rc == 2 and out.startswith("STYLE FAIL %s%s" % (STYLE_RATCHET_REL, want)) for rc, out in got), got)
+        # no ratchet: every row is 0, and --update writes no first one
+        rat.unlink()
+        rc, out = style(rt)
+        check("style: no ratchet, every row is 0", rc == 1
+              and "STYLE FAIL README.md: 2 finding(s), its row is 0\n" in out, out)
+        rc, out = style(rt, "--update")
+        check("style --update: no ratchet, findings", rc == 1 and "/psxdecomp:upgrade writes the first one" in out
+              and not rat.exists(), out)
+        put(rt, {"README.md": "# R\n", "docs/a.md": "Clean.\n", "docs/gen.md": "Clean.\n", "kit/k.md": None})
+        got = [style(rt), style(rt, "--update")]
+        check("style: no ratchet, no finding", [rc for rc, _ in got] == [0, 0] and not rat.exists()
+              and "writes the first one" in got[1][1], got)
+        put(root, {"outside/o.md": one})
+        rc, out = style(root / "outside")
+        check("style: no work tree, exit 2", rc == 2 and "not a git work tree" in out, out)
+        # no public list: all of the repository is public but the agent paths and what PA3 manages
+        np = make("nolist", {"README.md": one, "docs/x.md": two, "docs/clean.md": "Clean.\n", "rules/x.md": one,
+                             "CLAUDE.md": one, "docs/ops/o.md": one, "docs/pa3.md": one,
+                             PA3_REL: json.dumps({"files": {"docs/pa3.md": {}}})})
+        check("style counts: no public list", style_counts(np) == {"README.md": 1, "docs/x.md": 2}, style_counts(np))
+        # a public list: the deny set of a release (the agent paths, what PA3 manages, [public].deny)
+        sp = make("split", {PUBLIC_PATHS_REL: "README.md\ndocs/\n", "README.md": one, "docs/x.md": one,
+                            "docs/pa3.md": one, "docs/deny/d.md": one, "docs/ops/o.md": one,
+                            PA3_REL: json.dumps({"files": {"docs/pa3.md": {}}}),
+                            CONFIG_REL: '[public]\nrepo = "example/synthetic-public"\ndeny = ["docs/deny/"]\n'})
+        check("style counts: a listed path PA3 manages", "docs/pa3.md" not in style_counts(sp), style_counts(sp))
+        check("style counts: a listed path in [public].deny", style_counts(sp) == {"README.md": 1, "docs/x.md": 1},
+              style_counts(sp))
+        put(sp, {CONFIG_REL: "[public]\n"})
+        check("style counts: no [public] table to read", style_counts(sp) == {
+            "README.md": 1, "docs/x.md": 1, "docs/deny/d.md": 1}, style_counts(sp))
+        # style FILE...: whatever the path
+        rc, out = call(main, ["style", str(np / "docs/clean.md"), str(np / "rules/x.md")])
+        check("style FILE: a finding, exit 1", (rc, out) == (1, "%s:1: %s\n" % (np / "rules/x.md", semi)), out)
+        check("style FILE: no finding, exit 0", call(main, ["style", str(np / "docs/clean.md")]) == (0, ""))
+        rc, out = call(main, ["style", str(np / "docs/x.md"), str(np / "docs/none.md")])
+        check("style FILE: not readable, exit 2", rc == 2 and out.count(semi) == 2
+              and "STYLE FAIL %s: not readable\n" % (np / "docs/none.md") in out, out)
+
+        # the hook: a Bash event tells the changed units of the public files that changed since the session's last call
+        hk = make("hook", {PUBLIC_PATHS_REL: "# the list\nREADME.md\ncookbook/\ndocs/\n",
+                           STYLE_RATCHET_REL: "skip docs/gen.md\n", "notes/n.md": "A private note.\n",
+                           "README.md": "# R\n\nOld one; old two.\n\n## B\n\nA clean line.\n",
+                           "docs/gen.md": "Clean.\n"})
+        state = pathlib.Path(_must(hk, "rev-parse", "--path-format=absolute", "--git-path", STYLE_HOOK_STATE))
+
+        def hook(tool="Bash", sid="a", cwd=hk, **inp):
+            ev = {"hook_event_name": "PostToolUse", "tool_name": tool, "cwd": str(cwd), "tool_input": inp}
+            ev.update({"session_id": sid} if sid else {})
+            rc, out = call(style_hook, io.StringIO(json.dumps(ev)))
+            return rc, json.loads(out)["hookSpecificOutput"]["additionalContext"].splitlines() if out else []
+
+        def write(rel, sid="a", tool="Write"):
+            return hook(tool, sid, file_path=str(hk / rel))[1][1:]
+
+        check("style hook: a clean tree, silent", hook() == (0, []))
+        card = "# C0001 — a title; a tool wrote it\ntags: a · date: 2026-10-11 · origin: x\n\nBody.\n"
+        put(hk, {"README.md": "# R\n\nOld one; old two.\n\n## B\n\nA new line; it isn't clean.\n",
+                 "cookbook/C0001.md": card, "notes/n.md": "A private note; not public.\n", "docs/gen.md": one})
+        rc, msg = hook()
+        check("style hook: Bash, the changed units", rc == 0 and msg[:1] == [
+            "psxd style: 3 finding(s) in the public text that you changed. Rule: rules/STE1.md. Correct each finding "
+            "before you finish."] and msg[1:] == ["README.md:7: " + semi, 'README.md:7: a contraction: "isn\'t"',
+                                                  "cookbook/C0001.md:1: " + semi], msg)
+        check("style hook: the same findings twice, silent", hook() == (0, []))
+        put(hk, {"README.md": "# R\n\nOld one; old two.\n\n## B\n\nA new line. It is clean.\n"})
+        check("style hook: a correction, no finding left", hook() == (0, []))
+        put(hk, {"cookbook/C0001.md": card + "\nMore; text.\n"})
+        rc, msg = hook()
+        check("style hook: one more finding in a file", msg[1:] == ["cookbook/C0001.md:1: " + semi,
+                                                                   "cookbook/C0001.md:6: " + semi], msg)
+        put(hk, {"cookbook/C0001.md": card.replace("; a tool wrote it", "") + "\nMore; text.\n"})
+        rc, msg = hook()
+        check("style hook: a correction, one finding left", msg[1:] == ["cookbook/C0001.md:6: " + semi], msg)
+        put(hk, {"cookbook/C0001.md": None})
+        check("style hook: a deleted file, silent", hook() == (0, []) and hook() == (0, []))
+        # Write and Edit: the named file alone, and the state takes that file alone. A command that runs in the
+        # background wrote docs/other.md: the Edit event comes first, and the next Bash event tells it.
+        put(hk, {"docs/w.md": one, "docs/other.md": one})
+        got = write("docs/w.md", tool="Edit")
+        check("style hook: Edit, the named file alone", got == ["docs/w.md:1: " + semi], got)
+        check("style hook: Write, the same findings twice", hook("Write", file_path=str(hk / "docs/w.md")) == (0, []))
+        rc, msg = hook()
+        check("style hook: Bash next, the background file", msg[1:] == ["docs/other.md:1: " + semi], msg)
+        check("style hook: Bash again, silent", hook() == (0, []))
+        put(hk, {"README.md": "# R\n\nOld one; old two.\n\n## B\n\nA new line; again.\n"})
+        got = write("README.md", tool="Edit")
+        check("style hook: Edit, the unit that differs from HEAD", got == ["README.md:7: " + semi], got)
+        put(hk, {"notes/n.md": two, "docs/gen.md": two})
+        for name, f in (("a private file", "notes/n.md"), ("a skipped file", "docs/gen.md"),
+                        ("a path outside the repository", "../outside/o.md"), ("no such file", "docs/none.md"),
+                        ("no such directory", "none/x.md")):
+            check("style hook: Write, %s, silent" % name, hook("Write", file_path=str(hk / f)) == (0, []))
+        check("style hook: Write with no file_path, silent", hook("Write") == (0, []))
+        # two sessions in one tree: each is told about the file it wrote
+        put(hk, {"docs/a.md": one})
+        check("style hook: session a is told about its file", write("docs/a.md") == ["docs/a.md:1: " + semi])
+        check("style hook: session b is not told about it", hook(sid="b") == (0, []))
+        put(hk, {"docs/b.md": two})
+        rc, msg = hook(sid="b")
+        check("style hook: session b is told about its own", msg[1:] == ["docs/b.md:1: " + semi] * 2, msg)
+        check("style hook: session a is not told about it", hook() == (0, []))
+        put(hk, {"docs/n.md": one})
+        rc, msg = hook(sid=None)
+        check("style hook: an event with no session_id", msg[1:] == ["docs/n.md:1: " + semi]
+              and (state / "none.json").is_file(), msg)
+        # the state: one file per session in the git directory, a content hash and a findings digest per path
+        put(state, {"old.json": "{}\n", "old.json.1.tmp": ""})
+        for f in ("old.json", "old.json.1.tmp"):
+            os.utime(state / f, (time.time() - STYLE_HOOK_KEEP - 60,) * 2)
+        put(hk, {"docs/s.md": one})
+        rc, msg = hook(sid="../x y")
+        names = sorted(f.name for f in state.iterdir())
+        check("style hook: the state files", msg[1:] == ["docs/s.md:1: " + semi] and state.parent == hk / ".git"
+              and names == ["___x_y.json", "a.json", "b.json", "none.json"], (msg, names))
+        got = json.loads((state / "a.json").read_text(encoding="utf-8"))
+        check("style hook: a hash and a digest per path", got["docs/a.md"] == {
+            "seen": _sha(one), "told": _sha("docs/a.md:1: " + semi)} and got["docs/b.md"] == {
+            "seen": _sha(two), "told": None} and "notes/n.md" not in got and "docs/gen.md" not in got, got)
+        # no public list and no commit yet: every finding of the file
+        put(root, {"fresh/docs/x.md": two})
+        _git(root / "fresh", "init", "-q")
+        rc, msg = hook(cwd=root / "fresh")
+        check("style hook: no HEAD, every finding", msg[1:] == ["docs/x.md:1: " + semi] * 2, msg)
+        # it never blocks
+        put(hk, {"docs/m.md": one})
+        sys.stdin = io.StringIO(json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(hk / "docs/m.md")}}))
+        rc, out = call(main, ["style", "--hook"])
+        check("style --hook: the command line", rc == 0 and out.startswith('{"hookSpecificOutput": {"hookEventName": '
+                                                                         '"PostToolUse", "additionalContext": "psxd ')
+              and "docs/m.md:1: " in out, out)
+        for name, text in (("bad JSON", "not json"), ("an event that is no object", "[1]"), ("no event", "")):
+            check("style hook: %s, silent" % name, call(style_hook, io.StringIO(text)) == (0, ""))
+        check("style hook: a missing directory, silent", hook(cwd="/nonexistent-psxd") == (0, []))
+        check("style hook: no repository, silent", hook(cwd=root / "outside") == (0, []))
+        put(hk, {STYLE_RATCHET_REL: "a bad line\n", "docs/bad.md": one})
+        check("style hook: a malformed ratchet, silent", hook() == (0, []) and write("docs/bad.md") == [])
+        many = style_hook_message(["f.md:%d: %s" % (i, semi) for i in range(STYLE_HOOK_MAX + 5)])
+        check("style hook: 30 findings in a message", many.startswith("psxd style: 35 finding(s)")
+              and many.endswith("f.md:29: %s\n... and 5 more." % semi), many[-80:])
+    finally:
+        sys.stdin = real_stdin
+        os.environ.clear()
+        os.environ.update(saved)
+
+
 def self_test() -> int:
     ok = True
 
@@ -4420,6 +4918,8 @@ def self_test() -> int:
           and (withheld, kept, total) == (4, 2, 6), shown)
     _style_self_test(check)
     with tempfile.TemporaryDirectory() as td:
+        _ratchet_self_test(check, td)
+    with tempfile.TemporaryDirectory() as td:
         _public_self_test(check, td)
     with tempfile.TemporaryDirectory() as td:
         _sim_self_test(check, td)
@@ -4508,10 +5008,24 @@ def main(argv=None) -> int:
     hk = sub.add_parser("hook")
     hk.add_argument("--install", action="store_true")
     hk.add_argument("--repo", default=".")
+    sy = sub.add_parser("style", help="the writing findings: of the named files, else of every public prose file "
+                                      "against %s" % STYLE_RATCHET_REL)
+    sy.add_argument("files", nargs="*", metavar="FILE", help="check these files, whatever their path (no ratchet)")
+    sy.add_argument("--repo", default=".", help="the repository (default: this one)")
+    sy.add_argument("--update", action="store_true",
+                    help="rewrite the ratchet to the counts of now; refused when a count is over its row")
+    sy.add_argument("--hook", action="store_true",
+                    help="a Claude Code PostToolUse hook (stdin: the event); never blocks, always exits 0")
     a = ap.parse_args(argv)
     own_git_env()
     if a.self_test:
         return self_test()
+    if a.cmd == "style":
+        if a.hook:
+            return style_hook()
+        if a.files and a.update:
+            sy.error("--update takes no FILE: it rewrites %s from every public prose file" % STYLE_RATCHET_REL)
+        return cmd_style(a.files, a.repo, a.update)
     if a.cmd in ("lint", "render"):
         ctx, readme = _ctx(a)
         text = _read(readme)
