@@ -2853,6 +2853,120 @@ def cmd_ci_sim(repo=".", workflow="no-rom", rev=None, proj=False, private=None, 
     return 0 if results and not bad else 1
 
 
+# ---- the writing checker: the findings of one Markdown text -------------------------------------------------------
+# A unit is a paragraph, a list item, a table cell or a heading. Counted: a sentence of a numbered step over STEP_MAX
+# words, any other sentence over SENT_MAX; a unit over PARA_MAX sentences; each semicolon in a unit; each contraction.
+# A record line (`C0001 | title | tags`, two or more ` | `) is a table row: each field is a cell.
+# Not counted: code spans, fences, front matter, metadata lines, comment lines, marker blocks, generated files. For
+# the semicolon also: link targets, HTML tags and entities (`&amp;`), bare URLs. A code span, a path or a number is
+# one word.
+STEP_MAX, SENT_MAX, PARA_MAX = 20, 25, 6
+STEP = re.compile(r"^\s*(?:>\s?)*\d+\. ")
+SENT_END = re.compile(r"(?:(?<=[.!?])|(?<=[.!?][*_)\"])|(?<=[.!?][*_]{2}))\s+(?=[A-Z0-9*`(\[\"])")
+CONTRACTION = re.compile(r"\b(?:\w+n['’]t|\w+['’](?:ll|re|ve|d|m)|(?:it|that|there|here|what|who|he|she|let)['’]s)\b",
+                         re.I)
+META = re.compile(r"^[a-z_]+: \S.* · [a-z_]+: ")                 # a `tags: a,b · date: … · origin: …` record line
+GENERATED = re.compile(r"[Gg]enerated by .{0,80}do not edit", re.S)
+ROW = re.compile(r"^(?!<!--)\S.* \| .* \| ")                   # a record line of an index: its fields are cells
+MARK_BEGIN = re.compile(r"<!-- (\S+):begin -->")                 # the first line of a marker block
+
+
+def _body(lines: list[str]) -> list[str]:
+    """The lines with a leading YAML front matter blanked (metadata, not prose); line numbers are kept."""
+    if lines and lines[0].strip() == "---":
+        end = next((i for i, l in enumerate(lines[1:], 1) if l.strip() == "---"), None)
+        if end:
+            return [""] * (end + 1) + lines[end + 1:]
+    return lines
+
+
+def _prose(lines: list[str]) -> list[str]:
+    """`_body`, with every marker block blanked too: a `<!-- x:begin -->` line, the next `<!-- x:end -->` line with
+    the same x, and the lines between them. Both lines are outside a fence; a begin line with no end line opens no
+    block."""
+    out, fence, free = _body(lines), False, []
+    for i, l in enumerate(out):
+        fence ^= l.strip().startswith("```")
+        if not fence:
+            free.append(i)
+    for n, i in enumerate(free):
+        m = MARK_BEGIN.fullmatch(out[i].strip())                    # a blanked line is no begin line and no end line
+        if not m:
+            continue
+        end = "<!-- %s:end -->" % m.group(1)
+        j = next((j for j in free[n + 1:] if out[j].strip() == end), None)
+        if j is not None:
+            out = out[:i] + [""] * (j + 1 - i) + out[j + 1:]
+    return out
+
+
+def _row(line: str) -> bool:
+    """A table row, or a record line: two or more ` | ` outside code spans and parentheses."""
+    return line.startswith("|") or bool(ROW.match(re.sub(r"\([^()]*\)", "", re.sub(r"`[^`]*`", "x", line))))
+
+
+def _spans(text: str):
+    """(first_line, last_line, text) prose paragraphs: wrapped lines joined, a list item or a heading starts a new
+    one."""
+    fence, cur, start, last = False, [], 0, 0
+    for i, l in enumerate(_prose(text.splitlines()) + [""]):
+        s = re.sub(r"^(?:>\s?)+", "", l.strip())                     # a blockquote is prose
+        if s.startswith("```"):
+            fence = not fence
+        skip = fence or s.startswith(("```", "<!--")) or not s or META.match(s) or _row(l)
+        if (skip or re.match(r"^(#{1,6} |[-*+] |\d+\. )", s)) and cur:
+            yield start, last, " ".join(cur)
+            cur = []
+        if skip:
+            continue
+        if not cur:
+            start = i + 1
+        last = i + 1
+        cur.append(re.sub(r"^(#{1,6} |[-*+] |\d+\. )", "", s))
+
+
+def _words(s: str) -> int:
+    s = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", re.sub(r"`[^`]*`", "x", re.sub(r"<[^>]+>", " ", s)))
+    return sum(1 for w in s.split() if re.search(r"\w", w))
+
+
+def _bare(s: str) -> str:
+    """The unit without the text a writer cannot reword: code spans, link targets, HTML tags and entities, URLs."""
+    s = re.sub(r"(`+).+?\1", "x", s)
+    s = re.sub(r"\]\([^)]*\)", "]", s)
+    s = re.sub(r"</?[A-Za-z][\w-]*(?:\s[^<>]*)?/?>", " ", s)
+    s = re.sub(r"&#?\w+;", " ", s)
+    return re.sub(r"\bhttps?://\S+", "x", s)
+
+
+def lint_spans(text: str) -> list[tuple[int, int, str]]:
+    """[(first_line, last_line, finding)] of the units of `text`, in the order of the lines."""
+    if GENERATED.search(text[:600]):
+        return []
+    lines = _prose(text.splitlines())
+    units = [(a, b, para, STEP_MAX if STEP.match(lines[a - 1]) else SENT_MAX) for a, b, para in _spans(text)]
+    fence = False
+    for i, l in enumerate(lines):
+        fence ^= l.lstrip().startswith("```")
+        if not fence and _row(l):
+            units += [(i + 1, i + 1, cell, SENT_MAX) for cell in re.split(r"(?<!\\)\|", re.sub(r"`[^`]*`", "`x`", l))]
+    out = []
+    for a, b, unit, cap in sorted(units):
+        counts = [w for w in map(_words, SENT_END.split(unit)) if w]
+        out += [(a, b, "%d words in a sentence (at most %d)" % (w, cap)) for w in counts if w > cap]
+        if len(counts) > PARA_MAX:
+            out.append((a, b, "%d sentences in a paragraph (at most %d)" % (len(counts), PARA_MAX)))
+        bare = _bare(unit)
+        out += [(a, b, "a semicolon (write two sentences)")] * bare.count(";")
+        out += [(a, b, 'a contraction: "%s"' % m.group(0)) for m in CONTRACTION.finditer(bare)]
+    return out
+
+
+def lint_style(text: str) -> list[tuple[int, str]]:
+    """[(line_no, finding)]: the writing findings of one Markdown text (the comment above lists what is counted)."""
+    return [(a, m) for a, _, m in lint_spans(text)]
+
+
 # ---- self-test --------------------------------------------------------------------------------------------------
 
 SELF_TSV = ("# id\tparent\tname\tstatus — the synthetic game's categories\nid\tparent\tname\tstatus\n"
@@ -4093,6 +4207,73 @@ def _sim_self_test(check, td: str):
         os.environ.update(saved)
 
 
+def _style_self_test(check):
+    w = lambda n: "Word " + "word " * (n - 2) + "end."  # noqa: E731
+    good = ("---\ntitle: %s; it's\n---\n# T\n\n%s %s\n\n1. %s\n\n- %s\n  %s\n\n| a | %s `a | b` | %s |\n\n```\n"
+            "%s; don't\n```\n" % (w(40), w(25), w(25), w(20), w(13), w(12), w(25), w(25), w(40)))
+    seven = "\n\n" + " ".join(["Short one."] * 7) + "\n"
+    over, semi = "%d words in a sentence (at most %d)", "a semicolon (write two sentences)"
+    index = ("<!-- id | title | tags -->\nC0001 | A title; a subtitle | a,b | x\nC0002 | %s | a | x\n"
+             "C0003 | T | a | x\n" % w(26))
+    block = "<!-- a:begin -->\n%s One; two.\n\n- an item; more\n\n| a | b; c |\n<!-- a:end -->\n" % w(26)
+    inside = [(2, over % (26, 25)), (2, semi), (4, semi), (6, semi)]
+    for name, text, want in (
+            # the limits: one word more in a sentence, a step, a cell or a paragraph is one finding each
+            ("style good text", good, []),
+            ("style step of 21 words", good.replace("\n1. Word", "\n1. Word extra"), [(8, over % (21, 20))]),
+            ("style cell of 26 words", good.replace("| a | Word", "| a | Word extra"), [(13, over % (26, 25))]),
+            ("style 7 sentences", good + seven, [(20, "7 sentences in a paragraph (at most 6)")]),
+            ("style generated file", "*Generated by x.py; do not edit by hand.*\n\n%s; it's\n" % w(40), []),
+            ("style span, link, path, number", "See `a b c d e f` and [the long link text](http://x/y z) at /a/b/c, "
+             "1,264 times, %s\n" % w(15), [(1, over % (26, 25))]),
+            # one finding per semicolon, on the first line of its unit, and one per contraction
+            ("style semicolons in a paragraph", "One part; two parts; three.\n", [(1, semi), (1, semi)]),
+            ("style semicolon in a list item", "- an item; more\n", [(1, semi)]),
+            ("style semicolon in a table cell", "# T\n\n| a | b; c |\n", [(3, semi)]),
+            ("style semicolon in a heading", "# A title; a subtitle\n", [(1, semi)]),
+            ("style semicolon in a blockquote", "> Quoted; text.\n", [(1, semi)]),
+            ("style semicolon in a wrapped unit", "Wrapped line one\nand two; three.\n", [(1, semi)]),
+            ("style contractions", "It doesn't run. You're done, and it's late. We'll see; they've gone.\n",
+             [(1, semi)] + [(1, 'a contraction: "%s"' % c) for c in ("doesn't", "You're", "it's", "We'll", "they've")]),
+            ("style possessive: no contraction", "The tool’s output isn’t the user's file.\n",
+             [(1, 'a contraction: "isn’t"')]),
+            # each exemption
+            ("style exempt: code spans", "Use `a; b` and ``c ` ; d``.\n", []),
+            ("style exempt: link target", "See [the map](docs/map.md;v=2).\n", []),
+            ("style exempt: entities", "A &amp; B &#59; C.\n", []),
+            ("style exempt: HTML tag", 'A <a href="x;y">link</a>.\n', []),
+            ("style exempt: bare URL", "See https://x.org/a;b for it.\n", []),
+            ("style exempt: fence", "```\na; b\n```\n", []),
+            ("style exempt: metadata line", "# C1 — t\ntags: a;b · date: 2026-10-11 · origin: x;y\n", []),
+            ("style exempt: comment line", "<!-- a; b -->\n", []),
+            ("style exempt: contraction in a span", "Use `don't` here.\n", []),
+            ("style link text is prose", "See [a; b](docs/map.md).\n", [(1, semi)]),
+            ("style < and > in prose: no tag", "Use -version </dev/null; then a > b.\n", [(1, semi)]),
+            # a record line is a row: its fields are cells, the line before and the line after are not part of it
+            ("style record line: fields are cells", index, [(2, semi), (3, over % (26, 25))]),
+            ("style pipes in a code span: no row", "Use `a | b | c`; go\non.\n", [(1, semi)]),
+            # a marker block yields no unit; a begin line opens one only with its end line, both outside a fence
+            ("style marker block: no finding", block, []),
+            ("style after the end line: counted", block + "\nThree; four.\n", [(9, semi)]),
+            ("style two marker blocks", "%s\n| a | b; c |\n%s\n\n%s\nOne; two.\n%s\n" % (
+                marker("disc"), marker("disc", True), *GAME_BLOCK), []),
+            ("style begin, no end: no block", block.replace("<!-- a:end -->\n", ""), inside),
+            ("style end of another name: no block", block.replace("a:end", "b:end"), inside),
+            ("style end in a fence: no block", "<!-- a:begin -->\n\nOne; two.\n\n```\n<!-- a:end -->\n```\n",
+             [(3, semi)]),
+            ("style begin in a fence: no block", "```\n<!-- a:begin -->\n```\n\nOne; two.\n\n<!-- a:end -->\n",
+             [(5, semi)]),
+            ("style marker pair in a fence", "```\n<!-- a:begin -->\n<!-- a:end -->\n```\n\nOne; two.\n", [(6, semi)]),
+            ("style marker pair in two fences", "```\n<!-- a:begin -->\n```\n\nOne; two.\n\n```\n<!-- a:end -->\n```\n",
+             [(5, semi)])):
+        got = lint_style(text)
+        check(name, got == want, got)
+    for name, text in (("style wrapped unit: both lines", "Wrapped line one\nand two; three.\n"),
+                       ("style pipes in parentheses: no row", "One line (`match` | `diff` | `error`); then\nmore.\n")):
+        got = [(a, b) for a, b, _ in lint_spans(text)]
+        check(name, got == [(1, 2)], got)
+
+
 def self_test() -> int:
     ok = True
 
@@ -4237,6 +4418,7 @@ def self_test() -> int:
                                            "glabel func_80010000\nmake: *** [build] Error 1\n" + "x" * 300 + "\n").encode())
     check("ci-log withholds asm, hex, instructions", shown == ["make: *** [build] Error 1", "x" * 200]
           and (withheld, kept, total) == (4, 2, 6), shown)
+    _style_self_test(check)
     with tempfile.TemporaryDirectory() as td:
         _public_self_test(check, td)
     with tempfile.TemporaryDirectory() as td:

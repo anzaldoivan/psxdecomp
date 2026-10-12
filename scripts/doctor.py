@@ -18,8 +18,8 @@ the public repository, the pre-push hook is in place, every workflow action is p
 interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
 PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
-hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs; it also counts
-the sentences over the writing limits); card (WARN only: HOW_WE_WORK.md over PA3's cap); progress (WARN only,
+hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs; it also counts the
+writing findings, publish.lint_style); card (WARN only: HOW_WE_WORK.md over PA3's cap); progress (WARN only,
 when a workflow builds a decomp.dev report: its safety lint, and whether decomp.dev lists the repo, in split mode the
 public [public].repo); github (WARN only, through `gh api`, skipped offline or logged out: the repository's security
 settings, each with the `gh api` command that fixes it; doctor never applies one). `--only github` runs just that row,
@@ -296,7 +296,8 @@ HYGIENE_SKIP = re.compile(r"^(?:refs/|research/|phase-ends/|\.claude/|templates/
 
 
 def hygiene_row(repo: pathlib.Path) -> tuple[str, str]:
-    """Unscoped claims (fetch_refs.lint_scope) and copied sentences (lint_dupes) over the tracked docs. Never FAIL."""
+    """Unscoped claims (fetch_refs.lint_scope) and copied sentences (lint_dupes) over the tracked docs, and the count
+    of the writing findings (publish.lint_style). Never FAIL."""
     r = common.git(repo, "ls-files", "-z", "--", "*.md", "*.toml", check=False)
     rels = [p for p in r.stdout.split("\0") if p and not HYGIENE_SKIP.search(p)] if r.returncode == 0 else []
     paths = [repo / p for p in rels if (repo / p).is_file()]
@@ -315,8 +316,8 @@ def hygiene_row(repo: pathlib.Path) -> tuple[str, str]:
         for w in where:
             f = w.rsplit(":", 1)[0]
             per[f] = per.get(f, 0) + 1
-    long = " %d sentence(s) or paragraph(s) over psxdecomp's writing limits (counted, never a WARN)." % sum(
-        len(fetch_refs.lint_style(common.read(p))) for p in paths if p.suffix == ".md")
+    long = " %d finding(s) of psxdecomp's writing checker (counted, never a WARN)." % sum(
+        len(publish.lint_style(common.read(p))) for p in paths if p.suffix == ".md")
     if not scope and not dupes:
         return "OK", "%d tracked docs: no unscoped claim, no copied sentence.%s" % (len(paths), long)
     top = sorted(per.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
@@ -845,12 +846,12 @@ def self_test() -> int:
         planted = hygiene_row(repo)
         print("  hygiene: clean %s; planted %s" % (clean[0], planted[1]))
         ok &= clean[0] == "OK" and planted[0] == "WARN" and "PROJECT_CONTEXT.md (1)" in planted[1]
-        ok &= " 0 sentence(s)" in clean[1] and " 0 sentence(s)" in planted[1]
+        ok &= " 0 finding(s)" in clean[1] and " 0 finding(s)" in planted[1]
         (repo / "docs" / "long.md").write_text("Word " + "word " * 25 + "end.\n")     # 27 words: counted, still OK
         common.git(repo, "add", "-A")
         (repo / "PROJECT_CONTEXT.md").unlink()
         counted = hygiene_row(repo)
-        ok &= counted[0] == "OK" and " 1 sentence(s)" in counted[1]
+        ok &= counted[0] == "OK" and " 1 finding(s)" in counted[1]
         ok &= card_row(repo) is None                                    # no card: no row
         (repo / CARD).write_text("x" * 7000)
         full = card_row(repo)
