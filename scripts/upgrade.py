@@ -25,6 +25,11 @@ as `ste-rule` is), `names-ledger` (the header lines of config/names.tsv and conf
 `debt-baseline` (config/debt-baseline.txt, once, last, in `mode admit`); `floor-public` is the manual line of split
 mode. A game with `[own] debt` or `[own] names` gets none of the actions that key replaces.
 
+docs/ops/psxdecomp-campaign.md (the campaign templates, owned; nothing with `[own] campaign`) is reference text: no
+ledger file is created and no doctor row checks its schemas. While phase 1.8 is open, the `matcher` line offers the
+skill that PA3's skill_add.py makes of its "Matcher workflow" section; it is always `manual`, because that tool adds
+a card line and an always-loaded description.
+
 `readme-blocks` regenerates the README's two generated blocks (`publish.render`: the text between the markers, nothing
 else) when a block is not what this plugin's `render` writes; without it a new vendored lint finds every README stale.
 
@@ -81,6 +86,9 @@ BUILD_WF = ".github/workflows/build.yml"
 PROFILE_BUILD = common.PLUGIN_ROOT / "profiles" / "psx" / "build.yml"
 
 FLOOR_DOC = "docs/ops/psxdecomp-floor.md"
+CAMPAIGN_DOC = "docs/ops/psxdecomp-campaign.md"
+MATCHER_SKILL = ".claude/skills/matcher"
+MATCHER_LINE = ('PY tools/skill_add.py matcher --from %s#Matcher --description "<at most 120 characters>"' % CAMPAIGN_DOC)
 OPS_INDEX = "docs/ops/INDEX.md"
 
 # ---- the delivery classes: how each file psxdecomp delivers reaches a game. This table is their one home ------------
@@ -92,6 +100,7 @@ DELIVERY = (
     Delivery("publish", "owned", publish.WORKFLOW, "profiles/psx/psxdecomp-readme.yml", None, False),
     Delivery("floor", "owned", floor.VENDORED, "scripts/floor.py", None, False),
     Delivery("floor", "owned", FLOOR_DOC, "profiles/psx/floor.md", None, False),
+    Delivery("campaign", "owned", CAMPAIGN_DOC, "profiles/psx/campaign.md", "campaign", False),
     Delivery("split-doc", "owned", "docs/ops/psxdecomp-split.md", "profiles/psx/split-mode.md", None, True),
     Delivery("guard", "once", floor.GUARD, "profiles/psx/guard.tsv", None, False),
     Delivery("guard-hook", "merge", common.SETTINGS, "profiles/psx/hooks.json", None, False),
@@ -114,6 +123,8 @@ SPLIT_OWNED = {d.path: common.PLUGIN_ROOT / d.src for d in DELIVERY if d.cls == 
 # an owned action's plan line: (its label, what the files are)
 OWNED_WHAT = {"publish": ("publish", "the README standard's lint and its CI"),
               "floor": ("floor", "the roadmap, tooling and readability checks, and their reference"),
+              "campaign": ("campaign", "the campaign templates: the bank and wave ledgers, the budgets, the give-up "
+                           "report, a matcher workflow"),
               "split-doc": ("split", "the release operator's card: ship, the push gate, contributor PRs")}
 # [own]: what a game may hold itself. A key's value is a path in the repository, or the command that runs its own tool.
 OWN_KEYS = ("debt", "names", "gate", "toolchain", "campaign", "matcher")
@@ -327,6 +338,11 @@ def plan(repo: pathlib.Path) -> list[dict]:
                 "psxdecomp %s's (%s)" % (label, " and ".join(edited), "it" if len(edited) == 1 else "them", key,
                                          "it" if len(edited) == 1 else "them", common.plugin_version(), what),
                 "an owned file with local changes is never overwritten unasked", key + "-edited")
+    if (floor.phase_state(repo)[8] == "open" and not {"campaign", "matcher"} & own_keys(repo)
+            and not (repo / MATCHER_SKILL).exists() and (repo / "tools/skill_add.py").is_file()):
+        add("manual", "matcher: offered, not installed. `%s` makes a skill of the \"Matcher workflow\" section. It also "
+            "adds a line to the card and a description that every session loads: the developer decides" % MATCHER_LINE,
+            "phase 1.8 is open and the repository has no matcher skill", "matcher")
     if not (repo / floor.GUARD).is_file():
         add("psxdecomp", "guard: write %s, once (the rules of the guard hook: no edit of asm/, of the hash files, of the "
             "two baselines)" % floor.GUARD, "the guard hook reads it; from then on the file is the game's own", "guard")
@@ -1001,6 +1017,21 @@ def self_test() -> int:
             "would be created %s" % floor.BASELINE)
         ok &= (repo / floor.VENDORED).read_bytes() == OWNED[floor.VENDORED].read_bytes() and os.access(repo / floor.VENDORED, os.X_OK)
         ok &= (repo / FLOOR_DOC).read_bytes() == OWNED[FLOOR_DOC].read_bytes()
+        ok &= "campaign" in keys and (repo / CAMPAIGN_DOC).read_bytes() == OWNED[CAMPAIGN_DOC].read_bytes()
+        ok &= "matcher" not in keys2                                     # no plan: phase 1.8 is not open
+        (repo / floor.PLAN).write_text(floor.self_plan(closed=8))
+        ok &= "matcher" not in {x["key"] for x in plan(repo)}            # no skill_add.py: nothing to offer
+        common.write(repo / "tools/skill_add.py", "")
+        offer = next((x for x in plan(repo) if x["key"] == "matcher"), None)
+        ok &= offer is not None and offer["owner"] == "manual" and MATCHER_LINE in offer["what"]
+        (repo / floor.PLAN).write_text(floor.self_plan(closed=7))        # 1.8 waits for 1.7: not offered yet
+        ok &= "matcher" not in {x["key"] for x in plan(repo)}
+        (repo / floor.PLAN).write_text(floor.self_plan(closed=8))
+        (repo / MATCHER_SKILL).mkdir(parents=True)                      # the skill exists: not offered again
+        ok &= "matcher" not in {x["key"] for x in plan(repo)}
+        (repo / MATCHER_SKILL).rmdir()
+        (repo / floor.PLAN).unlink()
+        (repo / "tools/skill_add.py").unlink()
         ok &= (repo / floor.GUARD).read_text() == common.read(common.PROFILE_GUARD)
         (repo / floor.GUARD).write_text("# the game's own rules\n")      # once: never rewritten
         ok &= "guard" not in {x["key"] for x in plan(repo)}
@@ -1008,8 +1039,10 @@ def self_test() -> int:
         idx.write_text("<!-- docs/ops index: <file> | <heading> | <line count> -->\nrefs.md | Reference library | 76\n")
         ok &= "ops-index" in {x["key"] for x in plan(repo)}
         ok &= OPS_INDEX in written_paths(apply(repo, False, False))
-        ok &= idx.read_text().endswith("refs.md | Reference library | 76\npsxdecomp-floor.md | The psxdecomp floor | %d\n"
-                                       % len(common.read(OWNED[FLOOR_DOC]).splitlines()))
+        ok &= idx.read_text().endswith(
+            "refs.md | Reference library | 76\npsxdecomp-floor.md | The psxdecomp floor | %d\n"
+            "psxdecomp-campaign.md | Campaign templates | %d\n" % (len(common.read(OWNED[FLOOR_DOC]).splitlines()),
+                                                                   len(common.read(OWNED[CAMPAIGN_DOC]).splitlines())))
         ok &= "ops-index" not in {x["key"] for x in plan(repo)}
         idx.unlink()
         (repo / "README.md").write_text("# G\n\n%s\n## Status\n" % common.ai_policy_block())

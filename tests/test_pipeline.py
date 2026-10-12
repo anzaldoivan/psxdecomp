@@ -252,7 +252,9 @@ def test_s10_writes_the_guard_beside_the_style_hook(game, tmp_path):
     assert {floor.VENDORED, upgrade.FLOOR_DOC, floor.GUARD, upgrade.OPS_INDEX, common.SETTINGS} <= handoff, handoff
     r = run([PY, ROOT / "scripts/doctor.py", "--repo", game, "--offline"], check=False)
     assert re.search(r"DOCTOR guard\s+OK\s+all 2 hook group\(s\)", r.stdout), r.stdout
-    assert re.search(r"DOCTOR publish-tool\s+OK\s+4 owned file\(s\)", r.stdout), r.stdout
+    assert re.search(r"DOCTOR publish-tool\s+OK\s+5 owned file\(s\)", r.stdout), r.stdout
+    assert (game / upgrade.CAMPAIGN_DOC).read_bytes() == (ROOT / "profiles/psx/campaign.md").read_bytes()
+    assert not (game / upgrade.MATCHER_SKILL).exists() and not (game / "config/bank.tsv").exists()
     assert run([PY, floor.VENDORED, "plan"], cwd=game).stdout.startswith("PLAN INFO plan: no GENERATION_PLAN.md")
 
     def hook(repo, **inp):

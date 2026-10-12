@@ -68,6 +68,7 @@ docs/ops/INDEX.md
 docs/ops/decomp-environment.md
 docs/ops/disassembler-mcp.md
 docs/ops/host-recipe.md
+docs/ops/psxdecomp-campaign.md
 docs/ops/psxdecomp-floor.md
 docs/ops/refs.md
 docs/project-architect.md

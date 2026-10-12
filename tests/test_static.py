@@ -277,7 +277,8 @@ def test_no_copied_prose():
 
 # The files S10 or upgrade copies into a game (the README template through S8): held at no finding.
 GAME_FILES = ("profiles/psx/hosts/", "profiles/psx/split-mode.md", "profiles/psx/README.md.template",
-              "profiles/psx/private/README.md", "profiles/psx/rules/", "profiles/psx/floor.md")
+              "profiles/psx/private/README.md", "profiles/psx/rules/", "profiles/psx/floor.md",
+              "profiles/psx/campaign.md")
 
 
 def test_style_ratchet():
@@ -522,7 +523,8 @@ def test_game_files_cite_no_foreign_ids():
     ids = re.compile(r"(?<![A-Za-z0-9_-])[GDKPRT]\d+\b")
     for rel in ("scripts/publish.py", "scripts/floor.py", "profiles/psx/build.yml", "profiles/psx/image/Dockerfile",
                 "profiles/psx/psxdecomp-readme.yml", "profiles/psx/split-mode.md", "profiles/psx/floor.md",
-                "profiles/psx/guard.tsv"):
+                "profiles/psx/guard.tsv", "profiles/psx/campaign.md", "profiles/psx/rules/FIN1.md",
+                "profiles/psx/rules/NAME1.md"):
         found = ["%d: %s" % (i, l.strip()) for i, l in enumerate((ROOT / rel).read_text().splitlines(), 1) if ids.search(l)]
         assert not found, (rel, found)
     assert set(ids.findall((ROOT / "profiles/psx/private/README.md").read_text())) <= {"G12", "G18"}
@@ -969,3 +971,29 @@ def test_exemplar_credit():
         assert row["class"] == "link" and row["url"] == url and "exemplar" in row["topics"], row
         assert cells[1].strip("`") in row["licence"] and "psxdecomp 0.6.0" in row["used_by"], row
     assert "gives ideas only" in eco.split("## Rules for reuse", 1)[1]
+
+
+def test_campaign_templates():
+    """profiles/psx/campaign.md (delivered as docs/ops/psxdecomp-campaign.md): the columns of the bank and wave ledgers,
+    the two budgets, the sandbox path, the give-up report with its blockers in triage order, and a "Matcher workflow"
+    section of at most 30 lines (PA3's skill_add.py captures no more). The matcher is offered as a manual line of
+    upgrade, never installed."""
+    import upgrade
+    doc = (ROOT / "profiles/psx/campaign.md").read_text()
+    sec = lambda h: doc.split("\n## %s\n" % h, 1)[1].split("\n## ", 1)[0]  # noqa: E731
+    for col in ("binary", "address", "symbol", "words", "state", "best", "attempts", "wave", "commit", "blocker"):
+        assert "| `%s` | " % col in sec("The bank ledger"), col
+    waves = sec("The wave ledger")
+    for col in ("wave", "opened", "closed", "task", "drawn", "banked", "set_aside", "no_verdict", "tokens_k", "gate"):
+        assert "`%s`" % col in waves, col
+    assert "20 minutes" in sec("Budgets") and "ten attempts" in sec("Budgets")
+    assert "`.run/sandbox/<symbol>/attempt-NN.c`" in sec("The sandbox")
+    report = sec("The give-up report")
+    assert all("| `%s` | " % f in report for f in ("symbol", "best", "attempts", "tried", "blocker", "next"))
+    assert re.findall(r"(?m)^\d\. `([a-z-]+)`\.", report) == ["referent", "call-set", "cfg", "types", "unknown"]
+    matcher = sec("Matcher workflow").strip("\n").split("\n")
+    assert 8 <= len(matcher) <= 30 and all(re.match(r"\d+\. ", l) for l in matcher), len(matcher)
+    assert upgrade.MATCHER_LINE.startswith("PY tools/skill_add.py matcher --from %s#Matcher " % upgrade.CAMPAIGN_DOC)
+    d = next(d for d in upgrade.DELIVERY if d.path == upgrade.CAMPAIGN_DOC)
+    assert (d.cls, d.own, d.src) == ("owned", "campaign", "profiles/psx/campaign.md")
+    assert not [d for d in upgrade.DELIVERY if d.path.startswith(upgrade.MATCHER_SKILL)]
