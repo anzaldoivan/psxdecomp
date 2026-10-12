@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import answers as answers_mod  # noqa: E402
 import common  # noqa: E402
 import fetch_refs  # noqa: E402
+import floor  # noqa: E402
 import publish  # noqa: E402
 
 BOOT = ".run/bootstrap"
@@ -310,10 +311,17 @@ WROTE_RE = re.compile(r"^- (created|changed|edited|appended) `([^`]+)`")
 
 
 def s8_kit(c: Ctx) -> str:
-    """The pinned decomp-architect installer: its dry run first, then the run; the two path lists are compared."""
+    """The pinned decomp-architect installer: its dry run first, then the run; the two path lists are compared. A
+    constitution that does not name the eleven ladder phases is a recorded deviation, never a failure: the kit lets
+    the intake merge phases."""
     kit, devs = common.resolve_kit(c.a.force_untested, c.a.kit)
     for d in devs:
         c.deviation(d)
+    ctx = c.p(floor.CONTEXT)
+    missing = floor.ladder_missing(common.read(ctx)) if ctx.is_file() else []
+    if missing:
+        c.deviation("%s names %d of the %d ladder phases; not named: %s (the roadmap floor checks the plan's ladder)" % (
+            floor.CONTEXT, len(floor.LADDER) - len(missing), len(floor.LADDER), ", ".join("1.%d" % n for n in missing)))
     record = c.p("docs/decomp-architect-install.md")
     if record.is_file():
         return "kit already installed (docs/decomp-architect-install.md)%s" % readme_standard(c, kit)

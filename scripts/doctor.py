@@ -2,13 +2,16 @@
 """doctor.py — is this game repository healthy against the current psxdecomp pins? Read-only.
 
     doctor.py [--repo DIR] [--json] [--only ROW[,ROW]] [--offline]
-                                           one row per check: OK / WARN / FAIL / SKIP; exit 1 on any FAIL, 2 on a
-                                           row name that does not exist; --json prints the rows alone on stdout
+                                           one row per check: OK / WARN / FAIL / SKIP / WAIT; exit 1 on any FAIL, 2 on
+                                           a row name that does not exist; --json prints the rows alone on stdout
                                            SKIP: the check did not run (offline, logged out); it is counted in the
                                            last line and never reported as OK
+                                           WAIT: the check is not due yet; the row names the phase that makes it
+                                           due. It is counted in the last line and is never a failure
     doctor.py --self-test
 
-Checks: the bootstrap record (config/psxdecomp.toml); deny (FAIL when a rule of profiles/psx/deny.json is missing from
+Checks: the bootstrap record (config/psxdecomp.toml); roadmap (GENERATION_PLAN.md against the roadmap floor,
+floor.lint_plan: FAIL on a grammar or ladder failure, WARN on any other finding, WAIT before the plan exists); deny (FAIL when a rule of profiles/psx/deny.json is missing from
 .claude/settings.json, WARN when psxdecomp cannot edit that file); PA3's version against compat.toml; pa3-drift (WARN
 only: the machine's PA3 against the pin, and pa.json `"upgrade": "ask"`); the kit's install record; the README (FAIL
 without the AI policy block; a README on the standard, docs/PUBLISHING.md, is linted and FAILs on a lint failure; an
@@ -46,11 +49,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common  # noqa: E402
 import decompdev  # noqa: E402
 import fetch_refs  # noqa: E402
+import floor  # noqa: E402
 import publish  # noqa: E402
 
 NETWORK_ROWS = ("progress", "github", "dev-ci", "private-repo", "public-standard")
 SPLIT_ROWS = ("private-repo", "public-standard")
-ROWS = ("record", "sdk", "pa3", "pa3-drift", "python", "kit", "readme", "publish-tool", "deny", "split-guard",
+ROWS = ("record", "sdk", "pa3", "pa3-drift", "python", "kit", "roadmap", "readme", "publish-tool", "deny", "split-guard",
         "categories", "ignore", "audit", "fixture", "refs", "refs-ignored", "hygiene", "card") + NETWORK_ROWS
 WIDTH = max(map(len, ROWS))                     # the name column of every printed row (doctor, upgrade audit, S10)
 
@@ -122,6 +126,7 @@ def base_rows(repo: pathlib.Path, add):
             "" if "ProjectArchitect %s" % comp["pa3"]["version"] in head else " (written against another PA3)"))
     else:
         add("kit", "FAIL", "no docs/decomp-architect-install.md (the kit is not installed)")
+    add("roadmap", *roadmap_row(repo))
     readme = repo / "README.md"
     add("readme", *readme_row(common.read(readme) if readme.is_file() else None, repo))
     add("publish-tool", *publish_tool_row(repo))
@@ -166,6 +171,21 @@ def base_rows(repo: pathlib.Path, add):
     card = card_row(repo)
     if card:
         add("card", *card)
+
+
+def roadmap_row(repo: pathlib.Path) -> tuple[str, str]:
+    """GENERATION_PLAN.md against the roadmap floor (floor.lint_plan): FAIL on a `grammar` or `ladder` finding, WARN on
+    any other. WAIT before PA3's planner drafted the plan: the row then counts the ladder phases the constitution names."""
+    found = floor.lint_plan(repo)
+    info = {f[1]: f[2] for f in found if f[0] == "INFO"}
+    if "plan" in info:
+        return "WAIT", "%s; due when PA3's planner drafts the plan" % info["plan"]
+    st, count = floor.plan_summary(found)
+    worst = [f for f in found if f[0] == ("FAIL" if st == "FAIL" else "WARN")]
+    if not worst:
+        return "OK", "%s: %s" % (floor.PLAN, info.get("state", count))
+    return st, "%s: %s — %s%s (`python3 %s plan` lists them)" % (
+        floor.PLAN, count, "; ".join("%s: %s" % f[1:] for f in worst[:2]), "; …" if len(worst) > 2 else "", floor.VENDORED)
 
 
 def machine_pa3_version() -> str | None:
@@ -809,9 +829,9 @@ def main(argv=None) -> int:
         for r in rows:
             print("DOCTOR %-*s %-4s %s" % (WIDTH, *r))
     fails = sum(r[1] == "FAIL" for r in rows)
-    skips = sum(r[1] == "SKIP" for r in rows)
-    print("DOCTOR %s (%d warn%s)" % ("OK" if not fails else "FAIL %d" % fails, sum(r[1] == "WARN" for r in rows),
-                                     ", %d not run" % skips if skips else ""),
+    skips, waits = sum(r[1] == "SKIP" for r in rows), sum(r[1] == "WAIT" for r in rows)
+    print("DOCTOR %s (%d warn%s%s)" % ("OK" if not fails else "FAIL %d" % fails, sum(r[1] == "WARN" for r in rows),
+                                       ", %d not due" % waits if waits else "", ", %d not run" % skips if skips else ""),
           file=sys.stderr if a.json else sys.stdout)         # --json: stdout is the JSON alone
     return 1 if fails else 0
 
@@ -904,12 +924,38 @@ def self_test() -> int:
         "; ".join(r[0] for r in rm), tool[0], cats[0], cats_gone[0]))
     ok &= [r[0] for r in rm] == ["WARN", "FAIL", "WARN", "WARN", "OK", "FAIL"] and "predates" in rm[2][1]
     ok &= tool[0] == "WARN" and cats[0] == "OK" and cats_gone[0] == "FAIL" and "'ovl.stage1'" in cats_gone[1]
+    ok &= self_test_roadmap()
     ok &= self_test_deny()
     ok &= self_test_progress()
     ok &= self_test_github()
     ok &= self_test_split()
     ok &= self_test_summary()
     return common.self_test_banner("doctor", ok)
+
+
+def self_test_roadmap() -> bool:
+    """The roadmap row: WAIT with no plan (a WAIT row alone exits 0 and is counted), OK on the ladder, WARN on a
+    finding that is no failure, FAIL when a ladder phase has no line."""
+    with tempfile.TemporaryDirectory() as td:
+        repo = pathlib.Path(td).resolve()
+        common.git(repo, "init", "--quiet")
+        (repo / floor.CONTEXT).write_text("- **Phase 0 — Governance and the firewall.**\n")
+        wait = roadmap_row(repo)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = main(["--repo", str(repo), "--offline", "--only", "roadmap"])
+        last = buf.getvalue().splitlines()[-1]
+        (repo / floor.PLAN).write_text(floor.self_plan(closed=0))
+        good = roadmap_row(repo)
+        (repo / floor.PLAN).write_text(floor.self_plan(closed=0).replace("Done-criteria: d\n", ""))
+        warn = roadmap_row(repo)
+        (repo / floor.PLAN).write_text(floor.self_plan(closed=0, drop=(4,)).replace("depends: 1.4 |", "depends: 1.3 |"))
+        fail = roadmap_row(repo)
+    print("  roadmap: no plan %s; the ladder %s; no Done-criteria %s; a dropped phase %s" % (wait[0], good[0], warn[0], fail[0]))
+    return (wait[0] == "WAIT" and "names 1 of the 11 ladder phases" in wait[1] and rc == 0
+            and last == "DOCTOR OK (0 warn, 1 not due)" and good[0] == "OK" and "ladder phases open 0" in good[1]
+            and warn[0] == "WARN" and "criteria: no `Done-criteria:` line" in warn[1]
+            and fail[0] == "FAIL" and "ladder: no line 1.4" in fail[1] and "tools/psxd_floor.py plan" in fail[1])
 
 
 def self_test_deny() -> bool:

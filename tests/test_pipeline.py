@@ -88,7 +88,7 @@ def test_s10_writes_the_deny_rules_and_doctor_checks_them(game, tmp_path):
     ok = run([PY, ROOT / "scripts/doctor.py", "--repo", game, "--offline"], check=False)
     assert re.search(r"DOCTOR deny\s+OK", ok.stdout), ok.stdout
     import doctor
-    names = re.findall(r"^DOCTOR (\S+) +(?:OK|WARN|FAIL|SKIP) ", ok.stdout, re.M)
+    names = re.findall(r"^DOCTOR (\S+) +(?:OK|WARN|FAIL|SKIP|WAIT) ", ok.stdout, re.M)
     assert len(names) >= 15 and set(names) <= set(doctor.ROWS), names        # --only knows every row a game prints
     assert re.search(r"DOCTOR card\s+OK\s+HOW_WE_WORK.md \d+ of 7000 characters", ok.stdout), ok.stdout
     bad = tmp_path / "copy"
@@ -98,6 +98,38 @@ def test_s10_writes_the_deny_rules_and_doctor_checks_them(game, tmp_path):
     (bad / ".claude/settings.json").write_text(json.dumps(conf))
     r = run([PY, ROOT / "scripts/doctor.py", "--repo", bad, "--offline"], check=False)
     assert r.returncode == 1 and re.search(r"DOCTOR deny\s+FAIL\s+1 of 18", r.stdout), r.stdout
+
+
+def test_ladder_matches_kit(kit):
+    """floor.LADDER is the pinned kit's ladder: each phase's name is in row n of the ladder table of intake.decomp.md,
+    its name words match that name, and each required milestone word is in row n of that table or of the
+    `verified by` table. The kit's own table names all eleven phases."""
+    import pathlib
+
+    import floor
+    part = (pathlib.Path(kit) / "intake.decomp.md").read_text().split("## Part B", 1)[1].split("\n## Part C", 1)[0]
+    rows = {}
+    for line in part.splitlines():
+        m = re.match(r"^\| (\d+) \| (.*)$", line)
+        if m:
+            rows.setdefault(int(m[1]), []).append(m[2])
+    assert sorted(rows) == list(range(11)) and all(len(v) == 2 for v in rows.values()), sorted(rows)
+    for n, name, words, must in floor.LADDER:
+        assert name in rows[n][0] and re.search(words, name, re.I), (n, name)
+        assert not must or must in " ".join(rows[n]), (n, must)
+    assert floor.ladder_missing(part) == []
+
+
+def test_roadmap_row_waits_before_the_plan(game):
+    """A fresh bootstrap has no GENERATION_PLAN.md: doctor's `roadmap` row says WAIT, which is no failure and is
+    counted in the last line. S8 recorded that the fixture constitution names two of the eleven ladder phases."""
+    r = run([PY, ROOT / "scripts/doctor.py", "--repo", game, "--offline"], check=False)
+    assert r.returncode == 0, r.stdout
+    assert re.search(r"^DOCTOR roadmap +WAIT no GENERATION_PLAN.md; PROJECT_CONTEXT.md names 2 of the 11 ladder phases; "
+                     r"due when PA3's planner drafts the plan$", r.stdout, re.M), r.stdout
+    assert re.search(r"^DOCTOR OK \(\d+ warn, \d+ not due(, \d+ not run)?\)$", r.stdout.splitlines()[-1]), r.stdout
+    rec = (game / "config/psxdecomp.toml").read_text()
+    assert "PROJECT_CONTEXT.md names 2 of the 11 ladder phases; not named: 1.2, 1.3" in rec, rec
 
 
 def _headlines(game):

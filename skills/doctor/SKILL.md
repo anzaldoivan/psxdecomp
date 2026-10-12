@@ -15,7 +15,7 @@ about the machine. Otherwise run:
 ```
 
 Report the `FAIL` and `WARN` rows, one line each, with the fix each row names. Never fix anything from this skill: it
-diagnoses.
+diagnoses. A `WAIT` row is not due yet. Report it in one line with the phase that makes it due.
 
 | Row | Status | What it reads | Fix |
 |---|---|---|---|
@@ -27,9 +27,11 @@ diagnoses.
 | `dev-ci` | WARN or FAIL, network | The latest push run of each workflow on origin's default branch. WARN: one is red. FAIL: a red job is one of `[public].checks` | a green push on dev before the next release |
 | `refs` | WARN | Drift in the reference library | `"${CLAUDE_PLUGIN_ROOT}/scripts/psxd" fetch_refs --repo .` |
 | `record` | WARN | psxdecomp did not bootstrap the repository | `/psxdecomp:upgrade` |
+| `roadmap` | FAIL, WARN or WAIT | `GENERATION_PLAN.md` against the ladder. FAIL: a broken phase line, or a ladder phase with no line. WAIT: no plan yet | `python3 tools/psxd_floor.py plan` lists the findings. The planner corrects the plan, never this skill |
 | `readme` | FAIL | A README lint failure. The standard: `docs/PUBLISHING.md` in the plugin | the row names it; the generated blocks: `python3 tools/psxd_publish.py render README.md --write` |
 | `card` | WARN only | `HOW_WE_WORK.md` is over PA3's cap | move a section to `docs/ops/` and link it |
 
+- A `WAIT` row never fails the run. The last line counts the rows that are not due.
 - `--offline` skips the network rows. Their rows say `SKIP`: a check that did not run is never `OK`. The last line
   counts them.
 - `--only github` runs just that row. A name that is no row exits 2 and lists the rows.
