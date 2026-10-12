@@ -1,6 +1,6 @@
 5 README.md
 1 SECURITY.md
-35 docs/ECOSYSTEM.md
+32 docs/ECOSYSTEM.md
 1 docs/PROFILES.md
 59 docs/PUBLISHING.md
 1 docs/assets/README.md
