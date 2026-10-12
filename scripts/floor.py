@@ -23,7 +23,8 @@ The plan checks. `grammar` and `ladder` are a FAIL, the others a WARN.
   frozen     a closed phase's milestone differs from its text at the commit that closed it
   criteria   no `Done-criteria:` line; a milestone lost its required words (`N of N`, `0 stubs`, `format-check`)
   paths      a closed phase's `phase-end:` file, or a repository path in its milestone, does not exist
-  markers    a `TODO(phase-N)` in a tracked file while phase 1.N is closed
+  markers    a `TODO(phase-N)` in a tracked file while phase 1.N is closed (not in phase-ends/, templates/, .claude/,
+             refs/ or psxdecomp's own tools/psxd_*.py)
 
 The debt kinds (one `<count> <kind> <path>` row each in the baseline):
   pin           `register T x asm("$n")`: a register forced by hand
@@ -271,7 +272,7 @@ def _closed_milestones(repo, ids: set[str]) -> dict[str, str] | None:
 
 REPO_PATH = re.compile(r"`([\w.-]+(?:/[\w.-]+)+/?)`")
 MARKER = re.compile(r"TODO\(phase-(\d+)\)")
-MARKER_SKIP = (":!phase-ends", ":!templates", ":!.claude", ":!refs")
+MARKER_SKIP = (":!phase-ends", ":!templates", ":!.claude", ":!refs", ":!tools/psxd_*.py")   # history, PA3's, psxdecomp's own
 
 
 def lint_plan(repo) -> list[tuple[str, str, str]]:
@@ -977,6 +978,8 @@ def self_test_plan(check) -> None:
         (repo / "docs" / "memory-map.md").write_text("TODO(phase-2): the load addresses.\nTODO(phase-9): later.\n")
         (repo / "templates").mkdir()
         (repo / "templates" / "t.md").write_text("TODO(phase-2)\n")
+        (repo / "tools").mkdir()
+        (repo / "tools" / "psxd_floor.py").write_text("# a self-test string: TODO(phase-2)\n")   # psxdecomp's own tool
         _commit(repo, "markers")
         found = [f[2] for f in lint_plan(repo) if f[1] == "markers"]
         check("markers: a closed phase's marker, not templates/", len(found) == 1 and found[0].startswith("1 ")
