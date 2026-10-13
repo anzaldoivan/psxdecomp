@@ -60,7 +60,7 @@ Inputs: the title, region/version and serial (from `.run/bootstrap/interview.jso
    - A build is never a `[[ref]]` row of its own. The profile's `oracle-build` row covers it. The page that describes
      it becomes a `link` row.
    - A page that refuses the agent goes to the report's "For a person to read" table.
-   - tcrf.net refuses every agent: its live pages are never fetched.
+   - tcrf.net refuses every agent: its live pages are never fetched, and those of `datacrystal.tcrf.net` neither.
 
 **GitHub search.** Right after the decomp.dev lookup, run
 `"$PSXD" ghsearch --title "<title>" --serial "<serial>" --exe <TARGET_BINARY>`. Add `--exclude "<value>"` (quoted)

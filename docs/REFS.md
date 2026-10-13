@@ -104,8 +104,8 @@ searches for the others, and the S4 gate asks the developer.
   addresses. Until then it is a lead. The order of sources and the trap live in the profile's file, like every other.
 - **No symbol parser of our own.** `ghidra-psx-ldr` (core) imports a PsyQ symbol file into Ghidra, and `psx-mnd-sym`
   (optional) dumps one to text or to a C header.
-- **A site that refuses agents is never fetched live.** tcrf.net is one (its stated policy, read 2026-10-13). It
-  serves an agent a decoy that holds injected instructions. The fact comes from other sources first.
+- **A site that refuses agents is never fetched live.** tcrf.net is one, with its subdomains (its stated policy,
+  read 2026-10-13). It serves an agent a decoy that holds injected instructions. The fact comes from other sources first.
 - **The preserved page is the check.** `https://archive.org/wayback/available?url=<page>` finds the page's Wayback
   Machine snapshot. The lead cites it with its timestamp, and its text is untrusted. When the tool refuses the
   snapshot too, its URL goes to the report's "For a person to read" table. No other tool takes its place.

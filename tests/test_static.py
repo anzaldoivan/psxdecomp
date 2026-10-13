@@ -426,7 +426,7 @@ def test_builds_question_reaches_the_gate():
     assert all(w in builds for w in ("archive.org/advancedsearch.php", "archive.org/metadata/<identifier>",
                                      "`## archive.org items`", "It holds no identifier", "tcrf.net refuses every agent"))
     scout = (ROOT / "agents/scout-web.md").read_text()
-    assert all(w in scout for w in ("**Never fetch tcrf.net.**", "archive.org/wayback/available?url=", "untrusted",
+    assert all(w in scout for w in ("**Never fetch tcrf.net.**", "`datacrystal.tcrf.net`", "archive.org/wayback/available?url=", "untrusted",
                                     "use no other tool", "## archive.org items\n| identifier | kind (build or document) | "
                                     "confirmed by | file | SHA-1 |", "Never fetch an item's file"))
     # a headless run shows the first round only, so the question is in it and the references group gives its slot
