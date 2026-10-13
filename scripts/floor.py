@@ -88,9 +88,9 @@ documents, records and tests, and the work folders of a campaign (drafts/, waves
   obscured         text that hides code from this tool: a statement outside every function body it sees (a head in
                    K&R form, by a macro, or not in column 0), a line continuation outside a directive, a digraph or
                    a trigraph for a brace, a source behind a symbolic link, an `#include` of C code from a folder
-                   that is not read. A file with `.inc` in its name is a fragment that other files include inside a
-                   function body: its statements are counted in its own file, and they rise only when each body that
-                   includes it is new
+                   that is not read, a branch of a preprocessor conditional whose braces do not pair. A file that
+                   a function includes inside its braces is a fragment: its statements are counted in its own
+                   file, and they rise only when each body that includes it is new
   placeholder      a `func_XXXXXXXX` or `D_XXXXXXXX` name defined in a C file (also `FUN_`, `DAT_`, `sub_`, `loc_`)
   placeholder-use  each other place where such a name stands: a call, a read, a declaration
   unbased          any other function defined in a C file with no accepted row in config/names.tsv (once that file
@@ -810,8 +810,9 @@ def _uses(names, text: str) -> int:
 
 
 BRACE = re.compile(r"[{}]")
-STUB_USE = re.compile(r"^[ \t]*INCLUDE_ASM\s*\(", re.M)
-STUB_NAME = re.compile(r"^[ \t]*INCLUDE_ASM\s*\([^;]*?\b([A-Za-z_]\w*)\s*\)", re.M)
+STUB_USE = re.compile(r"\bINCLUDE_ASM\s*\(")          # every use counts, wherever it stands on its line
+STUB_NAME = re.compile(r"\bINCLUDE_ASM\s*\([^;]*?\b([A-Za-z_]\w*)\s*\)")
+CONDITIONAL = re.compile(r"^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|else|endif)\b", re.M)
 SCOPE = ""                                             # the name of a file's bucket for what no function body holds
 
 
@@ -844,6 +845,29 @@ def extents(code: str) -> list[tuple[str, int, int]]:
     return out
 
 
+def unpaired(body: str, code: str) -> list[int]:
+    """Where a branch of a preprocessor conditional ends with braces that do not pair (`body`: the text with no
+    comment, `code`: the same with its directives blank, so a brace of a `#define` is none). This tool reads every
+    branch as text, the compiler reads one: a lone brace in a branch moves the end of a function body for one of the
+    two, so a body could swallow the next one or end before its own tail. A conditional that chooses between two
+    heads keeps the brace behind its `#endif`."""
+    out, stack, at = [], [], 0
+    for m in CONDITIONAL.finditer(body):
+        if stack:
+            stack[-1] += code.count("{", at, m.start()) - code.count("}", at, m.start())
+        at = m.end()
+        if m[1] in ("if", "ifdef", "ifndef"):
+            stack.append(0)
+        elif stack:
+            if stack[-1]:
+                out.append(m.start())
+            if m[1] == "endif":
+                stack.pop()
+            else:
+                stack[-1] = 0
+    return out
+
+
 _SCANS: dict[tuple, dict] = {}                         # one scan per text and context: a range of commits repeats most
 
 
@@ -864,7 +888,7 @@ def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -
     functions it defines under a name that is no placeholder. `stubs`: its INCLUDE_ASM lines. `shared`: the macros of
     the headers that hide a construct."""
     key = (hashlib.sha1(text.encode("utf-8", "replace")).digest(), in_include(rel), is_c(rel), is_header(rel),
-           is_fragment(rel), rel == address_header, tuple(sorted((shared or {}).items())))
+           rel == address_header, tuple(sorted((shared or {}).items())))
     if key in _SCANS:
         return _SCANS[key]
     body = strip(text)
@@ -906,9 +930,10 @@ def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -
     for m in INLINE_ASM.finditer(code):                # a header's own plumbing at file scope is the stub's, not debt
         if not any(a <= m.start() < b for a, b in spans) and not (is_header(rel) and outside(m.start()) and _plumbing(plain, m.end())):
             hits.append(("asm", m.start()))
-    if not is_fragment(rel):
-        hits += [("obscured", m.start()) for m in STATEMENT.finditer(code) if outside(m.start())]
+    loose = [m.start() for m in STATEMENT.finditer(code) if outside(m.start())]
+    hits += [("obscured", at) for at in loose]         # `debt_bodies` takes them back for a file that a body includes
     hits += [("obscured", m.start()) for m in SPLICE.finditer(code)]
+    hits += [("obscured", at) for at in unpaired(body, code)]
     if not in_include(rel):
         hits += [("struct", m.start()) for m in STRUCT.finditer(code)]
     funcs: dict[str, int] = {}
@@ -938,7 +963,7 @@ def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -
         includes.append((ext[i][0] if i >= 0 and m.start() < ext[i][2] else SCOPE, m.group(1)))
     _SCANS[key] = {"hits": hits, "extents": ext, "funcs": funcs, "stubs": len(STUB_USE.findall(code)),
                    "stub_names": STUB_NAME.findall(code), "inner": inner, "includes": includes,
-                   "crutches": found}
+                   "crutches": found, "loose": len(loose)}
     return _SCANS[key]
 
 
@@ -974,12 +999,6 @@ def is_source(path: str) -> bool:
     name starts with a dot."""
     return (path.lower().endswith(C_SUFFIXES + ASM_SUFFIXES) and not path.startswith(NOT_SOURCE)
             and not any(part.startswith(".") for part in path.split("/")))
-
-
-def is_fragment(path: str) -> bool:
-    """A body that other files include inside their own function braces (`shared.inc.c`, `body.inc`): its statements
-    stand outside a function by design. `_rises` holds it to the bodies that include it."""
-    return ".inc" in path.rsplit("/", 1)[-1].lower()
 
 
 def is_asm(path: str) -> bool:
@@ -1127,6 +1146,13 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, 
             elif not is_header(target) and name != SCOPE:   # inside a function's braces: the file is that body's text
                 users.setdefault(target, set()).add((p, name))
     tree.memo[("users", tuple(skip))] = users
+    for target in users:                               # a fragment: its statements stand outside a function by design
+        scope = out.get(target, {}).get(SCOPE, {})
+        left = scope.get("obscured", 0) - scan_file(target, texts[target], shared, header)["loose"]
+        if left > 0:
+            scope["obscured"] = left
+        else:
+            scope.pop("obscured", None)
     for p in tree.links:                               # a source behind a symbolic link is compiled and never read here
         if is_source(p) and not covered(p):
             out.setdefault(p, {}).setdefault(SCOPE, {})["obscured"] = 1
@@ -1404,8 +1430,8 @@ def _rises(old: dict, new: dict, was=None, now=None) -> tuple[dict[str, int], li
     results of debt_bodies. `was`, `now`: tree_stubs of the two trees. A body that the change adds is, in this order:
     the body of the same name that left another file (moved); the body with the same text from its first brace on
     that left under another name (renamed); a new body, when an INCLUDE_ASM line of its name left; a new body, when
-    an INCLUDE_ASM line left its file under another name (a function that is named as it is banked), or when its file
-    is new and the tree gained a body (a function carved out of an assembly segment); else it stands in the place of
+    an INCLUDE_ASM line left its file under another name (a function that is named as it is banked), or when its C
+    file is new and the tree gained a body (a function carved out of an assembly segment); else it stands in the place of
     a body that left, and it may hold no more than those did. So an empty function in a file that exists buys
     nothing: there a body is new only when it takes a stub away. Where a file loses a stub under another name and loses a body in the
     same change, the added bodies with the most debt count as the new ones."""
@@ -1486,7 +1512,7 @@ def _rises(old: dict, new: dict, was=None, now=None) -> tuple[dict[str, int], li
         names = sorted((n for q, n in rest if q == p), key=lambda n: (-sum(new[p][n].values()), n))
         lost = [c for (q, _), c in sorted(gone.items()) if q == p]
         slots = max(0, min(len(lost_stubs.get(p, ())), len(names) - len(lost)))
-        if p not in old and surplus > 0:               # or the file itself is new: a function carved out of an assembly segment
+        if p not in old and is_c(p) and surplus > 0:   # or its C file is new: a function carved out of an assembly segment
             more = min(len(names) - slots, surplus)
             slots, surplus = slots + more, surplus - more
         new_in[p] = new_in.get(p, 0) + slots
@@ -1611,11 +1637,11 @@ def file_states(repo, tree: Tree | None = None) -> list[tuple[str, str, dict]]:
     tree = tree or Tree(repo)
     skip = parse_baseline(tree.read(BASELINE)).skip
     bodies = debt_bodies(repo, skip, tree)
-    stubs = tree_stubs(repo, skip, tree)[0]
+    stubs, _, users = tree_stubs(repo, skip, tree)
     ledger = tree.read(NAMES) is not None
     out = []
     for p in sorted(bodies):
-        if not is_c(p) or is_fragment(p) or not (stubs.get(p) or any(n != SCOPE for n in bodies[p])):
+        if not is_c(p) or p in users or not (stubs.get(p) or any(n != SCOPE for n in bodies[p])):
             continue
         counts = debt_counts(repo, bodies={p: bodies[p]})
         got = {k[0]: n for k, n in counts.items()}
@@ -3680,15 +3706,19 @@ C_BODIES = {
                                         {SCOPE: {"offset": 1, "obscured": 1}, "B": {}}),
     "a definition by a macro is file scope": ("HANDLER(A) {\nx:\n    goto x; // !FAKE: the loop\n}\nvoid B(void) {\n}\n",
                                                {SCOPE: {"goto": 1, "obscured": 1}, "B": {}}),
-    "an #if with two heads is one body": ("#ifdef VERSION_JP\ns32 A(s32 a) {\n#else\ns32 A(void) {\n#endif\nx:\n"
-                                          "    goto x; // !FAKE: the loop\n}\nvoid B(void) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 1}, "B": {"goto": 1}}),
+    "an #if with two heads is one body, and a brace inside its branches is hidden code": (
+        "#ifdef VERSION_JP\ns32 A(s32 a) {\n#else\ns32 A(void) {\n#endif\nx:\n"
+        "    goto x; // !FAKE: the loop\n}\nvoid B(void) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 1, "obscured": 2}, "B": {"goto": 1}}),
+    "an #if with two heads and the brace behind its #endif": (
+        "#ifdef VERSION_JP\ns32 A(s32 a)\n#else\ns32 A(void)\n#endif\n{\nx:\n"
+        "    goto x; // !FAKE: the loop\n}\nvoid B(void) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 1}, "B": {"goto": 1}}),
     "an `else if` in column 0 opens no body": ("void A(s32 a) {\n    if (a) {\n    }\nelse if (a == 2) {\nx:\n    goto x; // !FAKE: the loop\n"
                                                "    }\n}\n", {"A": {"goto": 1}}),
     "a body beside its stub": ("#ifndef NON_MATCHING\nINCLUDE_ASM(\"asm/nonmatchings/a\", func_80012344);\n#else\n"
                                "s32 func_80012344(s32 a) {\nx:\n    goto x; // !FAKE: the loop\n}\n#endif\n", {"func_80012344": {"goto": 1, "placeholder": 1}}),
-    "braces that never close end at the next definition": (
+    "braces that never close end at the next definition, and the branches that open them are hidden code": (
         "void A(s32 a) {\n#ifdef X\n    if (a) {\n#else\n    if (!a) {\n#endif\nx:\n        goto x; // !FAKE: the loop\n    }\n}\n"
-        "void B(void) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 1}, "B": {"goto": 1}}),
+        "void B(void) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 1, "obscured": 2}, "B": {"goto": 1}}),
     "two bodies of one name are one entry": ("void A(void) {\nx:\n    goto x; // !FAKE: the loop\n}\nstruct S {\n    s32 a;\n};\n"
                                              "void A(s32 b) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 2}, SCOPE: {"struct": 1}}),
     "data, a macro and a struct are file scope": ("#define SWAP(a, b) { a = b; }\ns32 D_800A1234 = 4;\nstruct S {\n    s32 a;\n};\n",
@@ -3777,8 +3807,8 @@ def self_test_files(check) -> None:
         got = debt_bodies(repo)
         check("code in any folder counts; the splitter's and the tools' folders do not", sorted(got) == [
             "lib/walk.c", "src/body.inc", "src/func_80012344.c", "src/hand.asm", "src/link.c", "src/misc12.c", "src/walk.c"], sorted(got))
-        check("the code of a fragment is counted in its own file", got["src/body.inc"] == {
-            SCOPE: {"goto": 1, "goto-unmarked": 1}}, got["src/body.inc"])
+        check("the statements of a file that no body includes are hidden code, whatever its name", got["src/body.inc"] == {
+            SCOPE: {"goto": 1, "goto-unmarked": 1, "obscured": 3}}, got["src/body.inc"])
         check("a file named by an address or a number", got["src/func_80012344.c"][SCOPE] == {"filename": 1}
               and got["src/misc12.c"][SCOPE] == {"filename": 1} and SCOPE not in got["src/walk.c"], got["src/misc12.c"])
         check("an assembly file by another suffix; a source behind a symbolic link", got["src/hand.asm"] == {SCOPE: {"asm": 1}}
@@ -3846,6 +3876,38 @@ def self_test_files(check) -> None:
         put("src/stride.c", (repo / "src/stride.c").read_text() + "struct More {\n    s32 a;\n};\n")
         check("and no more than that", judge() == [("debt", "rose outside a function with no new body: struct src/stride.c (file "
                                                     "scope): 1 -> 2")], judge())
+        # ---- which body is which: each attack on that question is a control here ----
+        _git(repo, "reset", "-q", "--hard", "HEAD")
+        _git(repo, "clean", "-q", "-fd")
+        kept = "s32 Kept(s32 n) {\n    return n;\n}\n"
+        stub = 'INCLUDE_ASM("asm/nonmatchings/id", %s);'
+        dummy = "s32 Dummy(s32 n) {\n    return *(s32 *)(n + 4);\n}\n"
+        put("src/id.c", kept + stub % "StubB" + "\n" + stub % "StubC" + "\n")
+        _commit(repo, "a body and two stubs")
+        said = lambda word: [t for _, t in judge() if word in t]  # noqa: E731
+        put("src/id.c", kept + stub % "StubB" + " " + stub % "StubC" + "\n" + dummy)
+        scan = scan_file("src/id.c", (repo / "src/id.c").read_text())
+        check("two stubs on one line are two stubs, so joining them frees no place for a body", (scan["stubs"], scan["stub_names"]) == (
+            2, ["StubB", "StubC"]) and said("rose in a body that is not new"), (scan["stubs"], scan["stub_names"], judge()))
+        put("src/id.c", "s32 StubB(s32 n) {\n#ifdef NEVER\n    {\n#endif\n    return n;\n}\n" + kept.replace("    return n;", "    n += *(s32 *)(n + 4);\n    return n;")
+            + "#ifdef NEVER\n}\n#endif\n" + stub % "StubC" + "\n")
+        check("a brace in a branch of a conditional cannot make a new body swallow the next one", said("obscured"), judge())
+        put("src/id.c", "s32 Kept(s32 n) {\n#ifdef NEVER\n}\n#endif\n    n += *(s32 *)(n + 4);\n#ifdef NEVER\nvoid Never(s32 n) {\n#endif\n    return n;\n}\n"
+            "s32 StubB(s32 n) {\n    return n;\n}\n" + stub % "StubC" + "\n")
+        check("nor end a body early, so that its tail reads as file scope beside a new body", said("obscured"), judge())
+        check("`#if 0` around a lone brace is such a branch", file_debt("src/a.c", "void A(void) {\n#if 0\n    {\n#endif\n}\n") == {"obscured": 1},
+              file_debt("src/a.c", "void A(void) {\n#if 0\n    {\n#endif\n}\n"))
+        paired = "#if A\ns32 F(void) {\n    return 1;\n}\n#else\ns32 F(void) {\n    return 2;\n}\n#endif\n#ifndef G\n#define G {\n#endif\n"
+        check("a conditional whose branches pair their braces is plain text", "obscured" not in file_debt("src/a.c", paired), file_debt("src/a.c", paired))
+        put("src/id.c", kept + stub % "StubB" + "\n" + stub % "StubC" + "\n")
+        put("include/fast.h", "static inline s32 Fast(s32 n) {\n    return *(s32 *)(n + 4);\n}\n")
+        check("a new header is no new file for a body: its inline body takes no stub away", said("rose in a body that is not new"), judge())
+        (repo / "include/fast.h").unlink()
+        put("src/carved.c", dummy.replace("Dummy", "Carved"))
+        check("a new C file with a body is still a function carved out of assembly", judge() == [], judge())
+        (repo / "src/carved.c").unlink()
+        put("src/loose.inc.c", "    s32 Loose(s32 n) {\n        return *(s32 *)(n + 4);\n    }\n")
+        check("a file is a fragment because a body includes it, never by its name", said("obscured"), judge())
 
 
 def self_test_tree(check) -> None:
@@ -4007,7 +4069,7 @@ def self_test_trials(check) -> None:
         rc, out = trial("src/sum.c")
         check("trial: a file with no crutch", (rc, out) == (0, "TRIAL OK src/sum.c: no pin and no barrier in a function\n"), out)
         check("trial: a file that is not there", trial("src/gone.c")[0] == 1)
-        # ---- what the reference projects do (stage2/audit/AUDIT.md): each attack is a control here ----
+        # ---- trials as the reference projects run them: each attack on a trial is a control here ----
 
         def safe(fn, *a, **kw):                        # a crash is an answer of its own, and a wrong one
             try:

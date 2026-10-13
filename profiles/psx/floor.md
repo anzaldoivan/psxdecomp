@@ -166,7 +166,11 @@ is `rules/FIN1.md`.
 - It does not read the work folders of a campaign: `drafts/`, `waves/`, `repro/`, `scratch/` and `sandbox/`.
 - It also does not read a folder whose name starts with a dot. It reads each other folder.
 - An `#include` of C code from a folder that the tool does not read counts as `obscured`.
-- A file with `.inc` in its name is a fragment. Other files include it inside a function body.
+- A fragment is a file that a function includes inside its braces. Its name decides nothing.
+- A file of statements that no function includes counts as `obscured`.
+- A branch of an `#if` must pair its braces. A lone brace in a branch counts as `obscured`.
+- Where an `#if` chooses between two function heads, write the `{` behind the `#endif`.
+- Every `INCLUDE_ASM` counts as a stub, wherever it stands on its line.
 - The debt of a fragment rises only when each body that includes it is new.
 - The tool sees a function body when its head starts in column 0 as `type name(arguments) {`.
 - The game counts `flag` and `reservation`. `[debt] flags` in `config/psxdecomp.toml` names its command.
