@@ -2,7 +2,8 @@
 """corpus.py: tier 5a, inside the corpus image. Our own small C functions as a compile-and-compare ground truth.
 
   corpus.py check [ID ...]            every truth matches itself, every mutant fails, every fake twin matches and is
-                                      flagged, no truth is flagged; ends `CORPUS OK ...` (exit 0) or `CORPUS FAIL` (1)
+                                      flagged, no truth is flagged, and every trial case loses its spare pin and keeps
+                                      the pin it needs; ends `CORPUS OK ...` (exit 0) or `CORPUS FAIL` (1)
   corpus.py list                      one line per truth: id, class, function, twins
   corpus.py pack ID DIR [--compiler]  what a drafter may see, written to DIR: target.json, target.s, ctx.h, common.h
   corpus.py --self-test               the mutation rule, on text (no compiler needed)
@@ -12,7 +13,12 @@ truth/<id>/ctx.h     the declarations a drafter is given. hidden.h (optional): t
 truth/<id>/twin.<kind>.c   a fake twin: the same bytes through a lint kind (register-pin, goto, offset-cast,
                            struct-def), or the same masked words through another symbol (symbol, abs-address).
                            `// compilers: gcc2.95.2` on its first lines limits it to that compiler.
-Targets are built here from truth.c at test time; no target is stored. stdlib only; probe.py and lint.py beside it.
+trial/<id>/pinned.c   one function that matches itself with two register pins. `// needs: <crutch>` names the pin
+                      the match needs, `// spare: <crutch>` the pin it does not. The trial tool of the floor
+                      (scripts/floor.py `trial`, with probe.py as its probe) must drop the spare one, keep and record
+                      the needed one, and find a row that claims the spare one was needed.
+Targets are built here from truth.c and pinned.c at test time; no target is stored. stdlib only; probe.py and lint.py
+beside it, and scripts/floor.py of this repository for the trial cases.
 """
 import json
 import os
@@ -27,11 +33,13 @@ import lint  # noqa: E402
 import probe  # noqa: E402
 
 TRUTH = os.path.join(HERE, "truth")
+TRIAL = os.path.join(HERE, "trial")
+FLOOR = os.path.normpath(os.path.join(HERE, "..", "..", "scripts", "floor.py"))
 INC = os.path.join(HERE, "include")
 CLASSES = ("struct-fields", "struct-absent", "signedness", "loops", "switch", "globals", "divmul", "calls", "odd")
 WORDS = (8, 40)                     # a truth's size under the first compiler, in words
 RELOC_TWINS = ("symbol", "abs-address")   # twins whose words match and whose relocations do not
-META = re.compile(r"^// (class|func|canary|compilers|twin): *(.+?) *$", re.M)
+META = re.compile(r"^// (class|func|canary|compilers|twin|trial|needs|spare): *(.+?) *$", re.M)
 
 
 def meta(path):
@@ -136,6 +144,77 @@ def check_one(t, errors):
     return stats
 
 
+def trials(only=()):
+    out = []
+    for tid in sorted(os.listdir(TRIAL)) if os.path.isdir(TRIAL) else ():
+        d = os.path.join(TRIAL, tid)
+        if os.path.isfile(os.path.join(d, "pinned.c")) and (not only or tid in only):
+            m, text = meta(os.path.join(d, "pinned.c"))
+            out.append({"id": tid, "dir": d, "meta": m, "text": text})
+    return out
+
+
+def floor_module():
+    """scripts/floor.py of this repository as a module (stdlib only, as this file)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("floor", FLOOR)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def check_trial(t, errors):
+    """One trial case under each compiler: the floor's trial tool with probe.py as its probe. The spare pin goes, the
+    needed pin stays with a reason and a row, and a row written by hand for the spare pin is found by the recheck."""
+    floor = floor_module()
+    func, needs, spare = (t["meta"].get(k) for k in ("func", "needs", "spare"))
+
+    def bad(msg):
+        errors.append("%s: %s" % (t["id"], msg))
+
+    run = lambda repo, *a: subprocess.run([sys.executable, FLOOR, "trial", *a, "--repo", repo], capture_output=True, text=True)  # noqa: E731
+    for comp in probe.COMPILERS:
+        with tempfile.TemporaryDirectory() as tmp:
+            obj, repo = os.path.join(tmp, "t.o"), os.path.join(tmp, "game")
+            err = probe.build(os.path.join(t["dir"], "pinned.c"), obj, comp, (t["dir"], INC))
+            if err:
+                bad("%s: pinned.c does not compile: %s" % (comp, err.strip().splitlines()[-1:]))
+                continue
+            with open(os.path.join(tmp, "target.json"), "w") as f:
+                json.dump(probe.target_of(obj, func, comp), f)
+            os.makedirs(os.path.join(repo, "src"))
+            os.makedirs(os.path.join(repo, "config"))
+            src, rows = os.path.join(repo, "src", "pinned.c"), os.path.join(repo, floor.TRIALS)
+            with open(src, "w") as f:
+                f.write(t["text"])
+            with open(os.path.join(repo, floor.RECORD), "w") as f:
+                f.write("[trial]\nprobe = '%s %s check {file} {func} --target %s --compiler %s -I %s -I %s'\n" % (
+                    sys.executable, os.path.join(HERE, "probe.py"), os.path.join(tmp, "target.json"), comp, t["dir"], INC))
+            r = run(repo, "src/pinned.c")
+            with open(src) as f:
+                text = f.read()
+            left = [c["id"] for c in floor.crutches("src/pinned.c", text)]
+            if r.returncode != 0 or "2 tried, 1 removed, 1 kept" not in r.stdout or left != [needs]:
+                bad("%s: the trial left %s, not %s alone: %s" % (comp, left, needs, (r.stdout + r.stderr).strip().splitlines()[-2:]))
+                continue
+            with open(rows) as f:
+                got = [l.split("\t") for l in f.read().splitlines()[1:]]
+            if [g[1:3] + g[4:5] for g in got] != [[func, needs, "kept"]] or "// !FAKE: %s: " % needs not in text:
+                bad("%s: no reason above the kept pin, or no row for it: %s" % (comp, got))
+            if floor.trials_findings(repo):
+                bad("%s: the record check refuses the trial's own result: %s" % (comp, floor.trials_findings(repo)))
+            forged = t["text"].replace("    register", "    // !FAKE: the allocator needs it\n    register")
+            with open(src, "w") as f:
+                f.write(forged)
+            with open(rows, "w") as f:
+                f.write("\t".join(floor.TRIAL_COLUMNS) + "\n" + "".join("src/pinned.c\t%s\t%s\t%s\tkept\t%s\n" % (
+                    func, c["id"], c["hash"], "0" * 16) for c in floor.crutches("src/pinned.c", forged)))
+            r = run(repo, "--recheck")
+            if r.returncode != 1 or "TRIAL FAIL removable: src/pinned.c %s %s:" % (func, spare) not in r.stdout or r.stdout.count("TRIAL FAIL") != 1:
+                bad("%s: the recheck did not find the forged row of %s: %s" % (comp, spare, r.stdout.strip().splitlines()[-2:]))
+    return 1
+
+
 def check(only):
     ts, errors = truths(only), []
     canaries = [t["meta"].get("canary") for t in ts]
@@ -150,13 +229,17 @@ def check(only):
         tot = {k: tot[k] + s[k] for k in tot}
         print("CORPUS %s %s %s" % (t["id"], t["meta"].get("class"), "ok" if not any(e.startswith(t["id"] + ":") for e in errors) else "FAIL"),
               flush=True)
+    cases = trials(only)
+    for t in cases:
+        check_trial(t, errors)
+        print("CORPUS %s trial %s" % (t["id"], "ok" if not any(e.startswith(t["id"] + ":") for e in errors) else "FAIL"), flush=True)
     for e in errors:
         print("CORPUS FAIL %s" % e)
-    if errors or not ts:
-        print("CORPUS FAIL (%d error(s), %d truths)" % (len(errors), len(ts)))
+    if errors or not ts + cases:
+        print("CORPUS FAIL (%d error(s), %d truths, %d trial case(s))" % (len(errors), len(ts), len(cases)))
         return 1
-    print("CORPUS OK %d truths, %d mutants failed, %d twins matched and flagged, %d compilers"
-          % (len(ts), tot["mutants"], tot["twins"], len(probe.COMPILERS)))
+    print("CORPUS OK %d truths, %d mutants failed, %d twins matched and flagged, %d trial case(s) lost the spare pin and "
+          "kept the needed one, %d compilers" % (len(ts), tot["mutants"], tot["twins"], len(cases), len(probe.COMPILERS)))
     return 0
 
 
@@ -191,6 +274,14 @@ def self_test():
     assert mutants("s32 other(void) { return 1; }", "func_80010000") == []
     m, _ = meta(__file__)
     assert m == {}
+    cases = trials()
+    assert cases, "no trial case"
+    for t in cases:                                  # the case is what its first lines say: two pins of one function
+        floor = floor_module()
+        got = floor.crutches("src/pinned.c", t["text"])
+        assert sorted(c["id"] for c in got) == sorted((t["meta"]["needs"], t["meta"]["spare"])), (t["id"], got)
+        assert {c["func"] for c in got} == {t["meta"]["func"]} and all(c["reason"] is None for c in got), t["id"]
+        assert {f[0] for f in lint.findings(t["text"])} == {"register-pin"}, t["id"]
     print("SELF-TEST OK")
 
 

@@ -4,7 +4,7 @@ It is finished when it is matched and it has no readability debt. Until then, ca
 A finished file meets six conditions:
 
 1. Matched. The hash check of the build passes with the file in C.
-2. No forced code. No register pin without a `// !FAKE:` reason, and no `goto` that copies the assembly.
+2. No forced code. No register pin without a trial and a `// !FAKE:` reason, and no `goto` that copies the assembly.
 3. Typed. No field read by its offset, and no address without a symbol. Each type has one definition, in a header.
 4. Named. No placeholder name. Each other name has an accepted row in `config/names.tsv`.
 5. Plain C. No macro that hides a body. No assembly without a row in `config/asm-evidence.tsv`.

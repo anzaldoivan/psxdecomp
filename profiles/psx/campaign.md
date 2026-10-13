@@ -27,7 +27,7 @@ file.
 - `best` is a high-water mark. It never falls, and a later attempt with a lower score leaves it.
 - `set-aside` needs a named blocker. A function with no blocker stays `open`.
 - A banked function is matched. `rules/FIN1.md` says when its file is finished.
-- A draft that a tool wrote is banked by the same rules. Record its debt with `debt --update`.
+- A draft that a tool wrote is banked by the same rules. `gate --bank` records its debt.
 
 ## The wave ledger
 
@@ -92,7 +92,7 @@ Do not name a compiler defect as a blocker without a small file that reproduces 
 6. Change one thing for each attempt, and record its score.
 7. Stop at the budget: 20 minutes, or ten attempts in a row with no better score.
 8. On a match, move the function into `src/` and run the acceptance gate.
-9. Mark each forced register with `// !FAKE:` and its reason.
-10. Run `python3 tools/psxd_floor.py debt --update` in the commit that banks the function.
+9. Run `python3 tools/psxd_floor.py trial <file>`. It removes each pin that the match does not need.
+10. Run `python3 tools/psxd_floor.py gate --bank` before the commit that banks the function.
 11. With no match, write the give-up report and keep the best draft in the sandbox.
 12. Never weaken a gate to pass it, and never bank on a build that you did not run.

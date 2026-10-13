@@ -122,7 +122,7 @@ A game has one command that proves a change. The default is `make verify`.
 - The gate judges a change against a tree that the change cannot rewrite. An edited baseline or tool decides nothing.
 - `--bank` writes the rows of the baseline when the change is admitted. A bank tool calls it before the commit.
 - `--bank` and `--push` also run the check of the game, `[floor] gate` or `[own] gate`.
-- The checks are `policy`, `debt`, `protected`, `style`, `names`, `plan`, `toolchain`, `readme` and `categories`.
+- The checks are `policy`, `debt`, `trials`, `protected`, `style`, `names`, `plan`, `toolchain`, `readme` and `categories`.
 - `protected` covers the files that carry the floor. The first are the two tools and the workflows.
 - It also covers the hooks and the deny rules of `.claude/settings.json`, and the `deny` rows of `config/guard.tsv`.
 - It also covers each check that the record names in `[own]`, `[trial]`, `[floor]` or `[debt]`.
@@ -181,6 +181,29 @@ The baseline holds one policy line for each kind. `debt --recount` writes the st
 - `debt --down <kind>` switches a kind to `down`. The switch is one way.
 - `debt --raise <kind> <n> --reason <text>` writes a `raise` line. Only the developer runs it.
 - `debt --bodies` prints the counts of each function body.
+
+## Trials
+
+A register pin or an empty assembly statement is a crutch. It forces the compiler, and it says nothing about the game.
+`python3 tools/psxd_floor.py trial <file>` examines each crutch of a file.
+
+1. The tool takes one crutch out and asks the probe of the game.
+2. The crutch is gone when the function still matches.
+3. A crutch that the match needs gets a `// !FAKE: <reason>` line above it.
+4. The tool writes one row for that crutch in `config/trials.tsv`.
+
+- `[trial] probe` in `config/psxdecomp.toml` names the probe. It is a command of the game.
+- The probe gets a file to compile, a function, and the path that the file stands for.
+- Write them as `{file}`, `{func}` and `{path}` in the command. Without them, the tool adds three arguments.
+- The probe exits 0 when the function matches, and 1 when it does not. Any other code is an error.
+- The tool first changes a comment only. It refuses a probe that then gives another answer.
+- One marker covers one crutch. It stands on the line of the crutch, or alone on the line above.
+- A marker with no reason covers nothing. The pin then counts as `pin-unmarked`.
+- The columns of `config/trials.tsv` are `path function crutch hash result probe`.
+- The hash is of the function body with no comment. A body that changed needs a new trial.
+- The gate refuses a marked crutch with no row, and a row with another hash.
+- With no probe, the gate refuses every marked crutch. A game keeps no pin that it cannot examine.
+- `trial --recheck` runs rows again. It fails on a row for a crutch that the function matches without.
 
 ## Names and assembly evidence
 

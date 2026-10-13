@@ -347,6 +347,43 @@ def test_fresh_game_passes_its_gate(game):
     assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
 
 
+def test_trial_in_a_game(game):
+    """The trial tool in a bootstrapped game, with a probe that stands for the game's own. S10 wrote the header line
+    of config/trials.tsv. `trial` drops the pin that the match does not need, marks the other one and records it.
+    A row written by hand for a pin that the function matches without fails `trial --recheck`."""
+    import floor
+    assert (game / floor.TRIALS).read_text() == "\t".join(floor.TRIAL_COLUMNS) + "\n"
+    record, src, probe = game / floor.RECORD, game / "src/sum.c", game / ".run/probe.py"
+    kept = record.read_text()
+    trial = lambda *a: run([PY, floor.VENDORED, "trial", *a], cwd=game, check=False)  # noqa: E731
+    try:
+        src.parent.mkdir(exist_ok=True)
+        src.write_text(floor.C_TRIAL)
+        assert "no [trial] probe" in trial("src/sum.c").stdout
+        probe.write_text("import sys\nsys.exit(0 if 'asm(\"$16\")' in open(sys.argv[1]).read() else 1)\n")
+        record.write_text(kept + "\n[trial]\nprobe = '%s .run/probe.py'\n" % PY)
+        r = trial("src/sum.c")
+        assert r.returncode == 0 and "TRIAL OK (1 function(s), 3 tried, 2 removed, 1 kept; 6 probe(s))" in r.stdout, r.stdout
+        text = src.read_text()
+        assert "// !FAKE: pin:$16:i: " in text and "$17" not in text and "__asm__" not in text, text
+        rows = (game / floor.TRIALS).read_text().splitlines()
+        assert len(rows) == 2 and rows[1].startswith("src/sum.c\tSum\tpin:$16:i\t"), rows
+        assert floor.trials_findings(game, floor.Tree(game, None, untracked=True)) == []
+        forged = text.replace("    s32 t = 0;", "    // !FAKE: the sum must be in $17\n    register s32 t asm(\"$17\") = 0;")
+        src.write_text(forged)
+        (game / floor.TRIALS).write_text("\t".join(floor.TRIAL_COLUMNS) + "\n" + "".join(
+            "src/sum.c\tSum\t%s\t%s\tkept\t%s\n" % (c["id"], c["hash"], "0" * 16) for c in floor.crutches("src/sum.c", forged)))
+        assert floor.trials_findings(game, floor.Tree(game, None, untracked=True)) == []       # the record alone cannot tell
+        r = trial("--recheck", "--against", "HEAD")
+        assert r.returncode == 1 and "TRIAL FAIL removable: src/sum.c Sum pin:$17:t: the row says `kept`" in r.stdout, r.stdout
+    finally:
+        record.write_text(kept)
+        (game / floor.TRIALS).write_text("\t".join(floor.TRIAL_COLUMNS) + "\n")
+        for f in (src, probe):
+            f.unlink(missing_ok=True)
+    assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+
+
 def test_phase_rows_wait_at_bootstrap(game):
     """The phase-conditional rows of the floor at the handoff: gate, toolchain, names, debt and progress say WAIT with
     the phase that makes each due, and the doctor still exits 0 (S10 aborts on a FAIL)."""

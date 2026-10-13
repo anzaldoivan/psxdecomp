@@ -21,7 +21,8 @@ the developer's: its migration to the standard is a `manual` action listing the 
 are printed as commands for the developer (their own installers, their own gates).
 
 psxdecomp also delivers the readability floor: `fin-rule` and `name-rule` (rules/FIN1.md and rules/NAME1.md, written
-as `ste-rule` is), `names-ledger` (the header lines of config/names.tsv and config/asm-evidence.tsv, once) and
+as `ste-rule` is), `names-ledger` (the header lines of config/names.tsv, config/asm-evidence.tsv and
+config/trials.tsv, once) and
 `debt-baseline` (config/debt-baseline.txt, once, last, with the starting mode of each debt kind); `debt-recount`
 rewrites a baseline of an earlier psxdecomp in version 2 (the rows of now, a policy line for each kind that has none;
 the game's own lines stay); `asm-ledger` adds the `verified_by` column to the header line of an assembly ledger that
@@ -115,6 +116,7 @@ DELIVERY = (
     Delivery("name-rule", "rule", "rules/NAME1.md", "profiles/psx/rules/NAME1.md", "names", False),
     Delivery("names-ledger", "once", floor.NAMES, None, "names", False),
     Delivery("names-ledger", "once", floor.ASM_EVIDENCE, None, "debt", False),
+    Delivery("names-ledger", "once", floor.TRIALS, None, None, False),
     Delivery("debt-baseline", "once", floor.BASELINE, None, "debt", False),
     Delivery("deny", "merge", common.SETTINGS, "profiles/psx/deny.json", None, False),
     Delivery("style-hook", "merge", common.SETTINGS, "profiles/psx/hooks.json", None, False),
@@ -289,12 +291,13 @@ def refs_meta_due(have: dict, names: set) -> tuple[list[dict], list[dict]]:
 
 
 def ledgers_due(repo: pathlib.Path) -> list[str]:
-    """The ledgers (config/names.tsv, config/asm-evidence.tsv) that are absent and that no [own] key replaces."""
+    """The ledgers (config/names.tsv, config/asm-evidence.tsv, config/trials.tsv) that are absent and that no [own]
+    key replaces."""
     own = own_keys(repo)
     return [d.path for d in DELIVERY if d.key == "names-ledger" and d.own not in own and not (repo / d.path).exists()]
 
 
-LEDGER_HEAD = {floor.NAMES: floor.NAME_COLUMNS, floor.ASM_EVIDENCE: floor.ASM_COLUMNS}
+LEDGER_HEAD = {floor.NAMES: floor.NAME_COLUMNS, floor.ASM_EVIDENCE: floor.ASM_COLUMNS, floor.TRIALS: floor.TRIAL_COLUMNS}
 
 
 def ops_index_due(repo: pathlib.Path) -> str | None:
@@ -497,7 +500,8 @@ def plan(repo: pathlib.Path) -> list[dict]:
     ledgers = ledgers_due(repo)
     if ledgers:
         add("psxdecomp", "names-ledger: write the header line of %s, once (names with their evidence; assembly with "
-            "its reason)" % " and ".join(ledgers), "`names` checks them; `debt` counts a name with no row", "names-ledger")
+            "its reason; the trial behind each kept pin)" % " and ".join(ledgers),
+            "`names` checks them; `debt` counts a name with no row; the gate asks for a trial row", "names-ledger")
     if "debt" not in own and not (repo / floor.BASELINE).is_file():
         add("psxdecomp", "debt-baseline: write %s, once (the count of readability debt of each tracked source file, "
             "and the starting mode of each kind)" % floor.BASELINE, "`debt` fails when a count is not equal to its row",

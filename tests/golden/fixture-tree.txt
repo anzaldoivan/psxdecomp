@@ -51,6 +51,7 @@ config/psxdecomp.profile.toml
 config/psxdecomp.toml
 config/refs.toml
 config/style-ratchet.txt
+config/trials.tsv
 cookbook/C0001.md
 cookbook/C0002.md
 cookbook/C0003.md
