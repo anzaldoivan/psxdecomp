@@ -199,9 +199,11 @@ The baseline holds one policy line for each kind. `debt --recount` writes the st
 - Each other kind starts in `admit-new`.
 - A body that exists never gets worse. That holds for a renamed body and for a body that moved to another file.
 - Debt outside a function rises only in a file that gets a new body.
-- A file that holds no function needs a new body somewhere in the same change.
+- A file that takes bodies from another file may also take the debt that stood beside them.
+- A file that holds no function is free. A header holds definitions, and the tool counts each use of them.
 - A body is new when it takes an `INCLUDE_ASM` line away. An empty body beside its stub is not new.
-- A body that is not new holds no more debt than the bodies that left its file.
+- A body is also new when its file is new and the repository gained a body.
+- The bodies that are not new hold no more debt than the bodies that left the repository.
 - The anchor of a budget is the tree at the time of `debt --recount`.
 - `debt --against <revision>` judges a change by the policy of the revision that it starts from.
 - A change cannot weaken a mode, raise a budget, move an anchor, add a `skip` line or delete the baseline.

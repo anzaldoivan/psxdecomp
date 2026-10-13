@@ -1083,7 +1083,7 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, 
             if not is_source(target) or covered(target):
                 got = out[p].setdefault(SCOPE, {})     # code from a folder that the count does not read
                 got["obscured"] = got.get("obscured", 0) + 1
-            elif not is_header(target):
+            elif not is_header(target) and name != SCOPE:   # inside a function's braces: the file is that body's text
                 users.setdefault(target, set()).add((p, name))
     tree.memo[("users", tuple(skip))] = users
     for p in tree.links:                               # a source behind a symbolic link is compiled and never read here
@@ -1355,15 +1355,17 @@ def _rises(old: dict, new: dict, was=None, now=None) -> tuple[dict[str, int], li
     results of debt_bodies. `was`, `now`: tree_stubs of the two trees. A body that the change adds is, in this order:
     the body of the same name that left another file (moved); the body with the same text from its first brace on
     that left under another name (renamed); a new body, when an INCLUDE_ASM line of its name left; a new body, when
-    an INCLUDE_ASM line left its file under another name (a function that is named as it is banked); else it stands
-    in the place of a body that left, and it may hold no more than those did. So an empty function buys nothing: a
-    body is new only when it takes a stub away. Where a file loses a stub under another name and loses a body in the
+    an INCLUDE_ASM line left its file under another name (a function that is named as it is banked), or when its file
+    is new and the tree gained a body (a function carved out of an assembly segment); else it stands in the place of
+    a body that left, and it may hold no more than those did. So an empty function in a file that exists buys
+    nothing: there a body is new only when it takes a stub away. Where a file loses a stub under another name and loses a body in the
     same change, the added bodies with the most debt count as the new ones."""
     rise: dict[str, int] = {}
     lines: list[tuple[str, str]] = []
     stubs0, inner0, _ = was or ({}, {}, {})
     stubs1, inner1, users = now or ({}, {}, {})
     fresh: set = set()                                 # the (path, name) pairs that are new bodies
+    origin: dict[str, set] = {}                        # {path: the files that its bodies came from}
 
     def compare(before: dict, after: dict, where: str, why: str) -> None:
         for kind in KINDS:
@@ -1391,6 +1393,7 @@ def _rises(old: dict, new: dict, was=None, now=None) -> tuple[dict[str, int], li
     for p, n in came:                                  # the same name, in another file
         if left_by.get(n):
             q = left_by[n].pop(0)
+            origin.setdefault(p, set()).add(q)
             compare(gone.pop((q, n)), new[p][n], "%s %s (from %s)" % (p, n, q), "rose in a moved body")
         else:
             rest.append((p, n))
@@ -1403,6 +1406,7 @@ def _rises(old: dict, new: dict, was=None, now=None) -> tuple[dict[str, int], li
         same = by_text.get(inner1.get((p, n)) or "", [])
         same = [k for k in same if k in gone]
         if same:
+            origin.setdefault(p, set()).add(same[0][0])
             compare(gone.pop(same[0]), new[p][n], "%s %s (it was %s %s)" % (p, n, same[0][0], same[0][1]), "rose in a renamed body")
         else:
             rest.append((p, n))
@@ -1427,30 +1431,36 @@ def _rises(old: dict, new: dict, was=None, now=None) -> tuple[dict[str, int], li
             fresh.add((p, n))
         else:
             rest.append((p, n))
+    surplus = len(rest) - len(gone)                    # the bodies that the tree gained, beyond those it lost
+    stand: list = []
     for p in sorted({q for q, _ in rest}):             # a new body under a new name: a stub left its file
         names = sorted((n for q, n in rest if q == p), key=lambda n: (-sum(new[p][n].values()), n))
         lost = [c for (q, _), c in sorted(gone.items()) if q == p]
         slots = max(0, min(len(lost_stubs.get(p, ())), len(names) - len(lost)))
+        if p not in old and surplus > 0:               # or the file itself is new: a function carved out of an assembly segment
+            more = min(len(names) - slots, surplus)
+            slots, surplus = slots + more, surplus - more
         new_in[p] = new_in.get(p, 0) + slots
         fresh |= {(p, n) for n in names[:slots]}
-        if names[slots:]:
-            for (q, n) in [k for k in gone if k[0] == p]:
-                gone.pop((q, n))
-            compare(total(lost), total(new[p][n] for n in names[slots:]), "%s %s (in the place of %s)" % (
-                p, ", ".join(names[slots:]), "a body that left" if lost else "no body that left: no INCLUDE_ASM line left the "
-                "file for it"), "rose in a body that is not new")
-    any_new = any(new_in.values())
+        stand += [(p, n) for n in names[slots:]]
+    if stand:                                          # the bodies that are not new stand for the bodies that left the tree
+        for p in {q for q, _ in stand}:
+            origin.setdefault(p, set()).update(q for q, _ in gone)
+        compare(total(gone.values()), total(new[p][n] for p, n in stand), "%s%s (in the place of %s)" % (
+            ", ".join("%s %s" % k for k in stand[:3]), " and %d more" % (len(stand) - 3) if len(stand) > 3 else "",
+            "%d body(ies) that left" % len(gone) if gone else "no body that left: it takes no INCLUDE_ASM line away, and its file is "
+            "not new"), "rose in a body that is not new")
     for p, by in sorted(new.items()):
         holds_bodies = any(n != SCOPE for n in by) or any(n != SCOPE for n in old.get(p, {}))
+        before = total([old.get(p, {}).get(SCOPE, {})] + [old[q].get(SCOPE, {}) for q in sorted(origin.get(p, ())) if q != p])
         if users.get(p):                               # a fragment is the body of each function that includes it
             if not all(u in fresh for u in users[p]):
                 stay = sorted("%s %s" % u for u in users[p] if u not in fresh)
-                compare(old.get(p, {}).get(SCOPE, {}), by.get(SCOPE, {}), "%s (a fragment that %s includes)" % (
+                compare(before, by.get(SCOPE, {}), "%s (a fragment that %s includes)" % (
                     p, stay[0] + (" and %d more" % (len(stay) - 1) if len(stay) > 1 else "")),
                     "rose in a fragment of a body that is not new")
-        elif not (new_in.get(p) if holds_bodies else any_new):
-            compare(old.get(p, {}).get(SCOPE, {}), by.get(SCOPE, {}), "%s (file scope)" % p,
-                    "rose outside a function with no new body")
+        elif holds_bodies and not new_in.get(p):       # a file of definitions only (a header, a data file) is free
+            compare(before, by.get(SCOPE, {}), "%s (file scope)" % p, "rose outside a function with no new body")
     return rise, lines, new_in
 
 
@@ -3082,7 +3092,7 @@ def self_test_debt(check) -> None:
         walk.write_text(more)
         rc, out = run(update=True)
         check("--update refuses the debt of a body that takes no stub away", rc == 1 and "DEBT FAIL debt: rose in a body that is not "
-              "new: goto src/walk.c Run (in the place of no body that left: no INCLUDE_ASM line left the file for it): 0 -> 1" in out, out)
+              "new: goto src/walk.c Run (in the place of no body that left: it takes no INCLUDE_ASM line away, and its file is not new): 0 -> 1" in out, out)
         stub("Jump")
         rc, out = run(update=True)
         check("--update takes the debt of a new body", rc == 0 and "DEBT INFO admitted with a new body: goto src/walk.c: 1 -> 2\n" in out
@@ -3091,7 +3101,7 @@ def self_test_debt(check) -> None:
         stub("Run", "Jump")
         walk.write_text("void Pad(void) {\n}\n" + C_DEBT["goto"][0].replace("Walk", "Stroll").replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
         check("an empty body beside a renamed one buys nothing", [f[1] for f in judge("HEAD")] == [
-            "rose in a body that is not new: goto src/walk.c Stroll, Pad (in the place of a body that left): 1 -> 2"], judge("HEAD"))
+            "rose in a body that is not new: goto src/walk.c Stroll, src/walk.c Pad (in the place of 1 body(ies) that left): 1 -> 2"], judge("HEAD"))
         walk.write_text(C_DEBT["goto"][0] + C_DEBT["struct"][0].split("s32 Walk")[0])
         check("a rise outside a function with no new body", [f[1] for f in judge("HEAD")] == [
             "rose outside a function with no new body: struct src/walk.c (file scope): 0 -> 1"], judge("HEAD"))
@@ -3102,26 +3112,34 @@ def self_test_debt(check) -> None:
         walk.write_text(C_DEBT["goto"][0])
         (repo / "include" / "m.h").write_text("#define SWAP(a, b) { s32 t = a; a = b; b = t; }\n")
         _git(repo, "add", "include/m.h")
-        check("a header's debt needs a new body somewhere", "macro include/m.h (file scope): 0 -> 1" in str(judge("HEAD")), judge("HEAD"))
-        walk.write_text(C_DEBT["goto"][0] + "void Run(void) {\n}\n")
-        check("a header's debt beside a body that takes no stub away", len(judge("HEAD")) == 1, judge("HEAD"))
-        stub("Jump")
-        check("a header's debt beside a new body", not judge("HEAD"), judge("HEAD"))
-        stub("Run", "Jump")
+        check("a file of definitions only is free: what it hides is counted where it is used", not judge("HEAD"), judge("HEAD"))
+        (repo / "include" / "m.h").write_text("#define AT(p) (*(s32 *)((u8 *)(p) + 4))\n")
+        walk.write_text(C_DEBT["goto"][0].replace("loop:\n", "loop:\n    n = AT(n);\n"))
+        check("a use of what a header hides is debt of the body that uses it", [f[1] for f in judge("HEAD")] == [
+            "rose in an existing body: offset src/walk.c Walk: 0 -> 1"], judge("HEAD"))
+        walk.write_text(C_DEBT["goto"][0])
         _git(repo, "rm", "-q", "-f", "--cached", "include/m.h")
         (repo / "include" / "m.h").unlink()
         # a renamed and a moved body are the body they were
         walk.write_text(C_DEBT["goto"][0].replace("Walk", "Stroll").replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
         check("a renamed body is no new body", [f[1] for f in judge("HEAD")] == [
-            "rose in a body that is not new: goto src/walk.c Stroll (in the place of a body that left): 1 -> 2"], judge("HEAD"))
+            "rose in a body that is not new: goto src/walk.c Stroll (in the place of 1 body(ies) that left): 1 -> 2"], judge("HEAD"))
         (repo / "src" / "far.c").write_text(C_DEBT["goto"][0].replace("Walk", "Stroll").replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
         walk.write_text("s32 g_Walk;\n")
         _git(repo, "add", "src/far.c")
         check("a body renamed and moved at once is no new body", [f[1] for f in judge("HEAD")] == [
-            "rose in a body that is not new: goto src/far.c Stroll (in the place of no body that left: no INCLUDE_ASM line left the "
-            "file for it): 0 -> 2"], judge("HEAD"))
+            "rose in a body that is not new: goto src/far.c Stroll (in the place of 1 body(ies) that left): 1 -> 2"], judge("HEAD"))
         (repo / "src" / "far.c").write_text(C_DEBT["goto"][0].replace("s32 n", "s32 n, s32 pad").replace("Walk", "Stroll"))
         check("a body renamed with its text as it was is the body it was", not judge("HEAD"), judge("HEAD"))
+        walk.write_text(C_DEBT["goto"][0])
+        (repo / "src" / "far.c").write_text(C_DEBT["goto"][0].replace("Walk", "Carved"))
+        check("a body in a new file is new: a function carved out of an assembly segment", not judge("HEAD"), judge("HEAD"))
+        walk.write_text(C_DEBT["goto"][0] + C_DEBT["goto"][0].replace("Walk", "Carved"))
+        _git(repo, "rm", "-q", "-f", "--cached", "src/far.c")
+        (repo / "src" / "far.c").unlink()
+        check("the same body in a file that exists takes no stub away", len(judge("HEAD")) == 1, judge("HEAD"))
+        (repo / "src" / "far.c").write_text("s32 g_Far;\n")
+        _git(repo, "add", "src/far.c")
         walk.write_text("s32 g_Walk;\n")
         (repo / "src" / "far.c").write_text(C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
         _git(repo, "add", "src/far.c")
@@ -3536,6 +3554,15 @@ def self_test_files(check) -> None:
         check("also when a new body includes it too", len(judge()) == 1, judge())
         put("src/shared/body.inc.c", frag)
         check("a new body may include a fragment as it is", judge() == [], judge())
+        # a file that takes the bodies of a file that is gone takes what stood beside them
+        put("src/pair.c", C_DEBT["goto"][0] + C_DEBT["struct"][0].split("s32 Walk")[0])
+        _git(repo, "add", "-A")
+        _commit(repo, "a struct beside a body")
+        _git(repo, "mv", "src/pair.c", "src/stride.c")
+        check("a file that takes bodies of another file takes what stood beside them", judge() == [], judge())
+        put("src/stride.c", (repo / "src/stride.c").read_text() + "struct More {\n    s32 a;\n};\n")
+        check("and no more than that", judge() == [("debt", "rose outside a function with no new body: struct src/stride.c (file "
+                                                    "scope): 1 -> 2")], judge())
 
 
 def self_test_tree(check) -> None:
@@ -3833,9 +3860,11 @@ def self_test_gate(check) -> None:
                   and "rose in an existing body" in out, out)
             undo()
             # the bank: the files git does not track yet count, and the rows of an admitted change are written
-            put("src/new.c", C_DEBT["goto"][0].replace("Walk", "Run"))
+            put("src/walk.c", C_DEBT["goto"][0] + C_DEBT["goto"][0].replace("Walk", "Run"))
             rc, out = gate("bank")
             check("gate --bank refuses the debt of a body that takes no stub away", rc == 1 and "rose in a body that is not new" in out, out)
+            put("src/walk.c", C_DEBT["goto"][0])
+            put("src/new.c", C_DEBT["goto"][0].replace("Walk", "Run"))
             put("src/stubs.c", "// every function is in C\n")
             rc, out = gate("bank")
             check("gate --bank admits a new body and writes its rows", rc == 0 and "1 goto src/new.c\n" in (repo / BASELINE).read_text()
