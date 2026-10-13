@@ -26,8 +26,9 @@ config/trials.tsv, once) and
 `debt-baseline` (config/debt-baseline.txt, once, last, with the starting mode of each debt kind); `debt-recount`
 rewrites a baseline of an earlier psxdecomp in version 2 (the rows of now, a policy line for each kind that has none;
 the game's own lines stay); `asm-ledger` adds the `verified_by` column to the header line of an assembly ledger that
-an earlier psxdecomp wrote (the rows stay); `floor-public` is the manual line of split mode. A game with `[own] debt` or `[own] names`
-gets none of the actions that key replaces.
+an earlier psxdecomp wrote (the rows stay); `floor-public` is the manual line of split mode. A game with `[own] names` gets none of the
+actions that key replaces. `[own] debt` is additive: the game's scanner runs beside psxdecomp's count, so the baseline
+and the two ledgers of the count are delivered all the same, and only the rule text (`fin-rule`) is withheld.
 
 docs/ops/psxdecomp-campaign.md (the campaign templates, owned; nothing with `[own] campaign`) is reference text: no
 ledger file is created and no doctor row checks its schemas. While phase 1.8 is open, the `matcher` line offers the
@@ -115,9 +116,9 @@ DELIVERY = (
     Delivery("fin-rule", "rule", "rules/FIN1.md", "profiles/psx/rules/FIN1.md", "debt", False),
     Delivery("name-rule", "rule", "rules/NAME1.md", "profiles/psx/rules/NAME1.md", "names", False),
     Delivery("names-ledger", "once", floor.NAMES, None, "names", False),
-    Delivery("names-ledger", "once", floor.ASM_EVIDENCE, None, "debt", False),
+    Delivery("names-ledger", "once", floor.ASM_EVIDENCE, None, None, False),
     Delivery("names-ledger", "once", floor.TRIALS, None, None, False),
-    Delivery("debt-baseline", "once", floor.BASELINE, None, "debt", False),
+    Delivery("debt-baseline", "once", floor.BASELINE, None, None, False),
     Delivery("deny", "merge", common.SETTINGS, "profiles/psx/deny.json", None, False),
     Delivery("style-hook", "merge", common.SETTINGS, "profiles/psx/hooks.json", None, False),
     Delivery("refs-rows", "merge", "config/refs.toml", "profiles/psx/refs.toml", None, False),
@@ -502,15 +503,15 @@ def plan(repo: pathlib.Path) -> list[dict]:
         add("psxdecomp", "names-ledger: write the header line of %s, once (names with their evidence; assembly with "
             "its reason; the trial behind each kept pin)" % " and ".join(ledgers),
             "`names` checks them; `debt` counts a name with no row; the gate asks for a trial row", "names-ledger")
-    if "debt" not in own and not (repo / floor.BASELINE).is_file():
+    if not (repo / floor.BASELINE).is_file():        # also beside `[own] debt`: the game's scanner adds to the count
         add("psxdecomp", "debt-baseline: write %s, once (the count of readability debt of each tracked source file, "
             "and the starting mode of each kind)" % floor.BASELINE, "`debt` fails when a count is not equal to its row",
             "debt-baseline")
-    if "debt" not in own and asm_header_due(repo):
+    if asm_header_due(repo):
         add("psxdecomp", "asm-ledger: add the `verified_by` column to the header line of %s (the rows stay)"
             % floor.ASM_EVIDENCE, "a new assembly row names who read its evidence, and it names one function of a C "
             "file", "asm-ledger")
-    if "debt" not in own and (repo / floor.BASELINE).is_file() and recount_due(repo):
+    if (repo / floor.BASELINE).is_file() and recount_due(repo):
         add("psxdecomp", "debt-recount: rewrite %s in version 2 (the rows of now; %s; the lines of the game stay)"
             % (floor.BASELINE, recount_due(repo)),
             "from psxdecomp 0.6.0 the baseline holds a policy line for each kind, and `debt` fails without one",
@@ -1036,11 +1037,11 @@ def self_test_record(repo: pathlib.Path) -> bool:
     ok &= written_paths(apply(repo, False, False)) == [install.RECORD]
     ok &= record_tables(repo)["own"] == {"debt": value} and "own" not in keys() and TABLE_NOTE["own"] in common.read(rec)
     ok &= doctor.own_missing(repo, record_tables(repo)["own"]) == []
-    (repo / floor.BASELINE).rename(repo / "kept")                       # [own] debt: no baseline, no evidence ledger
+    (repo / floor.BASELINE).rename(repo / "kept")                       # [own] debt is additive: the baseline and the ledgers are due
     (repo / floor.ASM_EVIDENCE).unlink()
     (repo / floor.NAMES).unlink()
-    ok &= "debt-baseline" not in keys() and "names-ledger: write the header line of %s, once" % floor.NAMES in keys()[
-        "names-ledger"]["what"]
+    ok &= "debt-baseline" in keys() and "names-ledger: write the header line of %s and %s, once" % (
+        floor.NAMES, floor.ASM_EVIDENCE) in keys()["names-ledger"]["what"]
     (repo / "kept").rename(repo / floor.BASELINE)
     for rel in (floor.ASM_EVIDENCE, floor.NAMES):
         (repo / rel).write_text("\t".join(LEDGER_HEAD[rel]) + "\n")

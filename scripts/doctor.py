@@ -279,11 +279,10 @@ def floor_rows(repo: pathlib.Path) -> list[tuple[str, tuple[str, str]]]:
     rec, state = _record(repo), floor.phase_state(repo)
     own = _table(rec, "own")
     debt = None
-    if "debt" not in own or "names" not in own:
-        try:
-            debt = floor.debt_status(repo)
-        except floor.Fail as e:
-            debt = e
+    try:                                               # also beside `[own] debt`: the game's scanner adds to this count
+        debt = floor.debt_status(repo)
+    except floor.Fail as e:
+        debt = e
     return [("gate", gate_row(repo, state, rec)), ("toolchain", toolchain_row(repo, state, own)),
             ("names", names_row(repo, state, own, debt)), ("debt", debt_row(repo, state, own, debt))]
 
@@ -343,7 +342,7 @@ def names_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, st
         return "FAIL", "%s%s (`python3 %s names`)" % ("; ".join(fails[:2]), "; …" if len(fails) > 2 else "", floor.VENDORED)
     if state[4] != "closed":
         return "WAIT", "due when phase 1.4 closes: %s and %s" % (floor.NAMES, floor.ASM_EVIDENCE)
-    mine = (floor.NAMES,) if own.get("debt") else (floor.NAMES, floor.ASM_EVIDENCE)   # [own] debt holds the assembly's reasons
+    mine = (floor.NAMES, floor.ASM_EVIDENCE)
     gone = [rel for rel in mine if not (repo / rel).is_file()]
     if gone:
         return "WARN", "no %s — `python3 %s names --init` writes the header line" % (" and no ".join(gone), floor.VENDORED)
@@ -354,11 +353,15 @@ def names_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, st
 
 def debt_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, str]:
     """Due with the first tracked C file under src/, or with the first count or row (a header or an assembly file is
-    counted before any C file is): config/debt-baseline.txt is equal to the tree (or `[own] debt`). FAIL on a rise, a
+    counted before any C file is): config/debt-baseline.txt is equal to the tree. `[own] debt` is additive: the row
+    reads psxdecomp's count all the same, and names the game's scanner, which the gate runs beside it. FAIL on a rise, a
     stale row, a kind with no policy line or a baseline that does not parse; WARN with no baseline, with a version 1
     baseline (the upgrade rewrites it), and on a kind that may still rise once phase 1.8 is closed."""
-    if own.get("debt"):
-        return "OK", "the game's own debt scanner: %s" % own["debt"]
+    st, detail = _debt_row(repo, state, debt)
+    return st, detail + ("; beside it the game's own scanner, `%s` (the gate runs both)" % own["debt"] if own.get("debt") else "")
+
+
+def _debt_row(repo: pathlib.Path, state: dict, debt) -> tuple[str, str]:
     if isinstance(debt, Exception):
         return "FAIL", str(debt)
     bl = debt["baseline"]
@@ -1294,11 +1297,13 @@ def self_test_floor() -> bool:
         mine = rows()
         (repo / "config/check.main.sha").unlink()                               # an [own] gate holds its own hashes
         ok &= rows()["gate"] == ("OK", "the game's own gate: `bash tools/gate.sh`")
-        # [own] debt alone: the names row asks for the names ledger and not for the assembly ledger
+        # [own] debt is additive: the names row still asks for the assembly ledger, the debt row still reads the count
         common.write(repo / install_record(), '[psxdecomp]\nversion = "0"\n[own]\ndebt = "tools/scan.py"\n')
         (repo / floor.NAMES).write_text("\t".join(floor.NAME_COLUMNS) + "\n")
         (repo / floor.ASM_EVIDENCE).unlink()
-        ok &= rows()["names"][0] == "OK"
+        ok &= rows()["names"][0] == "WARN" and floor.ASM_EVIDENCE in rows()["names"][1]
+        silenced = rows()["debt"]
+        ok &= silenced[0] != "OK" and "beside it the game's own scanner, `tools/scan.py`" in silenced[1]
         # the record: a typo is a FAIL row that says what stops, and a record with no profile is still a row
         common.write(repo / install_record(), '[psxdecomp]\nversion = "0"\n[floor]\ngate = "make x\n')
         got = dict((r[0], r[1:]) for r in check(repo, offline=True, only={"record", "gate", "debt"}))
@@ -1333,7 +1338,7 @@ def self_test_floor() -> bool:
     return (ok and equal[0] == "OK" and "admit-new: offset" in equal[1] and stale[0] == "FAIL" and "1 row(s) over their count" in stale[1]
             and late["debt"][0] == "WARN" and "debt --down" in late["debt"][1] and gone[0] == "FAIL"
             and broken[0] == "FAIL" and "the header is not" in broken[1]
-            and [mine[k][0] for k in ("gate", "toolchain", "names", "debt")] == ["OK", "OK", "OK", "OK"]
+            and [mine[k][0] for k in ("gate", "toolchain", "names", "debt")] == ["OK", "OK", "OK", "WARN"]   # the count is read all the same
             and "own gate" in mine["gate"][1] and "tools/scan.py" in mine["debt"][1])
 
 

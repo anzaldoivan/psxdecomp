@@ -122,7 +122,7 @@ A game has one command that proves a change. The default is `make verify`.
 - The gate judges a change against a tree that the change cannot rewrite. An edited baseline or tool decides nothing.
 - `--bank` writes the rows of the baseline when the change is admitted. A bank tool calls it before the commit.
 - `--bank` and `--push` also run the check of the game, `[floor] gate` or `[own] gate`.
-- The checks are `policy`, `debt`, `trials`, `protected`, `style`, `names`, `plan`, `toolchain`, `readme` and `categories`.
+- The checks are `policy`, `debt`, `trials`, `protected`, `style`, `names`, `own-debt`, `plan`, `toolchain`, `readme` and `categories`.
 - `protected` covers the files that carry the floor. The first are the two tools and the workflows.
 - It also covers the hooks and the deny rules of `.claude/settings.json`, and the `deny` rows of `config/guard.tsv`.
 - It also covers each check that the record names in `[own]`, `[trial]`, `[floor]` or `[debt]`.
@@ -182,6 +182,7 @@ is `rules/FIN1.md`.
 - Run `debt --update` in the commit that changes a count. The tool refuses a change that the policy does not admit.
 - A `skip <entry>` line takes files out of the count. A change cannot add one.
 - `[debt] address_header` in `config/psxdecomp.toml` names the address header. The default is `include/addr.h`.
+- `[own] debt` names a scanner of the game. The gate runs it beside this count. It replaces no check.
 
 ### The policy of a kind
 

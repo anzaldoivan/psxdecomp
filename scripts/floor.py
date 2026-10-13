@@ -2666,6 +2666,7 @@ def state(repo, tree: Tree, here: bool = True, base: Tree | None = None) -> list
     out += [("names", d) for lv, d in names_findings(repo, tree, base) if lv == "FAIL"]
     if not here:
         return out
+    out += own_debt(repo, tree)
     out += [("plan", "%s: %s" % (ck, d)) for lv, ck, d in lint_plan(repo) if lv == "FAIL"]
     out += [("toolchain", "%s: %s" % (name, d)) for st, name, d in toolchain_rows(repo) or () if st == "FAIL"]
     for check, rel, args in (("readme", "README.md", ["lint", "README.md"]),
@@ -2675,6 +2676,20 @@ def state(repo, tree: Tree, here: bool = True, base: Tree | None = None) -> list
             if rc:
                 out += [(check, l) for l in lines if " FAIL " in l or " ERROR " in l][:20] or [(check, "exit %d" % rc)]
     return out
+
+
+def own_debt(repo, tree: Tree) -> list[tuple[str, str]]:
+    """The game's own debt scanner, `[own] debt` of the record, run beside this tool's count: it adds a check, it
+    replaces none. A value that is a file of the tree is run by its interpreter (`.py`, `.sh`), any other value is a
+    command. Not run inside the game's own check, which runs it itself."""
+    cmd = record_table(tree, "own").get("debt")
+    if not cmd or os.environ.get(GATE_ENV):
+        return []
+    if tree.has(cmd):
+        cmd = ("%s %s" % (sys.executable, cmd)) if cmd.endswith(".py") else ("sh %s" % cmd) if cmd.endswith(".sh") else "./" + cmd
+    r = subprocess.run(cmd, shell=True, cwd=str(repo), capture_output=True, text=True, env=dict(os.environ, **{GATE_ENV: "1"}))
+    last = ((r.stdout + r.stderr).strip().splitlines() or ["no output"])[-1]
+    return [("own-debt", "the game's own scanner `%s` exited %d: %s" % (cmd, r.returncode, last[:200]))] if r.returncode else []
 
 
 def game_check(repo, tree: Tree) -> list[tuple[str, str]]:
@@ -3845,7 +3860,8 @@ def self_test_gate(check) -> None:
             put("tools/check.sh", 'test -z "$PSXD_SELF_RED" || { echo the build is red; exit 3; }\n')
             put("src/vendor/lib.c", "void Lib(void) {\n}\n")
             put("config/names.basis.tsv", "name\tbasis\nWalk\tthe string it prints\n")
-            put("tools/scan.py", "print('SCAN OK')\n")
+            put("tools/scan.py", "import os, sys\nprint('SCAN %s' % ('FAIL' if os.environ.get('PSXD_SELF_SCAN') else 'OK'))\n"
+                "sys.exit(1 if os.environ.get('PSXD_SELF_SCAN') else 0)\n")
             put("src/stubs.c", 'INCLUDE_ASM("asm/nonmatchings/a", Run);\n')
             put(WORKFLOWS + "no-rom.yml", "name: no-rom\n")
             _git(repo, "add", "-A")
@@ -3900,7 +3916,7 @@ def self_test_gate(check) -> None:
                     ("disableAllHooks", lambda: put(SETTINGS, json.dumps(dict(hooks, disableAllHooks=True))), "sets disableAllHooks"),
                     ("a guard row that is gone", lambda: put(GUARD, "deny\tpath\tbuild/\tx\n"), "lost the row `deny path asm/`"),
                     ("a new allow row", lambda: put(GUARD, "allow\tpath\tasm/x.s\t\ndeny\tpath\tasm/\tasm/ is generated\n"), "a new `allow` row (path asm/x.s)"),
-                    ("the game's own scanner, edited", lambda: put("tools/scan.py", "print('SCAN OK')  # always\n"),
+                    ("the game's own scanner, edited", lambda: put("tools/scan.py", "print('SCAN OK')\n"),
                      "tools/scan.py changed (the record names it"),
                     ("the game's own ledger, a row changed", lambda: put("config/names.basis.tsv", "name\tbasis\nWalk\tnone\n"),
                      "config/names.basis.tsv lost or changed 1 line(s)"),
@@ -3957,6 +3973,11 @@ def self_test_gate(check) -> None:
             check("gate: a later tool beside a refused change does not take over", rc == 1 and "by the later tool" not in out
                   and "rose in an existing body" in out, out)
             undo()
+            os.environ["PSXD_SELF_SCAN"] = "1"         # the game's own scanner is one more check, beside the count
+            rc, out = staged()
+            check("gate: the game's own debt scanner runs beside the count", rc == 1 and "GATE FAIL own-debt: the game's own scanner" in out
+                  and "exited 1: SCAN FAIL" in out, out)
+            del os.environ["PSXD_SELF_SCAN"]
             # the bank: the files git does not track yet count, and the rows of an admitted change are written
             put("src/walk.c", C_DEBT["goto"][0] + C_DEBT["goto"][0].replace("Walk", "Run"))
             rc, out = gate("bank")
