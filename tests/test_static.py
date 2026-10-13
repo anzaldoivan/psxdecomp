@@ -819,7 +819,10 @@ def test_release_gate_runs_the_debt_check(tmp_path):
     (tree / floor.BASELINE).write_text("mode admit\n1 goto src/a.c\n")
     assert publish.debt_gate(tree) == []
     (tree / floor.BASELINE).write_text("mode admit\n2 goto src/a.c\n")           # a stale row fails too
-    assert len(publish.debt_gate(tree)) == 1
+    assert len(publish.debt_gate(tree)) == 1 and "debt --update --admit" in publish.debt_gate(tree)[0]
+    (tree / floor.BASELINE).write_text("mode admit\n1 goto src/a.c\n1 goto src/private.c\n")   # a row of a file that is not published
+    got = publish.debt_gate(tree)
+    assert len(got) == 1 and "src/private.c" in got[0] and "public-paths.txt" in got[0] and "--update" not in got[0], got
     (tree / floor.BASELINE).unlink()
     assert publish.debt_gate(tree) == []
     (tree / floor.BASELINE).write_text("mode admit\n")
@@ -861,11 +864,15 @@ def test_tier1_fails_on_a_pin_it_cannot_resolve():
     import conftest
     saved = os.environ.pop("PSXDECOMP_ALLOW_SKIP", None)
     try:
-        with pytest.raises(pytest.fail.Exception):
-            conftest.unresolved("kit", "digest sha256:000 is not the tested one")
+        def outcome(*args):                       # the exception's own type: a skip raised here must not skip this test
+            try:
+                conftest.unresolved(*args)
+            except BaseException as e:            # noqa: BLE001 — pytest's outcomes are BaseException
+                return type(e)
+            return None
+        assert outcome("kit", "digest sha256:000 is not the tested one") is pytest.fail.Exception
         os.environ["PSXDECOMP_ALLOW_SKIP"] = "1"
-        with pytest.raises(pytest.skip.Exception):
-            conftest.unresolved("kit", "no network")
+        assert outcome("kit", "no network") is pytest.skip.Exception
     finally:
         os.environ.pop("PSXDECOMP_ALLOW_SKIP", None)
         if saved is not None:

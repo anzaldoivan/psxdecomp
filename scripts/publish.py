@@ -1534,7 +1534,15 @@ def debt_gate(x: pathlib.Path) -> list[str]:
     r = subprocess.run([sys.executable, "-I", FLOOR_TOOL, "debt", "--repo", "."], cwd=x, capture_output=True, text=True)
     if r.returncode == 0:
         return []
-    last = (r.stdout.strip().splitlines() or r.stderr.strip().splitlines() or ["no output"])[-1]
+    lines = r.stdout.strip().splitlines() or r.stderr.strip().splitlines() or ["no output"]
+    last = next((l for l in reversed(lines) if l.startswith("DEBT CHECK") or l.startswith("DEBT FAIL")), lines[-1])
+    stale = [m[1] for l in lines for m in [re.match(r"DEBT FAIL stale \S+ (.+): \d+, its row is \d+", l)] if m]
+    gone = sorted({p for p in stale if not (x / p).exists()})
+    if gone and "0 rise(s)" in last and len(gone) == len(set(stale)):   # equal on dev: only unpublished files differ
+        return ["debt: %s holds rows for %d file(s) that this tree does not publish (%s%s): the README workflow of the "
+                "public repository would fail. List the files in config/public-paths.txt, or take them out of the count "
+                "with a `skip` line in the baseline" % (DEBT_BASELINE, len(gone), ", ".join(gone[:3]),
+                                                        ", …" if len(gone) > 3 else "")]
     return ["debt: %s is not equal to the source of this tree (%s): the README workflow of the public repository "
             "would fail. On dev run `python3 %s debt --update --admit`, commit the baseline, then release again"
             % (DEBT_BASELINE, last, FLOOR_TOOL)]

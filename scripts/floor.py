@@ -218,7 +218,7 @@ def parse_gen_end(text: str) -> list[dict]:
 
 
 ROUTER_LINE = re.compile(r"\brouter: phase \S+ status -> \w+$")
-DROP_WORDS = re.compile(r"\b(?:drop|merge|fold|remove|replace|skip|omit)(?:s|d|ed|ped|ted|ing|ping|ting)?\b", re.I)
+DROP_WORDS = re.compile(r"\b(?:drop|merg|fold|remov|replac|skip|omit)(?:e|es|ed|s|ped|ted|ing|ping|ting)?\b", re.I)
 LADDER_WORDS = re.compile(r"\bladder phase (\d{1,2})\b", re.I)
 
 
@@ -470,7 +470,7 @@ def cmd_plan(repo) -> int:
 KINDS = ("pin", "pin-unmarked", "goto", "offset", "address", "macro", "asm", "placeholder", "unbased", "struct")
 NUM = r"(?:0[xX][0-9A-Fa-f]+|\d+)"
 OFFX = rf"(?:\([^()]*\)|{NUM}|[A-Za-z_]\w*)(?:\s*[-+*]\s*(?:\([^()]*\)|{NUM}|[A-Za-z_]\w*))*"
-OPND = r"\(?\s*&?\s*\w+\s*\)?"
+OPND = r"\(?\s*&?\s*\w+(?:\s*(?:->|\.)\s*\w+|\s*\[[^\[\]\n]*\])*\s*\)?"
 PTR = r"\(\s*[\w ]+?\s*\*+\s*\)"
 CAST = r"\(\s*[\w ]+?\s*\**\s*\)"
 CHR = r"(?:const\s+)?(?:(?:unsigned|signed)\s+)?(?:char|[su]8)"
@@ -847,7 +847,8 @@ def cmd_names(repo, init=False) -> int:
             print("NAMES INIT written %s" % rel)
             if rel == NAMES:
                 print("NAMES INFO with %s in place, each named function with no accepted row is `unbased` debt: run "
-                      "`python3 %s debt --update --admit`" % (NAMES, VENDORED))
+                      "`python3 %s debt --update --admit` (`mode down` admits no rise: create the ledger before "
+                      "`debt --down`)" % (NAMES, VENDORED))
     found = names_findings(repo)
     for level, detail in found:
         print("NAMES %-4s %s" % (level, detail))
@@ -1086,6 +1087,8 @@ C_DEBT = {
     "offset, one cast": ("void Walk(s32 a) {\n    *(short *)(a + 0x9C) = 0;\n    *(unsigned char *)(a + 0x7B) = 4;\n"
                          "    *(s32 *)((s32)a + 8) = 1;\n}\n", {"offset": 3}),
     "offset, the index form": ("s32 Walk(void *self) {\n    return ((s8 *)self)[0x45] + *((u8 *)self + 2);\n}\n", {"offset": 2}),
+    "offset, through a member": ("void Walk(Ctx *ctx, Obj *a) {\n    *(short *)(ctx->pc + 4) = 0;\n    ((u8 *)a->link.owner)[0x14]--;\n"
+                                 "    *(s32 *)(a->tbl[2] + 8) = 1;\n}\n", {"offset": 3}),
     "offset, a cast sum read through": ("s32 Walk(void *p) {\n    return ((Obj *)((u8 *)p + 0x10))->hp;\n}\n", {"offset": 1}),
     "no offset": ("void Walk(void *dst, s32 n) {\n    dst = (void *)((char *)dst + 0xC);\n    end = (u8 *)dst + n;\n}\n", {}),
     "the define of M2C_FIELD": ("#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))\n", {}),
@@ -1151,6 +1154,9 @@ def self_test_plan(check) -> None:
         (repo / PLAN).write_text(passing.replace("depends: 1.9 |", "depends: 1.8 |"))
         found = lint_plan(repo)
         check("a line that only mentions a dropped id exempts nothing", levels(found, "FAIL") == ["ladder"] and "1.9" in str(found), found)
+        for word in ("merging 1.6 into 1.5", "removes 1.6", "replaced 1.6 by a slice of 1.5", "1.6 is dropped", "skipping 1.6"):
+            check("a drop word: " + word, _dropped(["2026-01-02 developer: " + word], "1.6"), word)
+        check("a word that only looks like one drops nothing", not _dropped(["2026-01-02 developer: 1.6 emerges; a foldout for 1.6"], "1.6"))
         check("an id inside a version or a size names no phase", not _named(["the v1.5 disc", "it grew to 1.5 GB", "see 1.50"], "1.5")
               and _named(["correction to 1.5 (closed)"], "1.5"))
         # an id over 1.10 is a part of the ladder phase that a Changes line gives it
@@ -1237,6 +1243,14 @@ def self_test_plan(check) -> None:
         check("frozen: a closed milestone rewritten", len(found) == 1 and found[0][0] == "WARN" and "1.3" in found[0][2], found)
         (repo / PLAN).write_text(self_plan(milestones={7: "another open milestone"}))
         check("frozen: an open milestone may change", "frozen" not in levels(lint_plan(repo), "WARN"))
+        with tempfile.TemporaryDirectory() as outer:   # the game in a folder of a larger repository: its plan is read there
+            big = _repo(outer)
+            (big / "game" / "phase-ends").mkdir(parents=True)
+            (big / "game" / PLAN).write_text(self_plan())
+            _commit(big, "closed")
+            (big / "game" / PLAN).write_text(self_plan(milestones={3: "prints N of N, roughly"}))
+            got = [f for f in lint_plan(big / "game") if f[1] == "frozen"]
+            check("frozen: a plan in a folder of a repository", len(got) == 1 and got[0][0] == "WARN", got)
         # generation 2: the ladder is the closed generation's record
         gen2 = "# Generation 2 — the modding base\n\nGoal: g\nDone-criteria: d\n\n## Phases\n\n%s\n\n## Changes\n" % _phase(
             "2.1", "The round-trip disc")
@@ -1430,6 +1444,8 @@ def self_test_toolchain(check) -> None:
         check("toolchain: a kind that is no kind", toolchain_rows(repo)[0][0] == "FAIL")
         (tool / "a.out").write_text("built in place\n")
         (repo / "plain").mkdir()                       # a folder of the game, not a checkout of the tool
+        (repo / "README.md").write_text("x\n")          # the game has a HEAD of its own, which is not the tool's
+        _commit(repo, "the game")
         (repo / TOOLCHAIN).write_text("\t".join(TOOL_COLUMNS) + "\nshort\tgit\t%s\trefs-tool\nupper\tgit\t%s\trefs-tool\n"
                                       "tag\tgit\tv1.0\trefs-tool\nplain\tgit\t%s\tplain\n" % (head[:12], head.upper(), head))
         got = toolchain_rows(repo)

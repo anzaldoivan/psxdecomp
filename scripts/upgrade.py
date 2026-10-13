@@ -602,6 +602,16 @@ def commit_paths(repo: pathlib.Path, paths: list[str]) -> list[str]:
     return list(dict.fromkeys(paths + left))
 
 
+def left_changed(repo: pathlib.Path, paths: list[str]) -> list[str]:
+    """The files of the game that psxdecomp adds lines to (the card, the README, the two ignore files, the settings,
+    the reference library, the two indexes), changed in the work tree and not among `paths`. The commit line cannot
+    tell an earlier apply's lines from the developer's own, so it names them and leaves the choice."""
+    shared = [".gitignore", ".ignore", "HOW_WE_WORK.md", "README.md", OPS_INDEX, common.SETTINGS, "config/refs.toml",
+              fetch_refs.INDEX_REL, "config/firewall.txt", common.STE_INDEX]
+    r = common.git(repo, "status", "--porcelain", "--untracked-files=no", "--no-renames", "--", *shared, check=False)
+    return [l[3:] for l in r.stdout.splitlines() if l[3:] not in paths] if r.returncode == 0 else []
+
+
 def toml_table(kind: str, d: dict) -> str:
     """One [[kind]] table; strings and string lists as JSON literals (valid TOML basic strings)."""
     lines = ["[[%s]]" % kind]
@@ -650,6 +660,11 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
         rec = record_set(rec, "host", "recipe", host_recipe())
     hashes = delivered_due(repo, take) if "delivered" in acts or take else {}
     owned = [d for d, st in owned_due(repo).values() if (st == "write" and d.key in acts) or (st == "edited" and d.key in take)]
+    if rec is not None:                              # tried now, written last: a record that a line edit cannot change
+        trial = rec                                  # stops the apply before its first write, never after its files
+        ruled = [common.rule_paths(rid)[0] for rid, row in common.PROFILE_RULES.items() if row[3] in acts or row[3] in take]
+        for path in list(hashes) + ruled:
+            trial = record_set(trial, "delivered", path, "0" * 64)
     if "refs-add" in acts:
         w("config/refs.toml", common.read(PROFILE_REFS))
     elif "refs-rows" in acts or "refs-meta" in acts:
@@ -804,6 +819,10 @@ def run(a, repo: pathlib.Path, ap) -> int:
         paths = commit_paths(repo, paths) if not a.dry_run else []
         if paths and not failed:
             print("COMMIT %s" % commit_command(repo, paths))
+            also = left_changed(repo, paths)
+            if also:                                 # a file of the game that an earlier apply, or the developer, changed
+                print("NOTE changed and not on the commit line: %s. Add what an earlier apply wrote; leave your own "
+                      "edits" % ", ".join(also))
         return 1 if failed else 0
     if a.cmd == "own":
         return cmd_own(repo, a.args)
@@ -866,6 +885,47 @@ def self_test_record(repo: pathlib.Path) -> bool:
             ok = False
         except common.Fail:
             pass
+    # a record that a line edit cannot change (an inline [delivered]) stops the apply before it writes a file
+    inline = re.sub(r"(?ms)^\[delivered\]\n(.*?)(?=^\[|\Z)", lambda m: "delivered = { %s }\n" % ", ".join(
+        l for l in m[1].splitlines() if "=" in l and not l.startswith("#")), re.sub(r"(?m)^# \[delivered\].*\n(?:# .*\n)*", "", entry))
+    top, rest = inline.split("delivered = {", 1)[0], "delivered = {" + inline.split("delivered = {", 1)[1]
+    cut = top.index("[")                             # a bare key belongs above the first table
+    rec.write_text(top[:cut] + rest.split("\n", 1)[0] + "\n" + top[cut:] + rest.split("\n", 1)[1], encoding="utf-8")
+    ok &= record_tables(repo)["delivered"] == tables["delivered"]
+    tool.write_text("# an older tool\n")
+    rec.write_text(common.read(rec).replace(tables["delivered"][publish.VENDORED], _sha(b"# an older tool\n")), encoding="utf-8")
+    try:
+        apply(repo, False, False)
+        ok = False
+    except common.Fail as e:
+        ok &= "by a line edit" in str(e) and tool.read_text() == "# an older tool\n"
+    tool.write_bytes(OWNED[publish.VENDORED].read_bytes())
+    rec.write_text(entry, encoding="utf-8")
+    # the commit line: this run's paths, and a delivered file that an earlier, stopped apply left untracked
+    common.git(repo, "add", "-A")
+    common.git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "base")
+    ok &= commit_paths(repo, ["x"]) == ["x"] and left_changed(repo, []) == []
+    (repo / floor.GUARD).rename(repo / "guard.kept")
+    common.git(repo, "rm", "--quiet", "--cached", floor.GUARD)
+    (repo / "guard.kept").rename(repo / floor.GUARD)
+    (repo / "HOW_WE_WORK.md").write_text((repo / "HOW_WE_WORK.md").read_text() + "\n")
+    ok &= commit_paths(repo, ["x"]) == ["x", floor.GUARD] and left_changed(repo, ["x"]) == ["HOW_WE_WORK.md"]
+    common.git(repo, "add", floor.GUARD)
+    common.git(repo, "checkout", "--", "HOW_WE_WORK.md")
+    # a row of the game's reference library with no class: one line, no traceback; a row the lint refuses: a failed index
+    refs_file = repo / "config/refs.toml"
+    good_refs = refs_file.read_text()
+    refs_file.write_text(good_refs + '\n[[ref]]\nname = "mine"\nurl = "https://example.invalid/x"\n')
+    try:
+        plan(repo)
+        ok = False
+    except common.Fail as e:
+        ok &= "config/refs.toml" in str(e) and "mine" in str(e)
+    refs_file.write_text(good_refs + '\n[[ref]]\nname = "mine"\nurl = "https://example.invalid/x"\nclass = "nosuch"\n'
+                         'licence = "x"\ntopics = ["x"]\ncovers = "x"\nchecked = "2026-01-01"\n')
+    got = apply(repo, False, False)
+    ok &= any(x.startswith("FAIL refs: ") for x in got) and "docs/ops/refs.md" not in written_paths(got)
+    refs_file.write_text(good_refs)
     # a record that is not TOML: nothing is planned or written, and the edited copy below stays as it is
     rec.write_text(entry + '\n[floor]\ngate = "make x\n', encoding="utf-8")
     tool.write_text("# edited here\n")
