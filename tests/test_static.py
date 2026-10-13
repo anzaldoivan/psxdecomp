@@ -508,7 +508,7 @@ def test_publish_is_vendorable():
     wf = (ROOT / "profiles/psx/psxdecomp-readme.yml").read_text()
     uses = re.findall(r"uses:\s*(\S+)", wf)
     assert uses and all(re.search(r"@[0-9a-f]{40}$", u) for u in uses), uses
-    assert "tools/psxd_publish.py lint README.md" in wf and "--history" in wf and "fetch-depth: 0" in wf
+    assert 'git show "$BASE:tools/psxd_publish.py"' in wf and "gate --ci" in wf and "fetch-depth: 0" in wf
 
 
 def test_split_build_invariants():
@@ -684,16 +684,40 @@ def test_style_profile_files():
 
 
 def test_style_workflow_step():
-    """The game's README workflow runs `style` (every public prose file against the ratchet), in a step of its own
-    after the README lint step."""
-    lines = [l.strip() for l in (ROOT / "profiles/psx/psxdecomp-readme.yml").read_text().splitlines()]
-    runs = [l for l in lines if l.startswith("run: ")]
-    lint, style = "run: python3 %s lint README.md" % publish.VENDORED, "run: python3 %s style" % publish.VENDORED
-    assert runs.count(lint) == 1 and runs.count(style) == 1 and runs.index(lint) < runs.index(style), runs
-    assert lines[lines.index(style) - 1].startswith("- name: ") and "style" in lines[lines.index(style) - 1]
-    debt = "run: python3 %s debt" % floor.VENDORED                      # the debt of the source, after the style step
-    assert runs.count(debt) == 1 and runs.index(style) < runs.index(debt), runs
-    assert lines[lines.index(debt) - 1].startswith("- name: ") and floor.BASELINE in lines[lines.index(debt) - 1]
+    """The game's README workflow runs one thing, the gate, and the tools that judge are the base commit's: copied out
+    of git into a folder of the runner, side by side. The tools of the change itself judge only where the base holds
+    no gate yet. The range goes to the script through `env`, never through an expression in the command."""
+    text = (ROOT / "profiles/psx/psxdecomp-readme.yml").read_text()
+    runs = [l.strip() for l in text.splitlines() if l.strip().startswith("run: ")]
+    assert runs == ["run: |"], runs                                     # one step: no check of the head's own copy beside it
+    for rel in (floor.VENDORED, publish.VENDORED):
+        assert 'git show "$BASE:%s" > "$judge/%s"' % (rel, pathlib.Path(rel).name) in text, rel
+    assert 'python3 "$judge/psxd_floor.py" gate --ci "$BASE..HEAD"' in text and "fetch-depth: 0" in text
+    assert text.count("python3 %s gate --ci" % floor.VENDORED) == 1 and "the base commit holds no gate yet" in text
+    assert "BASE: ${{ github.event.pull_request.base.sha || github.event.before }}" in text
+    script = text.split("run: |", 1)[1]
+    assert "${{" not in script, "an expression inside the script"
+
+
+def test_digests_equal_the_sources():
+    """digests.json at the root is the document of the sources as they are: the version of the manifest and the
+    sha256 of each file that a game may not change itself. Each of those is a file that the upgrade owns. A game's
+    gate reads this file at the release tag, and release.yml checks it and attaches it."""
+    import upgrade
+    sys.path.insert(0, str(ROOT / "tools"))
+    import digests
+    assert (ROOT / "digests.json").read_text() == digests.document(), "run `python3 tools/digests.py --write`"
+    doc = json.loads(digests.document())
+    assert doc["version"] == floor.VERSION == common.plugin_version()
+    assert set(doc["files"]) == {floor.VENDORED, publish.VENDORED, floor.README_WORKFLOW} == set(digests.FILES)
+    for dst, src in digests.FILES.items():
+        assert upgrade.OWNED[dst] == ROOT / src, dst
+    assert floor.DIGESTS_URL % "0.6.0" == "https://raw.githubusercontent.com/anzaldoivan/psxdecomp/v0.6.0/digests.json"
+    assert "anzaldoivan/psxdecomp" in json.loads((ROOT / ".claude-plugin/plugin.json").read_text())["repository"]
+    release = (ROOT / ".github/workflows/release.yml").read_text()
+    assert "python3 tools/digests.py --check" in release and 'gh release create "$GITHUB_REF_NAME" digests.json' in release
+    r = run([PY, ROOT / "tools/digests.py", "--check"], check=False)
+    assert (r.returncode, r.stdout) == (0, "DIGESTS OK\n"), r.stdout
 
 
 # ---- the floor (scripts/floor.py, vendored into a game as tools/psxd_floor.py) --------------------------------------
@@ -712,7 +736,7 @@ def test_floor_is_vendorable():
     text = (ROOT / "scripts/floor.py").read_text()
     mods = set(re.findall(r"^\s*(?:import|from) ([\w.]+)", text, re.M))
     assert mods == {"__future__", "argparse", "bisect", "contextlib", "fnmatch", "hashlib", "io", "json", "os", "pathlib", "random",
-                    "re", "signal", "subprocess", "sys", "tempfile", "time"}, mods
+                    "re", "signal", "subprocess", "sys", "tempfile", "time", "urllib.request"}, mods
     assert floor.VENDORED == "tools/psxd_floor.py"
     assert floor.VERSION == publish.VERSION == common.plugin_version()          # a game's tool changes only to a later one
     assert _floor("--version").stdout.strip() == floor.VERSION

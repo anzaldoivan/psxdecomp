@@ -130,6 +130,22 @@ jobs:
         working-directory: ${{ runner.temp }}/work
         run: sha1sum --strict --quiet -c "$RUNNER_TEMP/private/check/$EXE.sha1"
 
+      # A trial row says that a pin stays because its function does not match without it (`tools/psxd_floor.py trial`).
+      # Each row that this change adds is run again here, where the toolchain is, by the base's copy of the tool: a
+      # row that was written by hand for a pin the function matches without fails. No network, and the log is filtered.
+      - name: Trial rows of this change, run again
+        run: |
+          set -euo pipefail
+          git show "$BASE_SHA:tools/psxd_floor.py" > "$RUNNER_TEMP/work/.psxd-floor.py" 2>/dev/null || exit 0
+          grep -q "def cmd_trial" "$RUNNER_TEMP/work/.psxd-floor.py" || exit 0
+          git show "$BASE_SHA:config/trials.tsv" > "$RUNNER_TEMP/work/.psxd-trials-base.tsv" 2>/dev/null \
+            || : > "$RUNNER_TEMP/work/.psxd-trials-base.tsv"
+          id=$(docker run -d --network none -v "$RUNNER_TEMP/work:/work" -w /work "$IMAGE" sh -c \
+            'python3 .psxd-floor.py trial --recheck --base-rows .psxd-trials-base.tsv --rows 0 > trial.log 2>&1')
+          rc=$(docker wait "$id"); docker rm "$id" > /dev/null
+          python3 -I "$RUNNER_TEMP/psxd_publish.py" ci-log "$RUNNER_TEMP/work/trial.log"
+          exit "$rc"
+
       # Phase 1.9 decides the generator. The report steps start with config/categories.tsv; before it the job is the byte
       # check alone. The report is validated by the base's tools (no game bytes, the arithmetic, the artifact name).
       - name: Report

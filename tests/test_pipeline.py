@@ -296,7 +296,7 @@ def test_s10_writes_the_debt_baseline_and_debt_passes(game):
     assert r.returncode == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); down: pin-unmarked" in r.stdout, r.stdout
     assert run([PY, floor.VENDORED, "names"], cwd=game, check=False).returncode == 0
     wf = (game / ".github/workflows/psxdecomp-readme.yml").read_text()
-    assert "run: python3 %s debt" % floor.VENDORED in wf
+    assert 'python3 "$judge/psxd_floor.py" gate --ci "$BASE..HEAD"' in wf
     src = game / "src/probe.c"
     try:                                                    # the negative control: a tracked C file with a goto
         src.write_text(floor.C_DEBT["goto"][0])

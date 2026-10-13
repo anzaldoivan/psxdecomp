@@ -38,7 +38,7 @@
                                           1 no match, 2 or more an error) whether the function still matches. What the
                                           match does not need is gone. What it needs gets a `// !FAKE: <reason>` line
                                           and a row in config/trials.tsv
-    floor.py trial --recheck [--against BASE] [--rows N]
+    floor.py trial --recheck [--against BASE | --base-rows FILE] [--rows N]
                                           run rows again: those that are new since BASE and N at random; exit 1 on a
                                           row that says `kept` for a crutch the function matches without
     floor.py names [--init] [--repo DIR]  check config/names.tsv and config/asm-evidence.tsv; --init writes their header lines
@@ -157,7 +157,10 @@ def _read(path) -> str | None:
 
 
 def _git(repo, *args) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(repo)] + list(args), capture_output=True, text=True, errors="replace")
+    try:
+        return subprocess.run(["git", "-C", str(repo)] + list(args), capture_output=True, text=True, errors="replace")
+    except OSError as e:                               # no git on this machine (a build container): as outside a repository
+        return subprocess.CompletedProcess(args, 127, "", str(e))
 
 
 def entry_match(entry: str, path: str) -> bool:
@@ -2376,10 +2379,11 @@ def _write_trials(repo, rows: list[dict]) -> None:
 
 
 def cmd_trial(repo, file: str | None, func: str | None = None, recheck: bool = False, against: str | None = None,
-              sample: int = 10) -> int:
+              sample: int = 10, base_rows: str | None = None) -> int:
     """`trial FILE [--func NAME]`: try each crutch of a file's functions (of one function), write the file and
-    config/trials.tsv. `trial --recheck [--against BASE] [--rows N]`: run rows again, those that are new since BASE
-    and N more chosen at random; exit 1 on a row that says `kept` for a crutch the function matches without."""
+    config/trials.tsv. `trial --recheck [--against BASE | --base-rows FILE] [--rows N]`: run rows again, those that
+    are new since BASE (or that FILE, a copy of BASE's config/trials.tsv, does not hold: for a build with no git) and
+    N more chosen at random; exit 1 on a row that says `kept` for a crutch the function matches without."""
     repo = pathlib.Path(repo)
     tree = Tree(repo)
     cmd, digest = probe_of(tree)
@@ -2392,7 +2396,7 @@ def cmd_trial(repo, file: str | None, func: str | None = None, recheck: bool = F
         print("TRIAL FAIL %s: %s" % (TRIALS, errs[0]))
         return 1
     if recheck:
-        return _recheck(repo, tree, cmd, rows, against, sample)
+        return _recheck(repo, tree, cmd, rows, against, sample, base_rows)
     rel = pathlib.Path(repo / file).resolve().relative_to(repo.resolve()).as_posix() if file else ""
     text = tree.read(rel) if rel else None
     if text is None:
@@ -2427,8 +2431,12 @@ def cmd_trial(repo, file: str | None, func: str | None = None, recheck: bool = F
     return 1 if bad else 0
 
 
-def _recheck(repo, tree: Tree, cmd: str, rows: list[dict], against: str | None, sample: int) -> int:
-    old = {tuple(r[c] for c in TRIAL_COLUMNS) for r in trial_rows(Tree(repo, against))[0]} if against else set()
+def _recheck(repo, tree: Tree, cmd: str, rows: list[dict], against: str | None, sample: int, base_rows: str | None = None) -> int:
+    if base_rows is not None:
+        old = {tuple(r[c] for c in TRIAL_COLUMNS) for r in read_tsv(base_rows, TRIAL_COLUMNS)[0] or []}
+        against = against or base_rows
+    else:
+        old = {tuple(r[c] for c in TRIAL_COLUMNS) for r in trial_rows(Tree(repo, against))[0]} if against else set()
     new = [r for r in rows if tuple(r[c] for c in TRIAL_COLUMNS) not in old] if against else []
     rest = [r for r in rows if r not in new]
     import random
@@ -2466,6 +2474,45 @@ DATA_SUFFIXES = (".tsv", ".txt", ".toml", ".json", ".md", ".csv")      # a ledge
 GATE_ENV = "PSXD_GATE"                               # set while the game's own check runs: a gate inside it skips that check
 GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR",
                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX")
+
+
+DIGESTS_URL = "https://raw.githubusercontent.com/anzaldoivan/psxdecomp/v%s/digests.json"   # the plugin's tag holds the file
+DIGESTS_ENV = "PSXD_DIGESTS"                         # a file in the URL's place: a machine with no network, and the tests
+README_WORKFLOW = WORKFLOWS + "psxdecomp-readme.yml"
+_DIGESTS: dict[str, dict] = {}
+
+
+def released_digests(version: str) -> dict[str, str]:
+    """{path in a game: sha256} of the files that psxdecomp <version> delivers, as its release holds them. Raises Fail
+    when the release cannot be read: a tool that nothing vouches for is not accepted."""
+    if version not in _DIGESTS:
+        src = os.environ.get(DIGESTS_ENV)
+        try:
+            if src:
+                data = pathlib.Path(src).read_bytes()
+            else:
+                import urllib.request
+                with urllib.request.urlopen(DIGESTS_URL % version, timeout=20) as r:
+                    data = r.read()
+            doc = json.loads(data)
+        except Exception as e:                         # no network, no such release, no JSON
+            raise Fail("cannot read the digests of psxdecomp %s (%s): %s" % (version, src or DIGESTS_URL % version, e))
+        if not isinstance(doc, dict) or doc.get("version") != version or not isinstance(doc.get("files"), dict):
+            raise Fail("the digests at %s are not those of psxdecomp %s" % (src or DIGESTS_URL % version, version))
+        _DIGESTS[version] = doc["files"]
+    return _DIGESTS[version]
+
+
+def _released(tree: "Tree", rel: str, version: tuple) -> str | None:
+    """Why the file of a tree is not the one that psxdecomp <version> released, or None when it is."""
+    name = ".".join(map(str, version))
+    try:
+        want = released_digests(name).get(rel)
+    except Fail as e:
+        return str(e)
+    have = hashlib.sha256(tree.raw(rel) or b"").hexdigest()
+    return None if want == have else "it is not the file that psxdecomp %s released (sha256 %s, the release holds %s)" % (
+        name, have[:12], (want or "no such file")[:12])
 
 
 def tool_version(text: str | None) -> tuple[int, ...]:
@@ -2512,8 +2559,9 @@ def _hook_rows(conf: dict) -> list[tuple[str, str, frozenset]]:
 def protected_findings(base: Tree, head: Tree, online: bool = False) -> tuple[list[str], list[str], bool]:
     """(what a change may not do to the files that carry the floor, the INFO lines, a tool was replaced and that is
     accepted). Each file is valid when it is valid against the tree the change starts from:
-    - psxdecomp's two tools are the same bytes, or a later version (`online`: the released digest is the judge);
-    - a workflow is the same bytes (a new workflow is free; psxdecomp's own may change with its tools);
+    - psxdecomp's two tools are the same bytes, or a later version. `online` (CI, the pre-push hook): and the bytes
+      that psxdecomp released for that version (`released_digests`). A version number alone is no proof;
+    - a workflow is the same bytes (a new workflow is free; psxdecomp's own changes as its tools do);
     - the settings keep each hook that runs a psxdecomp tool, each deny rule, and no `disableAllHooks`;
     - the guard keeps each `deny` row and gets no `allow` row;
     - the record keeps each value of [own], [trial], [floor] and [debt], and a file that such a value names keeps its
@@ -2534,11 +2582,22 @@ def protected_findings(base: Tree, head: Tree, online: bool = False) -> tuple[li
             out.append("%s changed and its version did not (%s): a tool changes only with an upgrade of psxdecomp" % (
                 rel, text(v0)))
         else:
+            why = _released(head, rel, v1) if online else None
+            if why:
+                out.append("%s changed: %s" % (rel, why))
+                continue
             replaced = True
-            infos.append("%s: version %s -> %s%s" % (rel, text(v0), text(v1), "" if online else
+            infos.append("%s: version %s -> %s%s" % (rel, text(v0), text(v1), ", the released file" if online else
                                                      " (CI and the pre-push hook compare it with the released digest)"))
     for rel in sorted(p for p in base.paths if p.startswith(WORKFLOWS)):
-        if base.raw(rel) != head.raw(rel) and not (replaced and rel == WORKFLOWS + "psxdecomp-readme.yml"):
+        if base.raw(rel) == head.raw(rel):
+            continue
+        if rel == README_WORKFLOW and head.has(rel):     # psxdecomp's own workflow changes with an upgrade, as its tools do
+            why = _released(head, rel, tool_version(head.read(VENDORED))) if online else None if replaced else "no tool changed with it"
+            if not why:
+                continue
+            out.append("%s changed: %s" % (rel, why))
+        else:
             out.append("%s %s" % (rel, "is gone" if not head.has(rel) else "changed: a workflow that exists keeps its bytes"))
     old, new = _settings(base), _settings(head)
     if new.get("_broken"):
@@ -3821,6 +3880,14 @@ def self_test_trials(check) -> None:
               "and the function matches without it\n" in out and "TRIAL RECHECK FAIL (2 row(s) run again: 2 new since HEAD, 0 of the "
               "0 others; 1 finding(s))" in out, out)
         _git(repo, "checkout", "--", "src/sum.c", TRIALS)
+        base_copy = repo / ".psxd-trials-base.tsv"   # a build with no git gets the base's rows as a file
+        base_copy.write_text(_git(repo, "show", "HEAD:" + TRIALS).stdout)
+        put(TRIALS, (repo / TRIALS).read_text() + "src/sum.c\tSum\tpin:$17:t\t%s\tkept\t%s\n" % ("0" * 16, "0" * 16))
+        rc, out = trial(None, recheck=True, sample=0, base_rows=str(base_copy))
+        check("trial --recheck --base-rows: the rows that the copy of the base does not hold", rc == 0 and "1 new since" in out
+              and "the source holds no such crutch" in out, out)
+        base_copy.unlink()
+        _git(repo, "checkout", "--", TRIALS)
         rc, out = trial(None, recheck=True, against="HEAD")
         check("trial --recheck: an honest row holds", rc == 0 and "TRIAL RECHECK OK (1 row(s) run again: 0 new since HEAD, 1 of the 1 others" in out, out)
         # a crutch that needs another one: the second pass
@@ -3968,6 +4035,29 @@ def self_test_gate(check) -> None:
             rc, out = staged()
             check("gate: a later tool is accepted, and it judges the tree", rc == 0 and "GATE INFO tools/psxd_floor.py: version "
                   "%s -> 99.0.0" % VERSION in out and out.endswith("GATE OK by the later tool (staged)\n"), out)
+            _git(repo, "add", "-A")
+            _commit(repo, "a later tool, as an upgrade commits it")
+            digests = pathlib.Path(td + ".digests.json")
+            sha = lambda rel: hashlib.sha256((repo / rel).read_bytes()).hexdigest()  # noqa: E731
+            digests.write_text(json.dumps({"version": "99.0.0", "files": {VENDORED: sha(VENDORED)}}))
+            os.environ[DIGESTS_ENV] = str(digests)
+            rc, out = gate("ci", "HEAD~1..HEAD")
+            check("gate --ci: a later tool with the released digest is accepted, and it judges from there", rc == 0 and
+                  "version %s -> 99.0.0, the released file" % VERSION in out and out.endswith("GATE OK by the later tool (ci; 0 commit(s))\n"), out)
+            digests.write_text(json.dumps({"version": "99.0.0", "files": {VENDORED: "0" * 64}}))
+            _DIGESTS.clear()
+            rc, out = gate("ci", "HEAD~1..HEAD")
+            check("gate --ci: a later version with other bytes is no released tool", rc == 1 and "by the later tool" not in out and
+                  "GATE FAIL protected: " in out and "tools/psxd_floor.py changed: it is not the file that psxdecomp 99.0.0 released" in out, out)
+            os.environ[DIGESTS_ENV] = str(digests) + ".gone"
+            _DIGESTS.clear()
+            rc, out = gate("ci", "HEAD~1..HEAD")
+            check("gate --ci: digests that cannot be read accept nothing", rc == 1 and "cannot read the digests of psxdecomp 99.0.0" in out, out)
+            del os.environ[DIGESTS_ENV]
+            _DIGESTS.clear()
+            digests.unlink()
+            _git(repo, "reset", "-q", "--hard", "HEAD~1")
+            put(VENDORED, later)
             put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
             rc, out = staged()
             check("gate: a later tool beside a refused change does not take over", rc == 1 and "by the later tool" not in out
@@ -4216,6 +4306,7 @@ def main(argv=None) -> int:
     ap.add_argument("--func", help="trial: one function of the file")
     ap.add_argument("--recheck", action="store_true", help="trial: run rows of config/trials.tsv again")
     ap.add_argument("--rows", type=int, default=10, metavar="N", help="trial --recheck: N rows chosen at random (default 10)")
+    ap.add_argument("--base-rows", metavar="FILE", help="trial --recheck: a copy of the base's config/trials.tsv, where no git is")
     ap.add_argument("--repo", help="the repository; default: the git checkout that holds the working directory")
     ap.add_argument("--update", action="store_true")
     ap.add_argument("--down", nargs="?", const="all", metavar="KIND")
@@ -4262,7 +4353,7 @@ def main(argv=None) -> int:
     if a.cmd == "names":
         return cmd_names(a.repo, init=a.init, source=INDEX if a.staged else a.rev, against=a.against)
     if a.cmd == "trial":
-        return cmd_trial(a.repo, a.file, a.func, a.recheck, a.against, a.rows)
+        return cmd_trial(a.repo, a.file, a.func, a.recheck, a.against, a.rows, a.base_rows)
     if a.cmd == "gate":
         modes = [m for m, on in (("staged", a.staged), ("bank", a.bank), ("ci", a.ci), ("push", a.push is not None)) if on]
         if len(modes) != 1:

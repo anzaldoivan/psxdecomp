@@ -1,6 +1,6 @@
-# .github/workflows/psxdecomp-readme.yml — the README standard, the writing style of the public prose files, the
-# readability debt of the source and the frozen category ids (written by psxdecomp's S10 and /psxdecomp:upgrade, which
-# own this file; the standard is psxdecomp's docs/PUBLISHING.md, and `python3 tools/psxd_floor.py --help` lists the debt kinds). No
+# .github/workflows/psxdecomp-readme.yml — the gate of the floor: the README standard, the writing style of the public
+# prose files, the readability debt of the source with its trial rows and ledgers, and the frozen category ids
+# (written by psxdecomp's S10 and /psxdecomp:upgrade, which own this file; the standard is psxdecomp's docs/PUBLISHING.md, and `python3 tools/psxd_floor.py --help` lists the debt kinds). No
 # game data needed: it reads README.md, the public prose files (every published `.md` file), the tracked source,
 # config/style-ratchet.txt, config/debt-baseline.txt, config/names.tsv, config/asm-evidence.tsv,
 # config/public-paths.txt, config/categories.tsv, config/discs.tsv and the tracked hash records.
@@ -17,19 +17,34 @@ permissions:
 
 jobs:
   readme:
-    name: README standard and category ids
+    name: the gate of the floor
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0          # the category freeze reads every committed version of config/categories.tsv
+          fetch-depth: 0          # the gate reads each commit of the change, and the category freeze every version
           persist-credentials: false
-      - name: README lint (sections, AI policy, generated blocks fresh, badges, paths, links)
-        run: python3 tools/psxd_publish.py lint README.md
-      - name: "writing style of the public prose files (a count may only fall: config/style-ratchet.txt)"
-        run: python3 tools/psxd_publish.py style
-      - name: "readability debt of the source (each count equal to its row: config/debt-baseline.txt)"
-        run: python3 tools/psxd_floor.py debt
-      - name: category ids frozen (retired, never deleted or renamed)
-        run: python3 tools/psxd_publish.py categories config/categories.tsv --history
+      # One command holds every check of the floor (`python3 tools/psxd_floor.py --help`): the README lint, the
+      # writing style, the readability debt, the trial rows, the ledgers, the category ids and the files that carry
+      # the floor. The tools that judge are the ones of the commit that the change starts from, copied out of git: a
+      # change cannot rewrite its own judge. A tool that the change replaces must be a released psxdecomp tool.
+      - name: "the gate: each commit against its parent, with the tools of the base commit"
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -eu
+          judge="$RUNNER_TEMP/psxd-judge"
+          mkdir -p "$judge"
+          case "$BASE" in
+            ""|0000000000000000000000000000000000000000) BASE=$(git merge-base HEAD "origin/$DEFAULT_BRANCH" 2>/dev/null || true) ;;
+          esac
+          if [ -n "$BASE" ] && git show "$BASE:tools/psxd_floor.py" > "$judge/psxd_floor.py" 2>/dev/null \
+              && git show "$BASE:tools/psxd_publish.py" > "$judge/psxd_publish.py" 2>/dev/null \
+              && python3 "$judge/psxd_floor.py" gate --help > /dev/null 2>&1; then
+            python3 "$judge/psxd_floor.py" gate --ci "$BASE..HEAD"
+          else
+            echo "::notice::the base commit holds no gate yet: the tools of this commit judge it, this once"
+            python3 tools/psxd_floor.py gate --ci "${BASE:-0000000000000000000000000000000000000000}..HEAD"
+          fi

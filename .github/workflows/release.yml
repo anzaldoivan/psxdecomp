@@ -52,7 +52,9 @@ jobs:
       contents: write                 # the only job that writes: it creates the draft release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: digests.json is the document of the tagged sources (a game's gate reads it at this tag)
+        run: python3 tools/digests.py --check
       - name: Draft release (tier 2 and tier 3 results go into its notes by hand, per docs/RELEASING.md)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" digests.json --draft --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

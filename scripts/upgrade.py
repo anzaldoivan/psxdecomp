@@ -449,6 +449,12 @@ def plan(repo: pathlib.Path) -> list[dict]:
         if left:
             add("manual", "build: fill %s in %s by hand (the game's own values; psxdecomp's docs/PUBLISHING.md)"
                 % (", ".join("{{%s}}" % k for k in left), BUILD_WF), "upgrade cannot read them", "build-fill")
+        if bw.is_file() and "trial --recheck" not in common.read(bw):
+            add("manual", "build-retrial: copy the step `Trial rows of this change, run again` into %s by hand, behind "
+                "the byte check (psxdecomp's profiles/psx/build.yml holds it). The file is the game's own once it is "
+                "written, so upgrade never edits it" % BUILD_WF,
+                "the build workflow has the toolchain: there a trial row that was written by hand is run again and fails",
+                "build-retrial")
     conv = None if adopted(repo) else conv_card(repo)    # an adopted card is the game's own text: no action, no write
     if conv:
         over = len(conv[1]) - doctor.card_chars(repo)[1]
