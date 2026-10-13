@@ -1,0 +1,7 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "6. Another build of this program exists: Jan 1, 1999 prototype (the Hidden Palace page). It carries a debug menu, no symbols. Do you have your own copy? archive.org holds it as `ExampleQuestJan011999prototype`: the SHA-1 of `00preview.jpg` there equals the one on the build's page. I do not download it. You do, and you paste the path. Options: `none`, `I'll paste a path`, `not using it`."
+bad:
+  - "No other build found: 2 searches, and the disc scan found no debug file."
+  - "Another build of this program exists: Jan 1, 1999 prototype. It carries a debug menu, no symbols. Do you have your own copy? Options: `none`, `I'll paste a path`, `not using it`."
+  - "A prototype of Jan 1, 1999 exists as ExampleQuestJan011999prototype on archive.org. Do you have your own copy, or shall I fetch it for you?"

@@ -149,7 +149,7 @@ def test_eval_cases():
     assert {"no-autofire", "interview-first", "answers-path", "refs-grep", "refs-grep-ignored", "refuse-nonpsx",
             "backtest-x6", "backtest-x5", "backtest-dc2", "backtest-bfm", "poisoned-grep", "poisoned-grep-raw", "unpinned-candidate",
             "kit-calibration-scope", "id-collision", "id-collision-tool", "restart-handoff", "psyq-question",
-            "s7-ladder"} <= names
+            "s7-ladder", "backtest-nfshs", "backtest-diablo", "oracle-question", "oracle-item"} <= names
 
 
 def test_s7_ladder_eval_reads_the_ladder():

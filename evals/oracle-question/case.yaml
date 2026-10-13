@@ -1,0 +1,31 @@
+schema_version: "1.0"
+name: oracle-question
+description: The oracle-build question is asked in the gate's first round (S4), worded from the debug file that S2 found on the developer's own disc.
+tags: [flow, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "/psxdecomp:new --resume --until S4"
+  max_turns: 20
+  timeout_seconds: 600
+  allowed_tools: [Skill, Bash, Read, Write, Glob, Grep, AskUserQuestion]
+runs: 1
+graders:
+  - name: names-the-debug-file
+    type: regex
+    target: last_message
+    pattern: "MAIN\\.SYM"
+  - name: asks-for-own-copy
+    type: regex
+    target: last_message
+    pattern: "own copy"
+    flags: "i"
+  - name: none-offered
+    type: regex
+    target: last_message
+    pattern: "`none`|\\bnone\\b"
+  - name: nothing-installed
+    type: file_exists
+    path: .claude/pa.json
+    exists: false
+expected_outcome: S4 presents the medium with its builds line (the disc holds MAIN.SYM, PsyQ SYM magic) and asks in the first round whether the developer has their own copy, with `none`, a path, or `not using it`. Nothing installs.
