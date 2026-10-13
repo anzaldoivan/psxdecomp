@@ -1,5 +1,5 @@
 A source file has two states. It is matched when the build is byte-identical with every function of the file in C.
-It is finished when it is matched and it has no readability debt. Until then, say "matched, not finished".
+It is finished when it is matched and it has no readability debt. Until then, call it matched and name its debt.
 
 A finished file meets six conditions:
 

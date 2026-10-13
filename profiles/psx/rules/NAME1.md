@@ -17,6 +17,7 @@ A name is a claim about what the code does. A byte-identical build proves the be
 | `exe-header` | a field of the executable header |
 | `prior-art` | a name in a project that `docs/prior-art.md` lists, with its commit |
 | `debug-symbol` | a symbol in a debug build or in another release of the game |
+| `refs` | a row of `config/refs.toml`: a manual, a wiki or a symbol file that gives the game's own word |
 
 This rule is the default. When `docs/prior-art.md` records the conventions of an upstream project, those conventions
 replace the form of the names. They do not replace the evidence.

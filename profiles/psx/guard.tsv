@@ -7,6 +7,7 @@ deny	path	config/check.*.sha	The build writes the hash files. A new baseline is 
 deny	path	config/medium.sha1	The hashes of the disc are fixed. Only another dump changes them, and the developer decides that.
 deny	path	config/debt-baseline.txt	Run `python3 tools/psxd_floor.py debt --update`. It writes this file.
 deny	path	config/style-ratchet.txt	Run `python3 tools/psxd_publish.py style --update`. It writes this file.
-# Two examples. Each game has its own targets: remove the `#` and set the pattern.
-# deny	bash	(^|[;&|]\s*)make\s+expected\b	Ask the developer before you write a new baseline.
-# deny	bash	\bsplat\b.*\bsplit\b	Run the split target of this repository. It keeps the forced boundaries.
+# Two examples. Each game has its own targets: remove the `#` and set the pattern. The hook searches the pattern in
+# the whole command, so it also refuses a command that only mentions the words.
+# deny	bash	\bmake\b[^;&|]*\bexpected\b	Ask the developer before you write a new baseline.
+# deny	bash	\bsplat\s+split\b	Run the split target of this repository. It keeps the forced boundaries.
