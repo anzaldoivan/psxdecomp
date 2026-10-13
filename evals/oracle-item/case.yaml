@@ -19,7 +19,7 @@ graders:
   - name: names-the-checked-item
     type: regex
     target: last_message
-    pattern: "ExampleQuestJan011999prototype"
+    pattern: "HomebrewFixtureJan011999prototype"
   - name: asks-for-own-copy
     type: regex
     target: last_message

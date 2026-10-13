@@ -1,7 +1,7 @@
 #!/bin/sh
 # A bootstrap at the gate, with a checked build that has no symbols. The homebrew fixture disc is built outside the
 # folder and identified (S2); its planted debug file is taken out of medium.json, so the disc scan names no build.
-# S3's drafts hold an invented prototype lead and, in research/builds.md, its checked archive.org item (invented).
+# S3's drafts hold an invented prototype lead of the fixture's own title and, in research/builds.md, its checked archive.org item (invented).
 # S4 must ask for the developer's own copy, name the item in the question, and say that it does not download it.
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
@@ -28,11 +28,11 @@ cat > .run/bootstrap/research/builds.md <<'MD'
 ## Leads
 | Lead | Source (owner/repo or URL) | Licence | What it gives | How to verify |
 |---|---|---|---|---|
-| Jan 1, 1999 prototype: a debug menu, no symbols ("Game contains debugging symbols: N/A") | https://hiddenpalace.example.invalid/Example_Quest_(Jan_1,_1999_prototype) (read by the scaffold) | n/a | lineage: the code of six weeks before the master | 12 function bodies are byte-identical at the mapped addresses of both builds; the page states the image's SHA-1 5f1c2a90b7d44e3386a1c0de9f2b7714a6e08d35 |
+| PSXDECOMP Homebrew Fixture, Jan 1, 1999 prototype: a debug menu, no symbols ("Game contains debugging symbols: N/A") | https://hiddenpalace.example.invalid/PSXDECOMP_Homebrew_Fixture_(Jan_1,_1999_prototype) (read by the scaffold) | n/a | lineage: the code of six weeks before the master | 12 function bodies are byte-identical at the mapped addresses of both builds; the page states two SHA-1 values: the image `.img` 5f1c2a90b7d44e3386a1c0de9f2b7714a6e08d35 and the preview `.jpg` 9b3e07c41d5a6f2288c0b1e4a7d95f3306c2e81a |
 ## archive.org items
 | identifier | kind (build or document) | confirmed by | file | SHA-1 |
 |---|---|---|---|---|
-| ExampleQuestJan011999prototype | build | the SHA-1 of its preview image equals the one on the build's page | 00preview.jpg | 9b3e07c41d5a6f2288c0b1e4a7d95f3306c2e81a |
+| HomebrewFixtureJan011999prototype | build | the SHA-1 of its `00preview.jpg` equals the preview `.jpg` SHA-1 that the build's page states | 00preview.jpg | 9b3e07c41d5a6f2288c0b1e4a7d95f3306c2e81a |
 ## Dead ends
 - no demo disc and no other region found (2 searches)
 ## For a person to read
@@ -42,5 +42,5 @@ MD
 cat > .run/bootstrap/prior-art.draft.md <<'MD'
 | # | Lead | Source | Status | Evidence / how to verify | Phase |
 |---|---|---|---|---|---|
-| L1 | Oracle build: Jan 1, 1999 prototype carries a debug menu and no symbols | https://hiddenpalace.example.invalid/Example_Quest_(Jan_1,_1999_prototype) (the build: `byo`, no copy) | lead | Verify: 12 function bodies are byte-identical at the mapped addresses of both builds. The page states the image's SHA-1 5f1c2a90b7d44e3386a1c0de9f2b7714a6e08d35 | 1.2 |
+| L1 | Oracle build: the Jan 1, 1999 prototype of PSXDECOMP Homebrew Fixture carries a debug menu and no symbols | https://hiddenpalace.example.invalid/PSXDECOMP_Homebrew_Fixture_(Jan_1,_1999_prototype) (the build: `byo`, no copy) | lead | Verify: 12 function bodies are byte-identical at the mapped addresses of both builds. The page states the SHA-1 of the image `.img` (5f1c2a90b7d44e3386a1c0de9f2b7714a6e08d35) and of the preview `.jpg` (9b3e07c41d5a6f2288c0b1e4a7d95f3306c2e81a) | 1.2 |
 MD
