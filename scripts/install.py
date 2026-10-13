@@ -598,6 +598,10 @@ def s10_handoff(c: Ctx) -> str:
     for d in upgrade.DELIVERY:
         if d.cls == "owned" and not d.split:
             record = upgrade.record_set(record, "delivered", d.path, upgrade._sha((common.PLUGIN_ROOT / d.src).read_bytes()))
+    for rid in common.PROFILE_RULES:              # and of each rule's body, where the game's rules tool writes it below
+        rel, body = common.rule_paths(rid)
+        if c.p(common.STE_TOOL).is_file():
+            record = upgrade.record_set(record, "delivered", rel, upgrade._sha(common.read(body).strip().encode("utf-8")))
     # written once: a re-run on a later day leaves the record alone (/psxdecomp:upgrade is what rewrites it)
     for rel, body in ((RECORD, record),
                       ("config/psxdecomp.profile.toml", common.read(common.PLUGIN_ROOT / "profiles/psx/profile.toml")),
@@ -629,8 +633,6 @@ def s10_handoff(c: Ctx) -> str:
         c.write("HOW_WE_WORK.md", with_conventions(common.read(how), conventions_line(c.p("docs/prior-art.md").exists())))
     paths.append("HOW_WE_WORK.md")                  # always: a run that failed after these writes left the card dirty
     seeds = c.boot("seeds.txt")
-    if c.dry:
-        return "would write the record, the profile, the host recipe and docs/prior-art.md"
     # the profile's deny rules (native enforcement from the first commit) and its style hook: one write of the file
     why, hook_why = common.deny_missing(c.target)[1], common.hooks_missing(c.target)[1]
     text = common.settings_due(c.target)
@@ -648,18 +650,20 @@ def s10_handoff(c: Ctx) -> str:
             print("     rule %s not written: no %s here; PA3's rules_add.py must write %s from %s"
                   % (rid, common.STE_TOOL, rel, body))
         else:
-            c.written += common.rule_write(c.target, c.python(), rid)
+            c.written += common.rule_write(c.target, c.python(), rid, c.dry)
             paths += [rel, common.STE_INDEX]
     for rel, cols in upgrade.LEDGER_HEAD.items():  # the two ledgers: a header line, once
         if not c.p(rel).exists():
             c.write(rel, "\t".join(cols) + "\n")
         paths.append(rel)
     if not c.p(publish.STYLE_RATCHET_REL).exists():   # last: each write above can change a count; never rewritten
-        c.write(publish.STYLE_RATCHET_REL, common.first_ratchet(c.target))
+        c.write(publish.STYLE_RATCHET_REL, "" if c.dry else common.first_ratchet(c.target))
     paths.append(publish.STYLE_RATCHET_REL)
     if not c.p(floor.BASELINE).exists():          # the debt of the source at the handoff: none, in `mode admit`
-        c.write(floor.BASELINE, floor.first_baseline(c.target))
+        c.write(floor.BASELINE, "" if c.dry else floor.first_baseline(c.target))
     paths.append(floor.BASELINE)
+    if c.dry:                                     # every write of the stage is listed above; a dry run counts nothing
+        return "would write the record, the tools, the settings, the rules, the ledgers and the two baselines"
     c.git("add", "--", *[x for x in paths if c.p(x).exists()])   # the README lint counts tracked paths, not local
     import doctor
     rows = doctor.check(c.target)

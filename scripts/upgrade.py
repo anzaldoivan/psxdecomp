@@ -140,39 +140,67 @@ TABLE_NOTE = {
     "own": "# [own]: what this repository holds itself in place of a psxdecomp delivery. psxdecomp writes nothing for a key\n"
            "# set here; /psxdecomp:doctor checks that its path exists.",
     "delivered": "# [delivered]: the sha256 of each owned file as psxdecomp last wrote it. A copy edited here since then is\n"
-                 "# never overwritten unasked (`upgrade apply --take <action>`).",
-    "host": "# [host]: the host recipe of the machine that builds (docs/ops/host-recipe.md).",
+                 "# never overwritten unasked (`/psxdecomp:upgrade apply --take <action>`).",
+    "host": "# [host]: the host recipe of the machine that builds.",
 }
 
 
 def record_tables(repo: pathlib.Path) -> dict:
-    """The record as tables, or {} when it is absent or not TOML."""
+    """The record as tables; {} when it is absent. A record that is not TOML raises Fail: every safety of an upgrade
+    ([own], [delivered], adopted) is read from it, so nothing is planned and nothing is written until it parses."""
     rec = repo / install.RECORD
-    try:
-        return tomllib.loads(common.read(rec)) if rec.is_file() else {}
-    except tomllib.TOMLDecodeError:
+    if not rec.is_file():
         return {}
+    try:
+        tables = tomllib.loads(common.read(rec))
+    except tomllib.TOMLDecodeError as e:
+        raise common.Fail("%s is not TOML (%s): repair it first. Nothing is written until it parses" % (install.RECORD, e))
+    for name in ("own", "delivered", "psxdecomp", "public", "host"):
+        if name in tables and not isinstance(tables[name], dict):
+            raise common.Fail("%s: `%s` is not a table: write it as `[%s]`. Nothing is written until then" % (
+                install.RECORD, name, name))
+    return tables
 
 
 def record_set(text: str, table: str, key: str, value: str) -> str:
     """The record's text with `key = "value"` in `[table]`: the key's line is replaced where it stands, else it ends
-    the table. A record without the table gains it at its end, under the table's comment (TABLE_NOTE)."""
+    the table. A record without the table gains it at its end, under the table's comment (TABLE_NOTE). The result is
+    parsed and compared with the record plus this one value: a form that a line edit cannot change (an inline table, a
+    dotted key) raises Fail, and so the record is never left as a file that is not TOML."""
+    try:
+        want = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise common.Fail("%s is not TOML (%s): repair it first" % (install.RECORD, e))
     k = key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else json.dumps(key)
     line = "%s = %s" % (k, json.dumps(value, ensure_ascii=False))
     lines = text.split("\n")
-    start = next((i for i, l in enumerate(lines) if l.strip() == "[%s]" % table), None)
+    start = next((i for i, l in enumerate(lines) if re.fullmatch(r"\s*\[\s*%s\s*\]\s*(?:#.*)?" % re.escape(table), l)), None)
     if start is None:
         note = TABLE_NOTE.get(table)
-        return "%s\n\n%s[%s]\n%s\n" % (text.rstrip("\n"), note + "\n" if note else "", table, line)
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("[")), len(lines))
-    for i in range(start + 1, end):
-        if re.match(r"%s\s*=" % re.escape(k), lines[i]):
-            lines[i] = line
-            return "\n".join(lines)
-    while end > start + 1 and (not lines[end - 1].strip() or lines[end - 1].startswith("#")):
-        end -= 1                                     # blank lines and the next table's comment stay below the new line
-    lines.insert(end, line)
-    return "\n".join(lines)
+        new = "%s\n\n%s[%s]\n%s\n" % (text.rstrip("\n"), note + "\n" if note else "", table, line)
+    else:
+        end = next((i for i in range(start + 1, len(lines)) if re.match(r"\s*\[", lines[i])), len(lines))
+        spelled = r"\s*(?:%s|%s|'%s')\s*=" % (re.escape(key), re.escape(json.dumps(key)), re.escape(key))
+        at = next((i for i in range(start + 1, end) if re.match(spelled, lines[i])), None)
+        if at is not None:
+            lines[at] = line
+        else:
+            while end > start + 1 and (not lines[end - 1].strip() or lines[end - 1].lstrip().startswith("#")):
+                end -= 1                                 # blank lines and the next table's comment stay below the new line
+            lines.insert(end, line)
+        new = "\n".join(lines)
+    if not isinstance(want.get(table, {}), dict):
+        raise common.Fail("%s: `%s` is not a table: write it as `[%s]`" % (install.RECORD, table, table))
+    want.setdefault(table, {})[key] = value
+    try:
+        got = tomllib.loads(new)
+    except tomllib.TOMLDecodeError:
+        got = None
+    if got != want:
+        raise common.Fail("%s: psxdecomp cannot set `%s` in `[%s]` by a line edit (an inline table, a dotted key or a "
+                          "multi-line value is in the way): write `%s` under a plain `[%s]` header by hand. Nothing "
+                          "was written" % (install.RECORD, key, table, line, table))
+    return new
 
 
 def _sha(data: bytes) -> str:
@@ -221,6 +249,30 @@ def delivered_due(repo: pathlib.Path, take=()) -> dict[str, str]:
         sha = _sha((common.PLUGIN_ROOT / d.src).read_bytes())
         if (state != "edited" or d.key in take) and delivered.get(path) != sha:
             out[path] = sha
+    for rel, sha in rules_delivered(repo).items():     # a rule that holds psxdecomp's body: its hash guards a later edit
+        if delivered.get(rel) != sha:
+            out[rel] = sha
+    return out
+
+
+def _vkey(version: str) -> tuple:
+    """A version as a tuple of its numbers, for an older-or-newer test (`0.10.0` is after `0.9.2`)."""
+    return tuple(int(x) for x in re.findall(r"\d+", version)[:4])
+
+
+def rule_body(repo: pathlib.Path, rel: str) -> str:
+    """A rule file's body: its text below the title line and the metadata line that the game's rules tool writes."""
+    f = repo / rel
+    return "".join(common.read(f).split("\n", 2)[2:]).strip() if f.is_file() else ""
+
+
+def rules_delivered(repo: pathlib.Path) -> dict[str, str]:
+    """{rules/<ID>.md: sha256 of its body} for each profile rule that holds psxdecomp's body now."""
+    out = {}
+    for rid in common.PROFILE_RULES:
+        rel, body = common.rule_paths(rid)
+        if (repo / rel).is_file() and rule_body(repo, rel) == common.read(body).strip():
+            out[rel] = _sha(rule_body(repo, rel).encode("utf-8"))
     return out
 
 
@@ -265,8 +317,7 @@ def build_values(repo: pathlib.Path) -> dict[str, str]:
     """The build.yml placeholders this repository can answer: the public repository (`[public].repo` in
     config/psxdecomp.toml) and the executables (config/discs.tsv, one required check `build <EXE>` each)."""
     vals = {}
-    toml = repo / "config" / "psxdecomp.toml"
-    pub = tomllib.loads(common.read(toml)).get("public", {}) if toml.is_file() else {}
+    pub = record_tables(repo).get("public", {})
     if re.fullmatch(r"[\w.-]+/[\w.-]+", str(pub.get("repo", ""))):
         vals["REPO"] = pub["repo"]
     rows = publish.load_discs(repo / publish.DISCS_REL)[0]
@@ -289,12 +340,19 @@ def plan(repo: pathlib.Path) -> list[dict]:
         if not (repo / "docs" / "decomp-architect-install.md").is_file():
             add("manual", "kit: then the decomp-architect kit, with its own installer", "no kit", "kit")
         return acts
+    tables = record_tables(repo)
+    have = str((tables.get("psxdecomp") or {}).get("version") or "")
     if not (repo / install.RECORD).is_file():
         add("psxdecomp", "adopt: write %s (pins as found, profile psx, `adopted`)" % install.RECORD,
             "the repository was not bootstrapped by psxdecomp", "adopt")
-    elif record_version(common.read(repo / install.RECORD)) not in (None, common.plugin_version()):
+    elif _vkey(have) > _vkey(common.plugin_version()):
+        add("manual", "plugin: this psxdecomp is %s and the repository's record names %s: update the plugin "
+            "(`/plugin update psxdecomp`), then run the upgrade again. Nothing is written" % (common.plugin_version(), have),
+            "an older plugin would write older tools over newer ones", "plugin-older")
+        return acts
+    elif have != common.plugin_version():
         add("psxdecomp", "record: [psxdecomp].version %s -> %s in %s" % (
-            record_version(common.read(repo / install.RECORD)), common.plugin_version(), install.RECORD),
+            have or "(none)", common.plugin_version(), install.RECORD),
             "the record names the psxdecomp whose tools the repository carries", "version")
     refs = repo / "config" / "refs.toml"
     default = {r["name"]: r for r in fetch_refs.load_rows(PROFILE_REFS)}
@@ -302,7 +360,14 @@ def plan(repo: pathlib.Path) -> list[dict]:
         add("psxdecomp", "refs: add config/refs.toml (the profile's %d rows), docs/ops/refs.md, the refs/ ignore and "
             "purge lines, the HOW_WE_WORK references line" % len(default), "no reference library", "refs-add")
     else:
-        mine = {r["name"]: r for r in fetch_refs.load_rows(refs)}
+        try:
+            mine = {r["name"]: r for r in fetch_refs.load_rows(refs)}
+            bad = [n for n, r in mine.items() if "class" not in r]
+        except (tomllib.TOMLDecodeError, KeyError, TypeError) as e:
+            raise common.Fail("config/refs.toml does not parse (%s: %s): repair it first. Nothing is written" % (
+                type(e).__name__, e))
+        if bad:
+            raise common.Fail("config/refs.toml: row %s has no `class`: repair it first. Nothing is written" % ", ".join(bad))
         new = sorted(set(default) - set(mine))
         if new:
             add("psxdecomp", "refs: add rows %s" % ", ".join(new), "the profile gained rows", "refs-rows")
@@ -331,10 +396,13 @@ def plan(repo: pathlib.Path) -> list[dict]:
         stale = [p for p, (d, st) in due.items() if d.key == key and st == "write"]
         edited = [p for p, (d, st) in due.items() if d.key == key and st == "edited"]
         if stale:
+            unhashed = [p for p in stale if (repo / p).is_file() and p not in (tables.get("delivered") or {})]
             add("psxdecomp", "%s: write %s (%s)" % (label, " and ".join(stale), what),
-                "missing or older than psxdecomp %s's" % common.plugin_version(), key)
+                "missing or older than psxdecomp %s's%s" % (common.plugin_version(), (
+                    "; no hash of %s was recorded (a copy from before psxdecomp 0.6.0), so an edit made here is "
+                    "overwritten: `git diff` after the apply shows it" % " and ".join(unhashed)) if unhashed else ""), key)
         if edited:
-            add("manual", "%s: %s edited here since psxdecomp wrote %s; `upgrade apply --take %s` overwrites %s with "
+            add("manual", "%s: %s edited here since psxdecomp wrote %s; `/psxdecomp:upgrade apply --take %s` overwrites %s with "
                 "psxdecomp %s's (%s)" % (label, " and ".join(edited), "it" if len(edited) == 1 else "them", key,
                                          "it" if len(edited) == 1 else "them", common.plugin_version(), what),
                 "an owned file with local changes is never overwritten unasked", key + "-edited")
@@ -349,7 +417,6 @@ def plan(repo: pathlib.Path) -> list[dict]:
     if ops_index_due(repo):
         add("psxdecomp", "ops-index: add the row of psxdecomp's docs/ops file(s) to %s (add-only)" % OPS_INDEX,
             "PA3's ops index names every file of docs/ops/", "ops-index")
-    tables = record_tables(repo)
     if "host" not in tables:
         add("psxdecomp", 'record-tables: add [host] recipe = "%s" to %s' % (host_recipe(), install.RECORD),
             "the record names the host recipe of the machine that builds", "record-tables")
@@ -391,6 +458,14 @@ def plan(repo: pathlib.Path) -> list[dict]:
             "profiles/psx/deny.json%s" % (len(missing), common.SETTINGS, " by hand (%s)" % why if why else " (add-only)"),
             "PA3's own deny stops `git push` alone; these forms also reach a push, a PR or a release", "deny")
     hooks, why = common.hooks_missing(repo)
+    stale = common.hooks_stale(repo)
+    for key, _ in common.HOOK_KINDS:
+        old = [h for h in stale if common.hook_kind(h[1]) == key]
+        if old and not [h for h in hooks if common.hook_kind(h[1]) == key]:
+            add("psxdecomp", "%s: write the current command of %d hook group(s) in %s hooks where the older one stands "
+                "(psxdecomp's profiles/psx/hooks.json)" % (key, len(old), common.SETTINGS),
+                "a hook command ends in `|| exit 0`, and the guard has a time limit: a hook that cannot start or "
+                "that hangs never stops a call", key)
     for key, reason in (("style-hook", "an agent session reads the writing findings of a public file right after it "
                          "writes one"),
                         ("guard-hook", "an agent session is refused an edit of a generated or frozen file before it "
@@ -404,7 +479,12 @@ def plan(repo: pathlib.Path) -> list[dict]:
     for rid, (_, _, _, key, what, own_key) in common.PROFILE_RULES.items():
         rel, body = common.rule_paths(rid)
         rule = None if own_key in own else common.rule_state(repo, rid)
-        if rule == "manual":
+        was = (tables.get("delivered") or {}).get(rel)
+        if rule == "rewrite" and was and was != _sha(rule_body(repo, rel).encode("utf-8")):
+            add("manual", "%s: %s was edited here since psxdecomp wrote it; `/psxdecomp:upgrade apply --take %s` rewrites it with "
+                "the body of psxdecomp %s's profiles/psx/rules/%s.md" % (key, rel, key, common.plugin_version(), rid),
+                "a rule with local changes is never rewritten unasked", key + "-edited")
+        elif rule == "manual":
             add("manual", "%s: write %s with PA3's rules_add.py (this repository has no %s); the rule's body is %s"
                 % (key, rel, common.STE_TOOL, body), what, key)
         elif rule:
@@ -509,12 +589,17 @@ def commit_command(repo: pathlib.Path, paths: list[str]) -> str:
     return "git add -- %s && git commit -m %s -- %s" % (args, shlex.quote("psxdecomp: " + msg), args)
 
 
-VERSION_RE = re.compile(r'(\[psxdecomp\][^\[]*?^version = ")([^"]*)"', re.M | re.S)
-
-
-def record_version(text: str) -> str | None:
-    m = VERSION_RE.search(text)
-    return m[2] if m else None
+def commit_paths(repo: pathlib.Path, paths: list[str]) -> list[str]:
+    """The paths of the commit line: this run's writes, and what an earlier apply left uncommitted: a file psxdecomp
+    delivers that git does not track yet, and a changed owned file or record. A run that stopped half-way is
+    committed whole by the run that finishes it. A file of the game that psxdecomp only adds lines to (the card, the
+    README, .gitignore) is named only by the run that wrote it."""
+    new = [d.path for d in DELIVERY] + [install.RECORD, "config/refs.toml", fetch_refs.INDEX_REL, common.STE_INDEX]
+    new += [common.rule_paths(rid)[0] for rid in common.PROFILE_RULES]
+    mine = {d.path for d in DELIVERY if d.cls == "owned"} | {install.RECORD}
+    r = common.git(repo, "status", "--porcelain", "--untracked-files=all", "--no-renames", "--", *dict.fromkeys(new), check=False)
+    left = [l[3:] for l in r.stdout.splitlines() if l[3:] in new and (l[:2] == "??" or l[3:] in mine)] if r.returncode == 0 else []
+    return list(dict.fromkeys(paths + left))
 
 
 def toml_table(kind: str, d: dict) -> str:
@@ -533,7 +618,12 @@ def written_paths(written: list[str]) -> list[str]:
 def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
     planned = plan(repo)
     acts = {a["key"] for a in planned if a["owner"] == "psxdecomp"}
-    take = {k for k in take if any(a["key"] == k + "-edited" for a in planned)}
+    edited = sorted(a["key"][:-len("-edited")] for a in planned if a["key"].endswith("-edited"))
+    unknown = sorted(k for k in take if k not in edited)
+    if unknown:
+        raise common.Fail("--take %s: no edited file under that action; the plan names %s. Nothing was written" % (
+            ", ".join(unknown), ", ".join("`--take %s`" % k for k in edited) or "no edited file"))
+    take = set(take)
     written = []
 
     def w(rel, text):
@@ -552,18 +642,14 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
             "", "[refs]", 'file = "config/refs.toml"', 'index = "docs/ops/refs.md"', "", "[deviations]",
             'list = ["adopted: not bootstrapped by psxdecomp; pins recorded as found"]', ""])
     if "version" in acts:
-        rec = VERSION_RE.sub(lambda m: '%s%s"' % (m[1], common.plugin_version()), rec, count=1)
+        rec = record_set(rec, "psxdecomp", "version", common.plugin_version())
     if "own" in acts:
         for key, value in own_found(repo).items():
             rec = record_set(rec, "own", key, value)
     if "record-tables" in acts:
         rec = record_set(rec, "host", "recipe", host_recipe())
-    if "delivered" in acts or take:
-        for path, sha in delivered_due(repo, take).items():
-            rec = record_set(rec, "delivered", path, sha)
+    hashes = delivered_due(repo, take) if "delivered" in acts or take else {}
     owned = [d for d, st in owned_due(repo).values() if (st == "write" and d.key in acts) or (st == "edited" and d.key in take)]
-    if rec is not None:
-        w(install.RECORD, rec)
     if "refs-add" in acts:
         w("config/refs.toml", common.read(PROFILE_REFS))
     elif "refs-rows" in acts or "refs-meta" in acts:
@@ -591,9 +677,15 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
         if "readme-blocks" in acts:
             text = publish.render(text, publish.Ctx(repo))
         w("README.md", text)
-    for rid, row in common.PROFILE_RULES.items():
-        if row[3] in acts:
-            written += common.rule_write(repo, common.find_python() or sys.executable, rid, dry)
+    for rid, row in common.PROFILE_RULES.items():       # a game tool that refuses stops its own rule, nothing else
+        if row[3] in acts or row[3] in take:
+            rel, body = common.rule_paths(rid)
+            try:
+                written += common.rule_write(repo, common.find_python() or sys.executable, rid, dry)
+                hashes[rel] = _sha(common.read(body).strip().encode("utf-8"))
+            except common.Fail as e:
+                written.append("FAIL %s" % e)
+                hashes.pop(rel, None)
     if "build" in acts:
         w(BUILD_WF, fill_known(common.read(PROFILE_BUILD), build_values(repo)))
     if "guard" in acts:
@@ -623,12 +715,22 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
     if not dry and refs_file.is_file():
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            fetch_refs.main(["--repo", str(repo)] + ([] if fetch else ["--index-only"]))
+            rc = fetch_refs.main(["--repo", str(repo)] + ([] if fetch else ["--index-only"]))
+        last = (buf.getvalue().strip().splitlines() or ["no output"])[-1]
         fresh = " unchanged" in next((l for l in buf.getvalue().splitlines() if l.startswith("INDEX ")), "")
-        written.append("%s docs/ops/refs.md (%s)" % ("unchanged index" if fresh else "index",
-                                                     buf.getvalue().strip().splitlines()[-1]))
-    elif dry and ("refs-add" in acts or "refs-rows" in acts):
-        written.append("would write docs/ops/refs.md (the index)")
+        if rc != 0:                                  # a row the lint refuses, a fetch that failed: the index is not written
+            written.append("FAIL refs: %s (`fetch_refs.py --repo . --lint` lists the rows)" % last)
+        else:
+            written.append("%s docs/ops/refs.md (%s)" % ("unchanged index" if fresh else "index", last))
+    elif dry and {"refs-add", "refs-rows", "refs-meta"} & acts:
+        written.append("would be changed docs/ops/refs.md (the index)")
+    elif dry and refs_file.is_file():                # the index of a refs.toml that the game changed itself
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = fetch_refs.main(["--repo", str(repo), "--index-only", "--dry-run"])
+        line = next((l for l in buf.getvalue().splitlines() if l.startswith("INDEX ")), "")
+        if rc == 0 and line and " unchanged" not in line:
+            written.append("would be changed docs/ops/refs.md (the index)")
     if "names-ledger" in acts:
         for rel in ledgers_due(repo):
             w(rel, "\t".join(LEDGER_HEAD[rel]) + "\n")
@@ -636,6 +738,14 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
         w(publish.STYLE_RATCHET_REL, "" if dry else common.first_ratchet(repo))
     if "debt-baseline" in acts:                      # and the debt of the source as the ledgers leave it
         w(floor.BASELINE, "" if dry else floor.first_baseline(repo))
+    # the record, last: the version and the hashes are true only when the files above are written
+    if not dry:
+        held = rules_delivered(repo)
+        hashes = {p: s for p, s in hashes.items() if not p.startswith("rules/") or held.get(p) == s}
+    for path, sha in hashes.items():
+        rec = record_set(rec, "delivered", path, sha)
+    if rec is not None:
+        w(install.RECORD, rec)
     return written
 
 
@@ -653,6 +763,18 @@ def main(argv=None) -> int:
     if a.self_test:
         return self_test()
     repo = pathlib.Path(a.repo).resolve()
+    try:
+        return run(a, repo, ap)
+    except common.Fail as e:                         # a record or a file of the game that does not parse, an unknown --take
+        print("%s FAIL %s" % ((a.cmd or "upgrade").upper(), e))
+        return 1
+    except (json.JSONDecodeError, tomllib.TOMLDecodeError) as e:   # .claude/pa.json, config/refs.toml: the game's to repair
+        print("%s FAIL a file of the repository does not parse (%s: %s): repair it first. Nothing is written" % (
+            (a.cmd or "upgrade").upper(), type(e).__name__, e))
+        return 1
+
+
+def run(a, repo: pathlib.Path, ap) -> int:
     if a.cmd == "audit":
         for r in doctor.check(repo):
             print("AUDIT %-*s %-4s %s" % (doctor.WIDTH, *r))
@@ -667,22 +789,22 @@ def main(argv=None) -> int:
         print("PLAN %d action(s)%s" % (len(acts), "" if acts else " — up to date"))
         return 0
     if a.cmd == "apply":
-        try:
-            written = apply(repo, a.dry_run, a.fetch, a.take)
-        except common.Fail as e:                     # a game tool refused: what was written before it stays
-            print("APPLY FAIL %s" % e)
-            return 1
+        written = apply(repo, a.dry_run, a.fetch, a.take)
+        failed = [x for x in written if x.startswith("FAIL ")]
         for x in written:
             print("APPLY %s" % x)
         manual = [x for x in plan(repo) if x["owner"] == "manual"] if not a.dry_run else []
         for x in manual:
             print("MANUAL %s" % x["what"])
-        paths = written_paths(written)
-        print("APPLY %s %d write(s); nothing committed" % (
-            "DRY RUN" if a.dry_run else "OK", sum(x.startswith("would be ") for x in written) if a.dry_run else len(paths)))
-        if paths and not a.dry_run:
+        paths = list(dict.fromkeys(written_paths(written)))
+        would = {m[1] for x in written for m in [re.match(r"would be \w+ (\S+)", x)] if m}
+        print("APPLY %s %d write(s); nothing committed%s" % (
+            "DRY RUN" if a.dry_run else "FAIL" if failed else "OK", len(would) if a.dry_run else len(paths),
+            "; %d step(s) failed, the others are written: repair the cause and apply again" % len(failed) if failed else ""))
+        paths = commit_paths(repo, paths) if not a.dry_run else []
+        if paths and not failed:
             print("COMMIT %s" % commit_command(repo, paths))
-        return 0
+        return 1 if failed else 0
     if a.cmd == "own":
         return cmd_own(repo, a.args)
     ap.print_help()
@@ -699,6 +821,7 @@ def cmd_own(repo: pathlib.Path, args: list[str]) -> int:
     if not rec.is_file():
         print("OWN FAIL no %s: `upgrade apply` adopts the repository first" % install.RECORD)
         return 1
+    record_tables(repo)                              # a record that is not TOML is refused before any edit
     if doctor.own_missing(repo, {args[0]: args[1]}):
         print("OWN FAIL %s = %s names no path or make target of this repository" % tuple(args))
         return 1
@@ -731,6 +854,53 @@ def self_test_record(repo: pathlib.Path) -> bool:
     ok &= record_set(text, "a", "docs/z.md", "h") == text.replace('x = "1"\n', 'x = "1"\n"docs/z.md" = "h"\n')
     ok &= record_set(text, "own", "debt", "t/s.py") == text + "\n%s\n[own]\ndebt = \"t/s.py\"\n" % TABLE_NOTE["own"]
     ok &= tomllib.loads(record_set(record_set(text, "b", "y", "9"), "c", "k", 'q"uote'))["c"]["k"] == 'q"uote'
+    # the forms of a hand-edited record: a header with a comment or inner spaces, an indented or quoted key. And the
+    # forms that a line edit cannot change (an inline table, a dotted key): refused, never written as broken TOML
+    for hand in ("[own]  # held here\nnames = \"a.tsv\"\n", "[ own ]\nnames = \"a.tsv\"\n", "[own]\n  names = \"a.tsv\"\n",
+                 "[own]\n\"names\" = \"a.tsv\"\n", "[own]\n'names' = 'a.tsv'\n"):
+        got = tomllib.loads(record_set(record_set(hand, "own", "names", "b.tsv"), "own", "debt", "s.py"))
+        ok &= got == {"own": {"names": "b.tsv", "debt": "s.py"}}
+    for hand in ("own = { names = \"a.tsv\" }\n", "own.names = \"a.tsv\"\n", "[own\nnames = 1\n"):
+        try:
+            record_set(hand, "own", "debt", "s.py")
+            ok = False
+        except common.Fail:
+            pass
+    # a record that is not TOML: nothing is planned or written, and the edited copy below stays as it is
+    rec.write_text(entry + '\n[floor]\ngate = "make x\n', encoding="utf-8")
+    tool.write_text("# edited here\n")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rcs = [main([c, "--repo", str(repo)]) for c in ("plan", "apply", "audit")] + [main(["own", "gate", "x y", "--repo", str(repo)])]
+    said = buf.getvalue()
+    ok &= rcs == [1, 1, 1, 1] and all("%s FAIL config/psxdecomp.toml is not TOML" % c in said for c in ("PLAN", "APPLY", "AUDIT", "OWN"))
+    ok &= tool.read_text() == "# edited here\n"
+    ok &= [r[1] for r in doctor.check(repo, only=["record", "publish-tool"], offline=True)] == ["FAIL", "WARN"]
+    rec.write_text(entry, encoding="utf-8")
+    tool.write_bytes(OWNED[publish.VENDORED].read_bytes())
+    # an older, unedited copy with its recorded hash is the normal upgrade: written, and its hash moves. The same copy
+    # edited in the game is a manual line, and its recorded hash stays
+    tool.write_text("# psxdecomp 0.0.1's tool\n")
+    rec.write_text(record_set(entry, "delivered", publish.VENDORED, _sha(b"# psxdecomp 0.0.1's tool\n")), encoding="utf-8")
+    ok &= keys()["publish"]["owner"] == "psxdecomp" and "no hash" not in keys()["publish"]["why"]
+    tool.write_text("# psxdecomp 0.0.1's tool, edited\n")
+    ok &= "publish" not in keys() and keys()["publish-edited"]["owner"] == "manual" and "delivered" not in keys()
+    tool.write_text("# psxdecomp 0.0.1's tool\n")
+    ok &= set(written_paths(apply(repo, False, False))) == {publish.VENDORED, install.RECORD}
+    ok &= tool.read_bytes() == OWNED[publish.VENDORED].read_bytes() and common.read(rec) == entry
+    # a copy with no recorded hash (a record from before 0.6.0): written, and the plan line says what that costs
+    rec.write_text(entry.replace('"%s" = ' % publish.VENDORED, '"gone" = '), encoding="utf-8")
+    tool.write_text("# an older tool\n")
+    ok &= "no hash of %s was recorded" % publish.VENDORED in keys()["publish"]["why"]
+    tool.write_bytes(OWNED[publish.VENDORED].read_bytes())
+    rec.write_text(entry, encoding="utf-8")
+    # a record of a newer psxdecomp: one manual line, no write
+    rec.write_text(record_set(entry, "psxdecomp", "version", "99.0.0"), encoding="utf-8")
+    tool.write_text("# psxdecomp 99's tool\n")
+    ok &= [a["key"] for a in plan(repo)] == ["plugin-older"] and written_paths(apply(repo, False, False)) == []
+    ok &= tool.read_text() == "# psxdecomp 99's tool\n"
+    tool.write_bytes(OWNED[publish.VENDORED].read_bytes())
+    rec.write_text(entry, encoding="utf-8")
     # an owned file edited in the game: manual; the copy stays until its action is taken
     good = tool.read_bytes()
     tool.write_text("# edited here\n")
@@ -739,7 +909,13 @@ def self_test_record(repo: pathlib.Path) -> bool:
     ok &= publish.VENDORED in acts["publish-edited"]["what"] and "--take publish" in acts["publish-edited"]["what"]
     ok &= written_paths(apply(repo, False, False)) == [] and tool.read_text() == "# edited here\n"
     ok &= apply(repo, True, False, take=["publish"]) == ["would be changed %s" % publish.VENDORED]
-    ok &= written_paths(apply(repo, False, False, take=["publish", "nosuch"])) == [publish.VENDORED]
+    for wrong in ("nosuch", "publish-edited"):                           # a key that names no edited file is refused
+        try:
+            apply(repo, False, False, take=["publish", wrong])
+            ok = False
+        except common.Fail as e:
+            ok &= "--take %s" % wrong in str(e) and "`--take publish`" in str(e) and tool.read_text() == "# edited here\n"
+    ok &= written_paths(apply(repo, False, False, take=["publish"])) == [publish.VENDORED]
     ok &= tool.read_bytes() == good and common.read(rec) == entry and "publish-edited" not in keys()
     # [own]: a path of OWN_DETECT is proposed, recorded, and from then on not proposed
     path, value = OWN_DETECT["debt"]
@@ -758,6 +934,35 @@ def self_test_record(repo: pathlib.Path) -> bool:
     (repo / "kept").rename(repo / floor.BASELINE)
     for rel in (floor.ASM_EVIDENCE, floor.NAMES):
         (repo / rel).write_text("\t".join(LEDGER_HEAD[rel]) + "\n")
+    # each other key withholds what it replaces: the campaign templates, a rule, the names ledger, the matcher offer
+    plain = common.read(rec)
+    withheld = {"campaign": ("campaign", CAMPAIGN_DOC), "names": ("name-rule", "rules/NAME1.md"), "debt": ("fin-rule", "rules/FIN1.md")}
+    for own_key, (act_key, rel) in withheld.items():   # with no rules tool here a rule's action is a manual line
+        rec.write_text(plain if own_key == "debt" else record_set(plain, "own", own_key, "tools/mine.py"), encoding="utf-8")
+        held = (repo / rel).read_bytes() if (repo / rel).is_file() else None
+        if held is not None:
+            (repo / rel).unlink()
+        ok &= act_key not in keys() and rel not in written_paths(apply(repo, False, False)) and not (repo / rel).exists()
+        if held is not None:
+            (repo / rel).write_bytes(held)
+        rec.write_text(plain, encoding="utf-8")
+        ok &= own_key == "debt" or act_key in keys() or (repo / rel).is_file()   # the control: without the key it is due
+    (repo / floor.PLAN).write_text(floor.self_plan(closed=8))              # phase 1.8 open: the matcher is offered
+    common.write(repo / "tools/skill_add.py", "pass\n")
+    rec.write_text(plain, encoding="utf-8")
+    offered = "matcher" in keys()
+    rec.write_text(record_set(plain, "own", "matcher", ".claude/skills/mine"), encoding="utf-8")
+    ok &= offered and "matcher" not in keys()
+    (repo / floor.PLAN).unlink()
+    (repo / "tools/skill_add.py").unlink()
+    rec.write_text(plain, encoding="utf-8")
+    for own_key, (path2, value2) in OWN_DETECT.items():                    # each detect path proposes its key
+        made = not (repo / path2).exists()
+        if made:
+            common.write(repo / path2, "x\n") if "." in path2.rsplit("/", 1)[-1] else (repo / path2).mkdir(parents=True)
+        ok &= own_key in own_keys(repo)
+        if made:
+            (repo / path2).unlink() if (repo / path2).is_file() else (repo / path2).rmdir()
     (repo / path).unlink()
     ok &= doctor.own_missing(repo, record_tables(repo)["own"]) == ["debt = %s" % value]
     row = [r for r in doctor.check(repo, only=["record"], offline=True)]
@@ -794,8 +999,12 @@ def self_test_card(repo: pathlib.Path) -> bool:
     ok &= "card-conv" not in keys() and written_paths(apply(repo, False, False)) == []
     ok &= how.read_text(encoding="utf-8") == full
     how.write_text(asis)
-    rec.write_text("[psxdecomp\n", encoding="utf-8")                      # not TOML: read as adopted, the card stays
-    ok &= adopted(repo) and "card-conv" not in keys()
+    rec.write_text("[psxdecomp\n", encoding="utf-8")                      # not TOML: nothing is planned, the card stays
+    try:
+        keys()
+        ok = False
+    except common.Fail as e:
+        ok &= "is not TOML" in str(e) and how.read_text() == asis
     rec.write_text(adopt_rec.replace('bootstrapped = "adopted ', 'bootstrapped = "'), encoding="utf-8")
     ok &= not adopted(repo) and next(x for x in plan(repo) if x["key"] == "card-conv")["owner"] == "psxdecomp"
     ok &= written_paths(apply(repo, False, False)) == [doctor.CARD]       # bootstrapped: written, as before
@@ -827,7 +1036,7 @@ def self_test_card(repo: pathlib.Path) -> bool:
     last = buf.getvalue().strip().splitlines()[-1]
     ok &= "APPLY OK 1 write(s); nothing committed" in buf.getvalue()         # the card; the unchanged index is no write
     print("  card-conv: %s; last line: %s" % (act["what"][:44], last[:60]))
-    ok &= how.read_text() == done and last.startswith("COMMIT git add -- %s && git commit -m " % doctor.CARD)
+    ok &= how.read_text() == done and last.startswith("COMMIT git add -- %s " % doctor.CARD) and " && git commit -m " in last
     how.write_text(asis)
     rec.write_text(adopt_rec, encoding="utf-8")
     return ok and "card-conv" not in keys()
@@ -901,7 +1110,8 @@ def self_test_style(repo: pathlib.Path) -> bool:
     ok &= acts()["ste-rule"]["owner"] == "psxdecomp" and not rule.exists()
     rules = [common.rule_paths(rid)[0] for rid in common.PROFILE_RULES]
     ok &= rules == [common.STE_RULE, "rules/FIN1.md", "rules/NAME1.md"] and {"fin-rule", "name-rule"} <= set(acts())
-    ok &= apply(repo, True, False) == ["would be created %s" % x for r in rules for x in (r, common.STE_INDEX)]
+    ok &= apply(repo, True, False) == ["would be created %s" % x for r in rules for x in (r, common.STE_INDEX)] + [
+        "would be changed %s" % install.RECORD]                           # the record, last: the hash of each rule's body
     ok &= not rule.exists() and {common.STE_RULE, common.STE_INDEX} <= set(written_paths(apply(repo, False, False)))
     text = common.read(rule)
     ok &= text.startswith("# STE1 — %s\nid: STE1 · group: STE · status: active · tags: writing,public · origin: psxdecomp"
@@ -909,21 +1119,30 @@ def self_test_style(repo: pathlib.Path) -> bool:
     ok &= "\nSTE1 | %s | writing,public | active | psxdecomp\n" % common.STE_TITLE in common.read(repo / common.STE_INDEX)
     ok &= not {"ste-rule", "fin-rule", "name-rule"} & set(acts())
     fin = common.read(repo / "rules/FIN1.md")
-    ok &= fin.startswith("# FIN1 — %s\nid: FIN1 · group: FIN · " % common.FIN_TITLE) and '"matched, not finished"' in fin
+    ok &= fin.startswith("# FIN1 — %s\nid: FIN1 · group: FIN · " % common.FIN_TITLE) and "call it matched and name its debt" in fin
     ok &= "\nNAME1 | %s | readability,names | active | psxdecomp\n" % common.NAME_TITLE in common.read(repo / common.STE_INDEX)
     rule.write_text(re.sub(r"added: \S+", "added: 2001-01-01", text), encoding="utf-8")
     ok &= "added: 2001" in common.read(rule) and "ste-rule" not in acts()     # the date line is never compared
+    # a rule edited in the game: its recorded hash makes it a manual line, and `--take` rewrites it
     rule.write_text(text + "\nAn edit.\n", encoding="utf-8")
-    ok &= "ste-rule: rewrite " in acts()["ste-rule"]["what"]
-    ok &= apply(repo, True, False) == ["would be changed %s" % x for x in (common.STE_RULE, common.STE_INDEX)]
-    tool.write_text("import sys\nsys.exit('refused: not today')\n")      # the tool's refusal is a failure, with its text
-    try:
-        apply(repo, False, False)
-        ok = False
-    except common.Fail as e:
-        ok &= "refused: not today" in str(e)
+    ok &= record_tables(repo)["delivered"][common.STE_RULE] == _sha(common.read(common.rule_paths("STE1")[1]).strip().encode("utf-8"))
+    ok &= "ste-rule" not in acts() and acts()["ste-rule-edited"]["owner"] == "manual"
+    ok &= written_paths(apply(repo, False, False)) == [] and "An edit." in common.read(rule)
+    ok &= apply(repo, True, False, take=["ste-rule"]) == ["would be changed %s" % x for x in (common.STE_RULE, common.STE_INDEX)]
+    # the tool's refusal fails its own rule and nothing else: the other writes are made and printed, and exit 1
+    tool.write_text("import sys\nsys.exit('refused: not today')\n")
+    (repo / floor.GUARD).rename(repo / "kept.tsv")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(["apply", "--take", "ste-rule", "--repo", str(repo)])
+    out = buf.getvalue()
+    ok &= rc == 1 and "APPLY FAIL tools/rules_add.py did not write" in out and "refused: not today" in out
+    ok &= "APPLY created %s" % floor.GUARD in out and "APPLY FAIL 1 write(s)" in out and "COMMIT " not in out
+    ok &= (repo / floor.GUARD).is_file() and "An edit." in common.read(rule)
+    (repo / "kept.tsv").replace(repo / floor.GUARD)
     tool.write_text(RULES_STUB, encoding="utf-8")
-    ok &= written_paths(apply(repo, False, False)) == [common.STE_RULE] and common.read(rule) == text   # the index: as is
+    ok &= written_paths(apply(repo, False, False, take=["ste-rule"])) == [common.STE_RULE] and common.read(rule) == text   # the index: as is
+    ok &= not {"ste-rule", "ste-rule-edited", "delivered"} & set(acts())
     # ai-policy: the block's three lines, the rest byte for byte; the ratchet is written after it, once
     readme, block, aged = repo / "README.md", common.ai_policy_block(), "# G\n\nLead.\n\n%s\n## Status\n\nOurs; kept.\n"
     old = block.replace("decisions. AI reads", "decisions; AI reads")
@@ -1012,7 +1231,7 @@ def self_test() -> int:
         ok &= (repo / floor.NAMES).read_text() == "\t".join(floor.NAME_COLUMNS) + "\n"
         ok &= (repo / floor.ASM_EVIDENCE).read_text() == "\t".join(floor.ASM_COLUMNS) + "\n"
         base = (repo / floor.BASELINE).read_text()
-        ok &= base.endswith("mode admit\nskip include/include_asm.h\n") and base.startswith("# %s: " % floor.BASELINE)
+        ok &= base.endswith("mode admit\n") and "skip " not in base and base.startswith("# %s: " % floor.BASELINE)
         ok &= "would be created %s" % floor.BASELINE in dry and dry.index("would be created %s" % floor.NAMES) < dry.index(
             "would be created %s" % floor.BASELINE)
         ok &= (repo / floor.VENDORED).read_bytes() == OWNED[floor.VENDORED].read_bytes() and os.access(repo / floor.VENDORED, os.X_OK)
@@ -1075,7 +1294,7 @@ def self_test() -> int:
         card.write_text("an edited copy\n")                # owned and edited here: manual, never overwritten unasked
         acts = {x["key"]: x for x in plan(repo)}
         ok &= "split-doc" not in acts and acts["split-doc-edited"]["owner"] == "manual"
-        ok &= "`upgrade apply --take split-doc`" in acts["split-doc-edited"]["what"]
+        ok &= "`/psxdecomp:upgrade apply --take split-doc`" in acts["split-doc-edited"]["what"]
         ok &= written_paths(apply(repo, False, False)) == [] and card.read_text() == "an edited copy\n"
         ok &= written_paths(apply(repo, False, False, take=["split-doc"])) == ["docs/ops/psxdecomp-split.md"]
         ok &= card.read_bytes() == SPLIT_OWNED["docs/ops/psxdecomp-split.md"].read_bytes()

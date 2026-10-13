@@ -369,6 +369,13 @@ def render_index(rows: list[dict], refs_rel: str = REFS_REL, authority=(), traps
     return "\n".join(out)
 
 
+def patched(dest: pathlib.Path) -> bool:
+    """A fetched checkout has a changed or deleted tracked file. A file that the upstream does not track (a build
+    output, a note) patches nothing, and `git checkout .`, the fix that the DIRTY line names, would not remove it."""
+    return (dest / ".git").is_dir() and bool(common.git(
+        dest, "status", "--porcelain", "--untracked-files=no", check=False).stdout.strip())
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", default=".")
@@ -425,8 +432,7 @@ def main(argv=None) -> int:
             elif head != want:
                 print("DRIFT %s at %s, pinned %s" % (r["name"], head[:12], want[:12]))
                 bad += 1
-            elif (repo / "refs" / r["name"] / ".git").is_dir() and common.git(
-                    repo / "refs" / r["name"], "status", "--porcelain", check=False).stdout.strip():
+            elif patched(repo / "refs" / r["name"]):
                 print("DIRTY %s has local changes: a patched reference is not the pinned one (`git -C refs/%s "
                       "checkout .` restores it)" % (r["name"], r["name"]))
                 bad += 1
@@ -550,6 +556,21 @@ def self_test() -> int:
             drift = main(["--repo", str(repo), "--check"]) == 1
         print("  control %-11s %s" % ("drift", "refused" if drift else "NOT REFUSED"))
         ok &= drift
+    with tempfile.TemporaryDirectory() as td:                          # DIRTY: a tracked change, never an untracked file
+        up = pathlib.Path(td)
+        common.git(up, "init", "--quiet")
+        (up / "a.txt").write_text("a\n")
+        common.git(up, "add", "a.txt")
+        common.git(up, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false",
+                   "commit", "--quiet", "-m", "a")
+        clean = patched(up)
+        (up / "notes.txt").write_text("mine\n")
+        untracked = patched(up)
+        (up / "a.txt").write_text("b\n")
+        edited = patched(up)
+        common.git(up, "checkout", ".")
+        print("  DIRTY: clean %s, an untracked file %s, a tracked edit %s, after `checkout .` %s" % (clean, untracked, edited, patched(up)))
+        ok &= (clean, untracked, edited, patched(up)) == (False, False, True, False)
     # lint_scope: unscoped claims flagged; a date, a scope key, a fence, a heading or a table header clears them
     doc = ("# T\nBFM used gcc 2.7.2.\nbfm in lower case and `gcc-2.7.2-src` are not claims.\n"
            "PsyQ 4.7 (seen 2026-10-01).\n```\nmmx6 example\n```\n## Leads (scope: 2026-10-01)\nX6 uses aspsx 2.86.\n"

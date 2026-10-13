@@ -291,16 +291,16 @@ def pa3_manages_settings(repo: pathlib.Path) -> bool:
 def deny_missing(repo: pathlib.Path) -> tuple[list[str], str | None]:
     """(the profile's deny rules the game's .claude/settings.json lacks, why psxdecomp cannot add them or None)."""
     want = json.loads(read(PROFILE_DENY))["permissions"]["deny"]
-    if pa3_manages_settings(repo):
-        return want, "PA3 manages %s here" % SETTINGS
+    managed = "PA3 manages %s here" % SETTINGS if pa3_manages_settings(repo) else None
     f = repo / SETTINGS
     try:
         conf = json.loads(read(f)) if f.is_file() else {}
         have = conf.get("permissions", {}).get("deny", [])
         assert isinstance(conf, dict) and isinstance(have, list)
     except (ValueError, AttributeError, AssertionError):
-        return want, "%s is not a JSON object with a permissions.deny list" % SETTINGS
-    return [r for r in want if r not in have], None
+        return want, managed or "%s is not a JSON object with a permissions.deny list" % SETTINGS
+    missing = [r for r in want if r not in have]
+    return missing, managed if missing else None       # a file that holds every rule needs no hand
 
 
 def with_denies(repo: pathlib.Path, missing: list[str]) -> str:
@@ -311,11 +311,17 @@ def with_denies(repo: pathlib.Path, missing: list[str]) -> str:
 
 
 # ---- the profile's hooks (profiles/psx/hooks.json: `style --hook` after a write, `guard --hook` before a call): S10
-# writes them, upgrade adds any missing. A group is present when a group of the same event holds a hook with its
-# command. The guard's group ends in `|| exit 0`: a hook that cannot start must never stop a tool call ---------------
+# writes them, upgrade adds any missing. A group is present when a group of the same event holds a hook of its kind:
+# a command with the kind's words (HOOK_KINDS), whatever interpreter the game set for it. Each command ends in
+# `|| exit 0`: a hook that cannot start (no tool yet, a Python with no tomllib) must never stop or disturb a call.
+# A group that holds a command psxdecomp wrote before (HOOK_BEFORE) is stale: upgrade writes the current one in place.
 PROFILE_HOOKS = PLUGIN_ROOT / "profiles" / "psx" / "hooks.json"
 PROFILE_GUARD = PLUGIN_ROOT / "profiles" / "psx" / "guard.tsv"
 HOOK_KINDS = (("style-hook", "style --hook"), ("guard-hook", "guard --hook"))   # (upgrade's action, the command's words)
+HOOK_BEFORE = {                                         # kind: (the commands, the matchers) of earlier versions
+    "style-hook": (('python3 "$CLAUDE_PROJECT_DIR/tools/psxd_publish.py" style --hook',), ()),
+    "guard-hook": ((), ("Bash|Edit|Write",)),
+}
 
 
 def hook_kind(group: dict) -> str:
@@ -337,22 +343,57 @@ def hooks_missing(repo: pathlib.Path) -> tuple[list[tuple[str, dict]], str | Non
     """(the profile's (event, hook group) pairs the game's .claude/settings.json lacks, why psxdecomp cannot add them
     or None)."""
     want = [(ev, g) for ev, groups in json.loads(read(PROFILE_HOOKS))["hooks"].items() for g in groups]
-    if pa3_manages_settings(repo):
-        return want, "PA3 manages %s here" % SETTINGS
+    managed = "PA3 manages %s here" % SETTINGS if pa3_manages_settings(repo) else None
     f = repo / SETTINGS
     try:
         have = (json.loads(read(f)) if f.is_file() else {}).get("hooks", {})
-        cmds = {ev: {h.get("command") for g in have.get(ev, []) for h in g.get("hooks", [])} for ev, _ in want}
+        cmds = {ev: " \n".join(str(h.get("command")) for g in have.get(ev, []) for h in g.get("hooks", [])) for ev, _ in want}
     except (ValueError, AttributeError, TypeError):
-        return want, "%s is not a JSON object with hook groups under `hooks`" % SETTINGS
-    return [(ev, g) for ev, g in want if not {h["command"] for h in g["hooks"]} <= cmds[ev]], None
+        return want, managed or "%s is not a JSON object with hook groups under `hooks`" % SETTINGS
+    words = dict(HOOK_KINDS)
+    missing = [(ev, g) for ev, g in want if words[hook_kind(g)] not in cmds[ev]]
+    return missing, managed if missing else None
 
 
-def with_hooks(repo: pathlib.Path, missing: list[tuple[str, dict]], base: str | None = None) -> str:
-    """The settings text with the missing groups, each at the end of its event's list. `base`: the text to add to in
-    place of the file's (with_denies' result, so that one write holds both)."""
+def hooks_stale(repo: pathlib.Path) -> list[tuple[str, dict]]:
+    """The profile's (event, hook group) pairs whose group in .claude/settings.json holds what an earlier psxdecomp
+    wrote (HOOK_BEFORE): the same command with another timeout, an earlier command, an earlier matcher. A command the
+    game changed itself (another interpreter) is the game's and is never stale. [] where PA3 manages the file."""
+    f = repo / SETTINGS
+    if pa3_manages_settings(repo) or not f.is_file():
+        return []
+    try:
+        have = json.loads(read(f)).get("hooks", {})
+        out = []
+        for ev, groups in json.loads(read(PROFILE_HOOKS))["hooks"].items():
+            for g in groups:
+                before, matchers = HOOK_BEFORE[hook_kind(g)]
+                mine = g["hooks"][0]
+                for old in have.get(ev, []):
+                    for h in old.get("hooks", []):
+                        ours = h.get("command") == mine["command"] or h.get("command") in before
+                        if ours and (h != mine or old.get("matcher") in matchers):
+                            out.append((ev, g))
+        return [x for i, x in enumerate(out) if x not in out[:i]]
+    except (ValueError, AttributeError, TypeError, KeyError, IndexError):
+        return []
+
+
+def with_hooks(repo: pathlib.Path, missing: list[tuple[str, dict]], base: str | None = None, stale=()) -> str:
+    """The settings text with the missing groups, each at the end of its event's list, and with each stale group's
+    hook (and its matcher, when it is an earlier psxdecomp matcher) replaced where it stands. `base`: the text to add
+    to in place of the file's (with_denies' result, so that one write holds both)."""
     f = repo / SETTINGS
     conf = json.loads(base if base is not None else read(f) if f.is_file() else "{}")
+    for ev, group in stale:
+        before, matchers = HOOK_BEFORE[hook_kind(group)]
+        mine = group["hooks"][0]
+        for old in conf.get("hooks", {}).get(ev, []):
+            for i, h in enumerate(old.get("hooks", [])):
+                if h.get("command") == mine["command"] or h.get("command") in before:
+                    old["hooks"][i] = dict(mine)
+                    if old.get("matcher") in matchers:
+                        old["matcher"] = group["matcher"]
     for ev, group in missing:
         conf.setdefault("hooks", {}).setdefault(ev, []).append(group)
     return json.dumps(conf, indent=2, ensure_ascii=False) + "\n"
@@ -366,8 +407,9 @@ def settings_due(repo: pathlib.Path) -> str | None:
     if missing and not why:
         text = with_denies(repo, missing)
     hooks, why = hooks_missing(repo)
-    if hooks and not why:
-        text = with_hooks(repo, hooks, text)
+    stale = hooks_stale(repo)
+    if (hooks and not why) or stale:
+        text = with_hooks(repo, [] if why else hooks, text, stale)
     return text
 
 
@@ -379,9 +421,9 @@ STE_RULE, STE_INDEX, STE_TOOL = "rules/STE1.md", "rules/INDEX.md", "tools/rules_
 STE_TITLE = ("Public files (`config/public-paths.txt`) follow `rules/STE1.md`. Read it before you write one. An "
              "instruction has at most 20 words, a description at most 25. A paragraph has at most 6 sentences. Use no "
              "semicolon: write two sentences. Put the condition before the command.")
-FIN_TITLE = ("A source file is finished only when it is matched and has no readability debt (`rules/FIN1.md`; "
-             "`python3 tools/psxd_floor.py debt`). Until then say \"matched, not finished\".")
-NAME_TITLE = ("A name needs recorded evidence (`rules/NAME1.md`; `config/names.tsv`). A byte-identical build proves "
+FIN_TITLE = ("A source file is finished only when it is matched and has no readability debt (`rules/FIN1.md`, "
+             "`python3 tools/psxd_floor.py debt`). Until then, call it matched and say that it has readability debt.")
+NAME_TITLE = ("A name needs recorded evidence (`rules/NAME1.md`, `config/names.tsv`). A byte-identical build proves "
               "behaviour, not a name. Keep the placeholder until there is evidence.")
 # id: (group, tags, title, upgrade's action, what the rule is, the [own] key that replaces it)
 PROFILE_RULES = {

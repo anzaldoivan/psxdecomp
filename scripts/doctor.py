@@ -106,15 +106,22 @@ def base_rows(repo: pathlib.Path, add):
     comp = common.compat()
     rec = repo / "config" / "psxdecomp.toml"
     if rec.is_file():
-        r = common.load_toml(rec)
-        gone = own_missing(repo, r.get("own") or {})
-        add("record", "WARN" if gone else "OK", "psxdecomp %s, profile %s, bootstrapped %s%s" % (
-            r["psxdecomp"]["version"], r["psxdecomp"]["profile"], r["psxdecomp"]["bootstrapped"],
-            "; [own] names what this repository does not hold: %s (psxdecomp delivers nothing for these keys)"
-            % ", ".join(gone) if gone else ""))
-        sdk = sdk_row(r.get("psyq"), repo, os.environ.get("PSXDECOMP_BYO_PSYQ_PATH"))
-        if sdk:
-            add("sdk", *sdk)
+        try:
+            r = common.load_toml(rec)
+        except Exception as e:                         # noqa: BLE001 — a hand edit with a typo: the row says where
+            r = None
+            add("record", "FAIL", "config/psxdecomp.toml is not TOML (%s): repair it. Until then psxdecomp reads no "
+                "[own] key and no [delivered] hash, and /psxdecomp:upgrade refuses to run" % str(e)[:120])
+        if r is not None:
+            me = r.get("psxdecomp") if isinstance(r.get("psxdecomp"), dict) else {}
+            gone = own_missing(repo, _table(r, "own"))
+            add("record", "WARN" if gone else "OK", "psxdecomp %s, profile %s, bootstrapped %s%s" % (
+                me.get("version", "?"), me.get("profile", "?"), me.get("bootstrapped", "?"),
+                "; [own] names what this repository does not hold: %s (psxdecomp delivers nothing for these keys)"
+                % ", ".join(gone) if gone else ""))
+            sdk = sdk_row(r.get("psyq"), repo, os.environ.get("PSXDECOMP_BYO_PSYQ_PATH"))
+            if sdk:
+                add("sdk", *sdk)
     else:
         add("record", "WARN", "no config/psxdecomp.toml (not bootstrapped by psxdecomp; /psxdecomp:upgrade adopts it)")
     pa = repo / ".claude" / "pa.json"
@@ -187,20 +194,56 @@ def base_rows(repo: pathlib.Path, add):
         add("card", *card)
 
 
+def _table(rec: dict, name: str) -> dict:
+    """A table of the record, or {} when the record holds another thing under that name."""
+    t = rec.get(name)
+    return t if isinstance(t, dict) else {}
+
+
+RUNNERS = {"python", "python3", "bash", "sh", "zsh", "env", "exec", "time", "nice", "uv", "run"}
+
+
+def make_targets(repo: pathlib.Path) -> set[str] | None:
+    """Every target of the repository's makefiles: the Makefile with what it includes (publish.makefile_targets), and
+    the *.mk files beside it, under mk/ and under config/ (an include through a variable is not followed). None with
+    no makefile at all."""
+    out = publish.makefile_targets(repo)
+    files = sorted(repo.glob("*.mk")) + sorted(repo.glob("mk/*.mk")) + sorted(repo.glob("config/*.mk"))
+    for mk in files:
+        for line in (publish._read(mk) or "").splitlines():
+            m = re.match(r"^([^\s:#=$][^:=]*?)\s*::?(?!=)", line)
+            if m:
+                out = (out or set()) | {t for t in m[1].split() if "%" not in t}
+    return out
+
+
 def own_missing(repo: pathlib.Path, own: dict) -> list[str]:
-    """`<key> = <value>` for each [own] entry that names nothing here. A value is a path, or a command: `make <target>`
-    needs the target in a makefile of the repository, any other command needs its last word that is a path."""
+    """`<key> = <value>` for each [own] entry that names nothing here. A value is a path or a command. A command that
+    runs `make` needs each target it names in a makefile of the repository (a bare `make` needs a makefile). Any other
+    command needs the script it runs: the first word that is a path of the repository, or `-m package.module`. A
+    command that names neither (a wrapper around a tool of the machine) is taken as it is."""
     out = []
     for key, value in own.items():
         words = str(value).split()
-        if words[:1] == ["make"] and len(words) > 1:
-            target = next((w for w in words[1:] if not w.startswith("-") and "=" not in w), "")
-            files = [repo / "Makefile"] + sorted(repo.glob("*.mk")) + sorted(repo.glob("mk/*.mk")) + sorted(repo.glob("config/*.mk"))
-            ok = bool(target) and any(re.search(r"^%s\b[^=\n]*:" % re.escape(target), common.read(f), re.M)
-                                      for f in files if f.is_file())
+        if any(os.path.basename(w) == "make" for w in words):
+            have = make_targets(repo)
+            ok = have is not None and all(t in have for t in publish.make_targets_named(str(value)))
         else:
-            path = next((w for w in reversed(words) if "/" in w or (repo / w).exists()), "")
-            ok = bool(path) and (repo / path).exists()
+            script, mod = None, False
+            for w in words:
+                if mod:
+                    script = w.replace(".", "/") + ".py"
+                    if not (repo / script).exists():
+                        script = w.replace(".", "/") + "/__main__.py"
+                    break
+                if w == "-m":
+                    mod = True
+                elif not w.startswith("-") and "=" not in w and os.path.basename(w) not in RUNNERS \
+                        and ("/" in w or (repo / w).exists() or re.search(r"\.(?:py|sh|tsv|toml|md|txt|mk)$", w)):
+                    script = w
+                    break
+            ok = bool(words) and (script is None and words[0] not in RUNNERS and len(words) > 1 or
+                                  script is not None and (repo / script).exists())
         if not ok:
             out.append("%s = %s" % (key, value))
     return out
@@ -234,7 +277,7 @@ def floor_rows(repo: pathlib.Path) -> list[tuple[str, tuple[str, str]]]:
     is not due says WAIT with the phase that makes it due; an [own] key answers its row (the record row checks that
     its path exists)."""
     rec, state = _record(repo), floor.phase_state(repo)
-    own = rec.get("own") or {}
+    own = _table(rec, "own")
     debt = None
     if "debt" not in own or "names" not in own:
         try:
@@ -246,23 +289,26 @@ def floor_rows(repo: pathlib.Path) -> list[tuple[str, tuple[str, str]]]:
 
 
 def gate_row(repo: pathlib.Path, state: dict, rec: dict) -> tuple[str, str]:
-    """Due when phase 1.3 is closed: one acceptance-gate command (`[own] gate`, `[floor] gate`, or a `verify` make
-    target) and at least one config/check.*.sha. WARN; FAIL once phase 1.9 is closed."""
+    """Due when phase 1.3 is closed: one acceptance-gate command (`[floor] gate`, or a `verify` make target) and at
+    least one config/check.*.sha. WARN; FAIL once phase 1.9 is closed. `[own] gate` answers the row."""
     if state[3] != "closed":
         return "WAIT", "due when phase 1.3 closes: one gate command (`make verify`) and the hash files that it checks"
-    own, fl = rec.get("own") or {}, rec.get("floor") or {}
-    cmd = own.get("gate") or fl.get("gate") or (None if own_missing(repo, {"gate": "make verify"}) else "make verify")
+    own, fl = _table(rec, "own"), _table(rec, "floor")
+    if own.get("gate"):                                # the game's own gate holds its own hashes; the record row checks the command
+        return "OK", "the game's own gate: `%s`" % own["gate"]
+    cmd = fl.get("gate") or (None if own_missing(repo, {"gate": "make verify"}) else "make verify")
     hashes = len(list((repo / "config").glob("check.*.sha")))
     bad = []
     if not cmd:
-        bad.append("no gate command: add a `verify` make target, or record `[floor] gate`, or `upgrade own gate \"<command>\"`")
+        bad.append("no gate command: add a `verify` make target, or record `[floor] gate`, or ask "
+                   "`/psxdecomp:upgrade own gate \"<command>\"` for a gate of your own")
     elif own_missing(repo, {"gate": cmd}):
         bad.append("the gate `%s` names no make target or path of this repository" % cmd)
     if not hashes:
         bad.append("no config/check.*.sha (the hash of each built binary)")
     if bad:
         return ("FAIL" if state[9] == "closed" else "WARN"), "; ".join(bad)
-    return "OK", "gate `%s`%s; %d hash file(s)" % (cmd, " ([own])" if own.get("gate") else "", hashes)
+    return "OK", "gate `%s`; %d hash file(s)" % (cmd, hashes)
 
 
 def toolchain_row(repo: pathlib.Path, state: dict, own: dict) -> tuple[str, str]:
@@ -297,23 +343,24 @@ def names_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, st
         return "FAIL", "%s%s (`python3 %s names`)" % ("; ".join(fails[:2]), "; …" if len(fails) > 2 else "", floor.VENDORED)
     if state[4] != "closed":
         return "WAIT", "due when phase 1.4 closes: %s and %s" % (floor.NAMES, floor.ASM_EVIDENCE)
-    gone = [rel for rel in (floor.NAMES, floor.ASM_EVIDENCE) if not (repo / rel).is_file()]
+    mine = (floor.NAMES,) if own.get("debt") else (floor.NAMES, floor.ASM_EVIDENCE)   # [own] debt holds the assembly's reasons
+    gone = [rel for rel in mine if not (repo / rel).is_file()]
     if gone:
         return "WARN", "no %s — `python3 %s names --init` writes the header line" % (" and no ".join(gone), floor.VENDORED)
     unbased = sum(n for (kind, _), n in debt["counts"].items() if kind == "unbased") if isinstance(debt, dict) else 0
     rows = next((f[1] for f in found if f[1].startswith(floor.NAMES)), floor.NAMES)
-    return "OK", "%s; %d function(s) in src/ with no accepted or provisional row" % (rows, unbased)
+    return "OK", "%s; %d function(s) in src/ with no accepted row" % (rows, unbased)
 
 
 def debt_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, str]:
-    """Due with the first tracked C file under src/: config/debt-baseline.txt is equal to the tree (or `[own] debt`).
-    FAIL on a rise, a stale row or a baseline that does not parse; WARN with no baseline, and on `mode admit` once
-    phase 1.8 is closed."""
+    """Due with the first tracked C file under src/, or with the first count or row (a header or an assembly file is
+    counted before any C file is): config/debt-baseline.txt is equal to the tree (or `[own] debt`). FAIL on a rise, a
+    stale row or a baseline that does not parse; WARN with no baseline, and on `mode admit` once phase 1.8 is closed."""
     if own.get("debt"):
         return "OK", "the game's own debt scanner: %s" % own["debt"]
     if isinstance(debt, Exception):
         return "FAIL", str(debt)
-    if not floor.tracked(repo, "src/**/*.c", "src/*.c"):
+    if not (debt["counts"] or debt["rows"] or floor.tracked(repo, "src/**/*.c", "src/*.c")):
         return "WAIT", "due with the first C file under src/: %s%s" % (
             floor.BASELINE, "" if debt["baseline"] else " (/psxdecomp:upgrade apply writes it)")
     totals = floor._totals(debt["counts"])
@@ -321,7 +368,8 @@ def debt_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, str
         return "WARN", "no %s (the tree holds: %s) — /psxdecomp:upgrade apply writes it" % (floor.BASELINE, totals)
     if debt["rise"] or debt["stale"]:
         return "FAIL", "%d count(s) over their row, %d row(s) over their count (`python3 %s debt` lists them; " \
-                       "`debt --update` rewrites the baseline)" % (len(debt["rise"]), len(debt["stale"]), floor.VENDORED)
+                       "`debt --update%s` rewrites the baseline)" % (
+                           len(debt["rise"]), len(debt["stale"]), floor.VENDORED, " --admit" if debt["rise"] else "")
     if debt["mode"] == "admit" and state[8] == "closed":
         return "WARN", "the baseline is equal to the tree (%s) and still in `mode admit` after phase 1.8 closed: " \
                        "`python3 %s debt --down` lets a count only fall" % (totals, floor.VENDORED)
@@ -373,20 +421,37 @@ def readme_row(text: str | None, repo: pathlib.Path | None = None) -> tuple[str,
     if repo is None:
         return "OK", "README.md is on the README standard (not linted: no repository)"
     st, detail = publish.lint_summary(publish.lint(text, publish.Ctx(repo)))
-    return st, "README.md %s%s" % (detail, "" if st == "OK" else " (tools/psxd_publish.py lint README.md)")
+    mine = publish._read(repo / publish.VENDORED)
+    older = st != "OK" and mine is not None and mine != common.read(common.PLUGIN_ROOT / "scripts" / "publish.py")
+    return st, "README.md %s%s" % (detail, "" if st == "OK" else (
+        " (the repository's tools/psxd_publish.py is not this psxdecomp's: run /psxdecomp:upgrade first, it writes the "
+        "tool and the generated blocks)" if older else " (tools/psxd_publish.py lint README.md)"))
 
 
 def publish_tool_row(repo: pathlib.Path) -> tuple[str, str]:
     """Every file psxdecomp owns here (upgrade.DELIVERY: the two vendored tools, the README workflow, the floor's
     reference, in split mode the operator's card) is psxdecomp's current one. Never FAIL."""
     import upgrade
-    due = upgrade.owned_due(repo)
+    try:
+        due = upgrade.owned_due(repo)
+    except common.Fail as e:                           # the record does not parse: the record row says it; nothing is compared
+        return "WARN", "not compared: %s" % str(e)[:100]
     off = ["%s %s" % (path, "missing" if not (repo / path).is_file() else
                       "edited here" if st == "edited" else "differs from psxdecomp %s's" % common.plugin_version())
            for path, (_, st) in due.items() if st]
     if off:
         return "WARN", "%s — /psxdecomp:upgrade apply writes them%s" % ("; ".join(off), (
             " (an edited file only with `--take`)" if any(st == "edited" for _, st in due.values()) else ""))
+    pub = repo / publish.PUBLIC_PATHS_REL
+    if pub.is_file():                                  # split mode: the public workflow runs the two tools in the public tree
+        listed = publish.parse_public_paths(common.read(pub))
+        wf = publish._read(repo / publish.WORKFLOW) or ""
+        gone = [t for t in (publish.VENDORED, floor.VENDORED) if t in wf and publish.is_listed(listed, publish.WORKFLOW)
+                and not publish.is_listed(listed, t)]
+        if gone:
+            return "WARN", "%s runs %s, and %s does not list %s: the workflow fails in the public repository at the " \
+                           "next release — add %s to the list" % (publish.WORKFLOW, " and ".join(gone), publish.PUBLIC_PATHS_REL,
+                                                                 "it" if len(gone) == 1 else "them", ", ".join(gone))
     return "OK", "%d owned file(s) are psxdecomp %s's: %s" % (len(due), common.plugin_version(), ", ".join(due))
 
 
@@ -408,7 +473,7 @@ def guard_row(repo: pathlib.Path) -> tuple[str, str]:
     psxdecomp cannot edit the settings, and when there is no rules file (the guard then allows every call)."""
     want = sum(len(g) for g in json.loads(common.read(common.PROFILE_HOOKS))["hooks"].values())
     missing, why = common.hooks_missing(repo)
-    text = common.read(repo / floor.GUARD) if (repo / floor.GUARD).is_file() else None
+    text = floor._read(repo / floor.GUARD) if (repo / floor.GUARD).is_file() else None
     errs = floor.guard_errors(text) if text is not None else []
     if why:
         return "WARN", "%s; add the hook groups of profiles/psx/hooks.json by hand" % why
@@ -417,6 +482,11 @@ def guard_row(repo: pathlib.Path) -> tuple[str, str]:
             len(missing), want, common.SETTINGS, ", ".join(sorted({common.hook_kind(g) for _, g in missing})))
     if errs:
         return "FAIL", "%s: %s" % (floor.GUARD, "; ".join(errs[:3]))
+    stale = common.hooks_stale(repo)
+    if stale:
+        return "WARN", "%d hook group(s) of %s hold an older psxdecomp command (%s): a hook that cannot start, or a " \
+                       "pattern that hangs, can disturb a call — /psxdecomp:upgrade apply writes the current one" % (
+                           len(stale), common.SETTINGS, ", ".join(sorted({common.hook_kind(g) for _, g in stale})))
     if text is None:
         return "WARN", "no %s: the guard hook allows every call — /psxdecomp:upgrade apply writes the default rules" % floor.GUARD
     return "OK", "all %d hook group(s) are in %s; %s holds %d rule(s)" % (
@@ -730,6 +800,19 @@ def public_head(slug: str) -> str | None:
         return None
 
 
+def builds_report(repo: pathlib.Path, texts: dict[str, str]) -> bool:
+    """A workflow uploads a `<EXE>_report` artifact in a step that is not commented out. The split build workflow
+    uploads it only once config/categories.tsv exists: before that its report steps do nothing."""
+    for text in texts.values():
+        live = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+        if not any("_report" in name for name, _ in _uploads(live)):
+            continue
+        if any(k in text for k in SPLIT_KEYS.values()) and not (repo / publish.CATEGORIES_REL).is_file():
+            continue
+        return True
+    return False
+
+
 def progress_row(repo: pathlib.Path, fetch, head=None) -> tuple[str, str] | None:
     """With a report workflow: WARN on any lint finding or when decomp.dev does not list the repo (in split mode the
     public [public].repo: decomp.dev registers the public repo, never the private `-dev` origin). Without one: WAIT
@@ -737,16 +820,20 @@ def progress_row(repo: pathlib.Path, fetch, head=None) -> tuple[str, str] | None
     `head`: a function from OWNER/REPO to the head commit of its default branch; WARN when decomp.dev shows another."""
     wf = repo / ".github" / "workflows"
     texts = {p.name: common.read(p) for p in sorted(wf.glob("*.y*ml"))} if wf.is_dir() else {}
-    if not any(REPORT_HINT.search(t) for t in texts.values()):
+    found = lint_workflows(texts)
+    if not builds_report(repo, texts):
         phase = floor.phase_state(repo)[9]
-        need = "a workflow that uploads the `<EXE>_report` artifact (psxdecomp's docs/PUBLISHING.md)"
+        need = "a workflow that uploads the `<EXE>_report` artifact (psxdecomp's docs/PUBLISHING.md%s)" % (
+            "; the split build workflow uploads it from the first config/categories.tsv"
+            if any(k in t for t in texts.values() for k in SPLIT_KEYS.values()) else "")
+        if phase == "closed":
+            return "FAIL", "phase 1.9 is closed and no workflow builds a decomp.dev report: the published number has " \
+                           "no source. It needs %s" % need
+        if found:                                      # a workflow that is being written: its safety findings count now
+            return "WARN", "; ".join(found)
         if phase in ("absent", "pending"):
             return "WAIT", "due when phase 1.9 opens: %s" % need
-        if phase == "open":
-            return "WARN", "phase 1.9 is open and no workflow builds a decomp.dev report: it needs %s" % need
-        return "FAIL", "phase 1.9 is closed and no workflow builds a decomp.dev report: the published number has no " \
-                       "source. It needs %s" % need
-    found = lint_workflows(texts)
+        return "WARN", "phase 1.9 is open and no workflow builds a decomp.dev report: it needs %s" % need
     slug = publish.readme_slug(repo)
     if not slug:
         listed, note = None, "no GitHub remote: decomp.dev status not checked"
@@ -993,7 +1080,7 @@ def main(argv=None) -> int:
     ap.add_argument("--repo", default=".")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--only", help="comma-separated row names (e.g. github, progress)")
-    ap.add_argument("--offline", action="store_true", help="no network: the progress and github rows say SKIP")
+    ap.add_argument("--offline", action="store_true", help="no network: the github rows and the decomp.dev lookup of the progress row say SKIP")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args(argv)
     if a.self_test:
@@ -1167,6 +1254,21 @@ def self_test_floor() -> bool:
         ok &= "the tree holds: goto 1, unbased 1" in mid["debt"][1]
         (repo / floor.BASELINE).write_text(floor.first_baseline(repo))
         equal = rows()["debt"]
+        (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0] + floor.C_DEBT["goto"][0].replace("Walk", "Run"))
+        rise = rows()["debt"]
+        ok &= rise[0] == "FAIL" and "2 count(s) over their row" in rise[1] and "--admit" in rise[1]   # a goto and an unbased name
+        tool = repo / "tools-ext"
+        tool.mkdir()
+        common.git(tool, "init", "--quiet")
+        (tool / "a.py").write_text("x = 1\n")
+        common.git(tool, "add", "-A")
+        common.git(tool, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "t")
+        pin = common.git(tool, "rev-parse", "HEAD").stdout.strip()
+        (repo / floor.TOOLCHAIN).write_text("\t".join(floor.TOOL_COLUMNS) + "\nsplitter\tgit\t%s\ttools-ext\n" % pin)
+        ok &= rows()["toolchain"][0] == "OK"
+        (tool / "a.py").write_text("x = 2\n")
+        ok &= rows()["toolchain"][0] == "WARN" and "local changes" in rows()["toolchain"][1]
+        (repo / floor.TOOLCHAIN).write_text("\t".join(floor.TOOL_COLUMNS) + "\n")
         (repo / "src/a.c").write_text(floor.C_CLEAN)
         stale = rows()["debt"]
         (repo / floor.BASELINE).write_text(floor.first_baseline(repo))
@@ -1180,13 +1282,49 @@ def self_test_floor() -> bool:
                                               'debt = "tools/scan.py"\nnames = "config/n.tsv"\ntoolchain = "bash tools/f.sh"\n')
         common.write(repo / "tools/gate.sh", "true\n")
         mine = rows()
+        (repo / "config/check.main.sha").unlink()                               # an [own] gate holds its own hashes
+        ok &= rows()["gate"] == ("OK", "the game's own gate: `bash tools/gate.sh`")
+        # [own] debt alone: the names row asks for the names ledger and not for the assembly ledger
+        common.write(repo / install_record(), '[psxdecomp]\nversion = "0"\n[own]\ndebt = "tools/scan.py"\n')
+        (repo / floor.NAMES).write_text("\t".join(floor.NAME_COLUMNS) + "\n")
+        (repo / floor.ASM_EVIDENCE).unlink()
+        ok &= rows()["names"][0] == "OK"
+        # the record: a typo is a FAIL row that says what stops, and a record with no profile is still a row
+        common.write(repo / install_record(), '[psxdecomp]\nversion = "0"\n[floor]\ngate = "make x\n')
+        got = dict((r[0], r[1:]) for r in check(repo, offline=True, only={"record", "gate", "debt"}))
+        ok &= got["record"][0] == "FAIL" and "is not TOML" in got["record"][1] and "gate" in got
+        common.write(repo / install_record(), 'own = "x"\n[psxdecomp]\nversion = "0"\n')
+        got = dict((r[0], r[1:]) for r in check(repo, offline=True, only={"record", "gate"}))
+        ok &= got["record"][0] == "OK" and "profile ?" in got["record"][1]
+    with tempfile.TemporaryDirectory() as td:                                   # debt is due before any C file exists
+        repo = pathlib.Path(td).resolve()
+        common.git(repo, "init", "--quiet")
+        common.write(repo / "include/common.h", "#define SWAP(a, b) { s32 t = a; a = b; b = t; }\n")
+        common.git(repo, "add", "-A")
+        ok &= dict(floor_rows(repo))["debt"][0] == "WARN"
+    with tempfile.TemporaryDirectory() as td:                                   # what an [own] value may name
+        repo = pathlib.Path(td).resolve()
+        common.write(repo / "Makefile", "include tools/build.mk\nall verify: build\nfleet-fast: build\ncheck: build\nGATE := x\n")
+        common.write(repo / "tools/build.mk", "deep-verify: build\n")
+        common.write(repo / "tools/scan.py", "pass\n")
+        (repo / "src").mkdir()
+        table = (("make verify", True), ("make fleet", False), ("make deep-verify", True), ("make -j 4 check", True),
+                 ("make", True), ("make GATE", False), ("CC=tools/cc make check", True),
+                 ("docker run --rm -v $PWD:/work img make check", True), ("make nosuch", False),
+                 ("python3 tools/scan.py --json build/debt.json", True), ("python3 tools/scan.py --root=src/main", True),
+                 ("bash tools/gone.sh src", False), ("python3 -m tools.scan", True), ("python3 -m tools.gone", False),
+                 ("tools/scan.py", True), ("config/gone.tsv", False), ("bash", False))
+        wrong = [v for v, good in table if bool(own_missing(repo, {"gate": v})) == good]
+        ok &= not wrong
+        if wrong:
+            print("  own_missing WRONG for: %s" % wrong)
     print("  floor rows: before %s; at 1.4 %s; a stale row %s; no gate after 1.9 %s; [own] %s" % (
         first["gate"][0], "/".join(due[k][0] for k in due), stale[0], gone[0], "/".join(mine[k][0] for k in mine)))
     return (ok and equal[0] == "OK" and "mode admit" in equal[1] and stale[0] == "FAIL" and "1 row(s) over their count" in stale[1]
             and late["debt"][0] == "WARN" and "debt --down" in late["debt"][1] and gone[0] == "FAIL"
             and broken[0] == "FAIL" and "the header is not" in broken[1]
             and [mine[k][0] for k in ("gate", "toolchain", "names", "debt")] == ["OK", "OK", "OK", "OK"]
-            and "([own])" in mine["gate"][1] and "tools/scan.py" in mine["debt"][1])
+            and "own gate" in mine["gate"][1] and "tools/scan.py" in mine["debt"][1])
 
 
 def install_record() -> str:
@@ -1310,9 +1448,18 @@ def self_test_progress() -> bool:
         for closed in (9, 10, 11):
             (repo / floor.PLAN).write_text(floor.self_plan(closed=closed))
             none.append(progress_row(repo, lambda: []))
+        # a workflow that only speaks of a report builds none: a comment, another word, the split template with no categories
+        for text in ("on: push\njobs:\n  b:\n    steps:\n      - run: make check   # no report.json yet\n",
+                     "on: push\njobs:\n  b:\n    steps:\n      - run: make test_report\n", build_template()):
+            common.write(repo / ".github/workflows/build.yml", text)
+            none.append(progress_row(repo, None))
+        (repo / ".github/workflows/build.yml").unlink()
+        (repo / ".github/workflows").rmdir()
+        (repo / ".github").rmdir()
         (repo / floor.PLAN).unlink()
         print("  progress row, no report workflow: %s" % "; ".join(n[0] for n in none))
-        ok &= [n[0] for n in none] == ["WAIT", "WARN", "FAIL", "FAIL"] and "phase 1.9 opens" in none[0][1]
+        ok &= [n[0] for n in none] == ["WAIT", "WARN", "FAIL", "FAIL", "FAIL", "FAIL", "FAIL"] and "phase 1.9 opens" in none[0][1]
+        ok &= "config/categories.tsv" in none[6][1]
         (repo / ".github" / "workflows").mkdir(parents=True)
         (repo / ".github" / "workflows" / "progress.yml").write_text(good)
         listed = [{"owner": "example", "repo": "game-a-decomp", "commit": {"sha": "1234567abc"}, "measures": {}}]
