@@ -963,6 +963,82 @@ def test_debt_kinds(tmp_path):
     assert r.returncode == 1 and "DEBT FAIL rise unbased src/clean.c: 1, its row is 0\n" in r.stdout, r.stdout
 
 
+def test_debt_against_rev(tmp_path):
+    """The tree reader: the work tree, the index and a revision give one count, on an LF checkout and on a CRLF one.
+    `debt --against` prints what differs from a revision. `style --against` judges the prose by the ratchet, the
+    `skip` lines and the public list of the revision: a raised row, a new `skip` line and a file that left the public
+    list change nothing."""
+    files = {"src/a.c": floor.C_DEBT["goto"][0], "src/m.c": floor.C_DEBT["macro"][0],
+             "src/o.c": "s32 Walk(void *p) {\n    return HP(p);\n}\n",
+             "include/h.h": "#define HP(p) \\\n    (*(s16 *)((u8 *)(p) + 0x10))\n",
+             "README.md": "# G\n\nOne; two.\n", "docs/a.md": "Clean.\n",
+             publish.STYLE_RATCHET_REL: "1 README.md\n", publish.PUBLIC_PATHS_REL: "README.md\ndocs/\n"}
+    repo = _style_repo(tmp_path, files)
+    debt = lambda *a: _floor("debt", "--repo", repo, *a)  # noqa: E731
+    totals = lambda r: re.search(r"totals: ([^(]+) \(", r.stdout)[1]  # noqa: E731
+    want = "goto 1, offset 2, macro 3"
+    assert [totals(debt()), totals(debt("--staged")), totals(debt("--rev", "HEAD"))] == [want] * 3
+    assert "counted in the index" in debt("--staged").stdout and "counted in HEAD" in debt("--rev", "HEAD").stdout
+    run(["git", "-C", repo, "config", "core.autocrlf", "true"])                 # a Windows checkout of the same commit
+    for rel in files:
+        (repo / rel).write_bytes((repo / rel).read_bytes().replace(b"\n", b"\r\n"))
+    run(["git", "-C", repo, "add", "-A"])                                       # the index takes the same blobs again
+    assert run(["git", "-C", repo, "status", "--porcelain"]).stdout == ""
+    assert b"\r\n" in (repo / "src/m.c").read_bytes()
+    assert [totals(debt()), totals(debt("--staged")), totals(debt("--rev", "HEAD"))] == [want] * 3
+    style = lambda *a: run([PY, ROOT / "scripts/publish.py", "style", "--repo", repo, *a], check=False)  # noqa: E731
+    counts = [style(*a).stdout for a in ((), ("--staged",), ("--rev", "HEAD"), ("--against", "HEAD"))]
+    assert counts == ["STYLE CHECK OK (2 file(s), 1 finding(s), 0 over their row)\n"] * 4, counts
+    (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0] * 2)
+    r = debt("--against", "HEAD")
+    assert "DEBT INFO against HEAD: goto src/a.c: 1 -> 2\n" in r.stdout and "(1 count(s) rose, 0 fell)" in r.stdout
+    assert totals(debt("--staged")) == want                                     # not added yet
+    run(["git", "-C", repo, "add", "src/a.c"])
+    assert totals(debt("--staged")) == "goto 2, offset 2, macro 3" and totals(debt("--rev", "HEAD")) == want
+    assert debt("--staged", "--update").returncode == 1 and debt("--rev", "nowhere").returncode == 1
+    # the ratchet of the change cannot admit what the base's ratchet refuses
+    (repo / "README.md").write_text("# G\n\nOne; two; three.\n")
+    (repo / publish.STYLE_RATCHET_REL).write_text("2 README.md\n")
+    assert style().returncode == 0
+    r = style("--against", "HEAD")
+    assert r.returncode == 1 and "STYLE FAIL policy: the row of README.md is 2 and was 1 in HEAD" in r.stdout
+    assert "STYLE FAIL README.md: 2 finding(s), its row in HEAD is 1\n" in r.stdout, r.stdout
+    (repo / publish.STYLE_RATCHET_REL).write_text("skip README.md\n")
+    r = style("--against", "HEAD")
+    assert r.returncode == 1 and "policy: a new `skip` line (README.md)" in r.stdout and "README.md: 2 finding(s)" in r.stdout
+    (repo / publish.STYLE_RATCHET_REL).unlink()
+    assert "policy: %s is gone" % publish.STYLE_RATCHET_REL in style("--against", "HEAD").stdout
+    run(["git", "-C", repo, "checkout", "--", "README.md", publish.STYLE_RATCHET_REL])
+    (repo / "docs/a.md").write_text("One; two.\n")
+    (repo / publish.PUBLIC_PATHS_REL).write_text("README.md\n")
+    assert style().returncode == 0                                              # docs/ is not public any more
+    r = style("--against", "HEAD")
+    assert r.returncode == 1 and "docs/a.md: policy: it left the public list with 1 finding(s)" in r.stdout, r.stdout
+    run(["git", "-C", repo, "add", "-A"])
+    assert style("--staged", "--against", "HEAD").returncode == 1 and style("--rev", "HEAD", "--against", "HEAD").returncode == 0
+    run(["git", "-C", repo, "rm", "-q", publish.STYLE_RATCHET_REL])
+    run(["git", "-C", repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "no ratchet"])
+    r = style("--against", "HEAD")                                              # the base holds no ratchet: no judge
+    assert "STYLE INFO HEAD holds no %s" % publish.STYLE_RATCHET_REL in r.stdout, r.stdout
+
+
+def test_tools_find_each_other(tmp_path):
+    """Each vendored tool runs the other one from its own folder: `floor.py` beside `publish.py` in the plugin,
+    `psxd_floor.py` beside `psxd_publish.py` in a game. The release gate's debt check is run by that copy, so a
+    floor tool that the checked tree rewrote decides nothing."""
+    assert floor.sibling() == ROOT / "scripts/publish.py" and publish.sibling() == ROOT / "scripts/floor.py"
+    (tmp_path / "copy").mkdir()
+    for src, dst in (("scripts/floor.py", floor.VENDORED), ("scripts/publish.py", publish.VENDORED)):
+        (tmp_path / "copy" / pathlib.Path(dst).name).write_bytes((ROOT / src).read_bytes())
+    code = "import psxd_floor, psxd_publish; print(psxd_floor.sibling().name, psxd_publish.sibling().name)"
+    r = run([PY, "-c", code], cwd=tmp_path / "copy")
+    assert r.stdout.split() == ["psxd_publish.py", "psxd_floor.py"], r.stdout
+    tree = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], floor.BASELINE: "mode admit\n",
+                                  floor.VENDORED: "import sys\nsys.exit(0)\n"})
+    got = publish.debt_gate(tree)
+    assert len(got) == 1 and "DEBT CHECK FAIL (1 rise(s)" in got[0], got
+
+
 def test_debt_baseline_command(tmp_path):
     """The equal-baseline rule through the command line: a rise exits 1, `--update` refuses it without `--admit`,
     `--admit` prints it, a stale row exits 1, `--down` is one way and then no rise is admitted."""

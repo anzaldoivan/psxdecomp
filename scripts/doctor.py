@@ -360,7 +360,7 @@ def debt_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, str
         return "OK", "the game's own debt scanner: %s" % own["debt"]
     if isinstance(debt, Exception):
         return "FAIL", str(debt)
-    if not (debt["counts"] or debt["rows"] or floor.tracked(repo, "src/**/*.c", "src/*.c")):
+    if not (debt["counts"] or debt["rows"] or any(p.startswith("src/") and p.endswith(".c") for p in floor.Tree(repo).paths)):
         return "WAIT", "due with the first C file under src/: %s%s" % (
             floor.BASELINE, "" if debt["baseline"] else " (/psxdecomp:upgrade apply writes it)")
     totals = floor._totals(debt["counts"])

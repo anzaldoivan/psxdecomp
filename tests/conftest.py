@@ -12,6 +12,10 @@ import sys
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+# A test run started by an agent session must give the result of a run in a terminal: the tools refuse a push and
+# ask for a session's heartbeat when they see these two.
+for _k in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID"):
+    os.environ.pop(_k, None)
 PY = sys.executable
 sys.path.insert(0, str(ROOT / "scripts"))
 

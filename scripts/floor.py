@@ -5,6 +5,9 @@
     floor.py ladder FILE                  the eleven ladder phases a constitution names; exit 1 when one is missing
     floor.py debt [--repo DIR]            count the readability debt of the tracked source against config/debt-baseline.txt;
                                           exit 1 when a count is over its row (a rise) or under it (a stale row)
+    floor.py debt [--staged | --rev REV] [--against BASE]
+                                          count the index or the revision REV in the work tree's place (no checkout);
+                                          --against: print each count that differs from the count at the revision BASE
     floor.py debt --update [--admit]      rewrite the baseline to the counts of now; a rise needs `mode admit` and --admit
     floor.py debt --down                  switch the baseline to `mode down`, one way: from then on no rise is admitted
     floor.py names [--init] [--repo DIR]  check config/names.tsv and config/asm-evidence.tsv; --init writes their header lines
@@ -86,18 +89,100 @@ def _git(repo, *args) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(repo)] + list(args), capture_output=True, text=True, errors="replace")
 
 
-def tracked(repo, *specs) -> list[str]:
-    """The tracked paths under the pathspecs, sorted. Outside a git repository: the files on disk that match."""
-    r = _git(repo, "ls-files", "-z", "--", *specs)
-    if r.returncode == 0:
-        return sorted(p for p in r.stdout.split("\0") if p)
-    root = pathlib.Path(repo)
-    return sorted(p.relative_to(root).as_posix() for s in specs for p in root.glob(s.replace(":(glob)", "")) if p.is_file())
-
-
 def entry_match(entry: str, path: str) -> bool:
     """One entry in the syntax of config/public-paths.txt: `dir/` is a prefix, any other entry is an fnmatch glob."""
     return path.startswith(entry) if entry.endswith("/") else fnmatch.fnmatchcase(path, entry)
+
+
+# ---- the tree reader: one source of files (the work tree, the index or a revision); nothing is exported to disk ----
+INDEX = "index"
+LINKS = ("120000", "160000")                         # a symbolic link and a submodule: not a file of this tree
+
+
+class Tree:
+    """The files of a repository from one source: the work tree (`source` None), the index (INDEX) or a revision.
+    `paths`: the tracked files, sorted (a work tree with `untracked`: the files git neither tracks nor ignores as
+    well). `read`: a file's text with CRLF as LF, or None for a path the source lacks, a symbolic link or a submodule.
+    The index and a revision are read through one `git cat-file --batch`, so a check of a commit needs no checkout.
+    Outside a git repository the work tree is every file under the folder."""
+
+    def __init__(self, repo, source: str | None = None, untracked: bool = False):
+        self.repo, self.source = pathlib.Path(repo), source
+        self._blob: dict[str, str] = {}
+        self._text: dict[str, str | None] = {}
+        self._cat = None
+        if source is None:
+            r = _git(repo, "ls-files", "-z", *(("--cached", "--others", "--exclude-standard") if untracked else ()))
+            if r.returncode == 0:
+                found = {p for p in r.stdout.split("\0") if p}
+            else:
+                found = {f.relative_to(self.repo).as_posix() for f in self.repo.rglob("*")
+                         if f.is_file() and ".git" not in f.relative_to(self.repo).parts}
+            self.paths = sorted(found)
+            return
+        r = _git(repo, "ls-files", "-z", "-s") if source == INDEX else _git(repo, "ls-tree", "-r", "-z", source)
+        if r.returncode != 0:
+            raise Fail("git cannot read %s: %s" % ("the index" if source == INDEX else source,
+                                                   (r.stderr or "").strip()[:200]))
+        for rec in r.stdout.split("\0"):
+            meta, tab, path = rec.partition("\t")
+            cells = meta.split()
+            if tab and len(cells) == 3 and cells[0] not in LINKS:
+                self._blob.setdefault(path, cells[1] if source == INDEX else cells[2])
+        self.paths = sorted(self._blob)
+
+    def has(self, path: str) -> bool:
+        return path in self._blob if self.source is not None else (self.repo / path).is_file()
+
+    def read(self, path: str) -> str | None:
+        if path not in self._text:
+            if self.source is None:
+                f = self.repo / path
+                try:
+                    data = None if f.is_symlink() else f.read_bytes()
+                except OSError:
+                    data = None
+            else:
+                data = self._object(self._blob[path]) if path in self._blob else None
+            self._text[path] = None if data is None else data.decode("utf-8", "replace").replace("\r\n", "\n")
+        return self._text[path]
+
+    def _object(self, sha: str) -> bytes | None:
+        if self._cat is None:
+            self._cat = subprocess.Popen(["git", "-C", str(self.repo), "cat-file", "--batch"], stdin=subprocess.PIPE,
+                                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self._cat.stdin.write(sha.encode() + b"\n")
+        self._cat.stdin.flush()
+        head = self._cat.stdout.readline().split()
+        if len(head) != 3:                             # `<sha> missing`
+            return None
+        data = self._cat.stdout.read(int(head[2]) + 1)[:-1]
+        return data if head[1] == b"blob" else None
+
+    def close(self) -> None:
+        if self._cat is not None:
+            self._cat.stdin.close()
+            self._cat.stdout.close()
+            self._cat.wait()
+            self._cat = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:                              # the interpreter is closing: the pipe is gone already
+            pass
+
+
+def source_name(source: str | None) -> str:
+    return "the work tree" if source is None else "the index" if source == INDEX else source
+
+
+def sibling() -> pathlib.Path:
+    """psxdecomp's other tool, beside this file: publish.py in the plugin, psxd_publish.py in a game and in a
+    temporary copy of a commit's tools. Each tool runs the other one from its own folder, never from the tree it
+    checks."""
+    me = pathlib.Path(__file__).resolve()
+    return me.with_name(me.name.replace("floor", "publish"))
 
 
 # ---- the ladder: the kit's eleven phases. A game's phase 1.n is ladder phase n -------------------------------------
@@ -497,8 +582,7 @@ DEF_DATA = re.compile(r"^(?!extern\b)(?:[A-Za-z_]\w*[\s*]+)+?(D_[0-9A-Fa-f]{8}\w
 PLACEHOLDER = re.compile(r"^(?:func|D)_[0-9A-Fa-f]{8}")
 NOT_A_NAME = {"if", "for", "while", "switch", "return", "sizeof", "do", "else", "main"}
 _STRIP = re.compile(r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.S)
-SOURCES = ("src/**/*.c", "src/**/*.h", "src/**/*.s", "src/**/*.S", "include/**/*.h", "src/*.c", "src/*.h", "src/*.s",
-           "src/*.S", "include/*.h")
+SOURCE_DIRS = {"src/": (".c", ".h", ".s", ".S"), "include/": (".h",)}        # the folders and the suffixes that count
 ADDRESS_HEADER = "include/addr.h"
 FIRST_SKIP = ("include/include_asm.h",)             # the stub macro's header, where a game keeps one
 BASELINE_HEAD = (
@@ -598,11 +682,16 @@ def file_debt(rel: str, text: str, shared=None, based=None, address_header=ADDRE
     return {k: v for k, v in got.items() if v}
 
 
+def is_source(path: str) -> bool:
+    return any(path.startswith(d) and path.endswith(sfx) for d, sfx in SOURCE_DIRS.items())
+
+
 def address_header(repo) -> str:
     """`[debt] address_header` of config/psxdecomp.toml, else include/addr.h. The key is read as text, so that a
-    Python with no tomllib (before 3.11) counts the same tree as a newer one does."""
+    Python with no tomllib (before 3.11) counts the same tree as a newer one does. `repo`: a folder or a Tree."""
     table = None
-    for line in (_read(pathlib.Path(repo) / RECORD) or "").split("\n"):
+    record = repo.read(RECORD) if isinstance(repo, Tree) else _read(pathlib.Path(repo) / RECORD)
+    for line in (record or "").split("\n"):
         head = re.match(r"\s*\[\s*([^\]]+?)\s*\]\s*(?:#.*)?$", line)
         if head:
             table = head[1]
@@ -613,9 +702,10 @@ def address_header(repo) -> str:
     return ADDRESS_HEADER
 
 
-def read_tsv(path, columns) -> tuple[list[dict] | None, list[str]]:
-    """(the rows, the errors) of a tab-separated file with a header line. None when the file is absent."""
-    text = _read(path)
+def read_tsv(path, columns, tree: Tree | None = None) -> tuple[list[dict] | None, list[str]]:
+    """(the rows, the errors) of a tab-separated file with a header line. None when the file is absent. With a
+    `tree`, `path` is a path of that tree."""
+    text = _read(path) if tree is None else tree.read(str(path))
     if text is None:
         return None, []
     rows, errs, head = [], [], None
@@ -639,15 +729,16 @@ def read_tsv(path, columns) -> tuple[list[dict] | None, list[str]]:
     return rows, errs
 
 
-def debt_counts(repo, skip=()) -> dict[tuple[str, str], int]:
-    """{(kind, path): count} over the tracked src/ and include/ files that no `skip` entry covers."""
-    repo = pathlib.Path(repo)
-    files = [p for p in tracked(repo, *SOURCES) if not any(entry_match(e, p) for e in skip)]
-    header = address_header(repo)
-    names, _ = read_tsv(repo / NAMES, NAME_COLUMNS)
+def debt_counts(repo, skip=(), tree: Tree | None = None) -> dict[tuple[str, str], int]:
+    """{(kind, path): count} over the tracked src/ and include/ files that no `skip` entry covers. `tree`: the source
+    to count (default: the work tree of `repo`). The ledgers and the record are read from the same source."""
+    tree = tree or Tree(repo)
+    files = [p for p in tree.paths if is_source(p) and not any(entry_match(e, p) for e in skip)]
+    header = address_header(tree)
+    names, _ = read_tsv(NAMES, NAME_COLUMNS, tree)
     based = None if names is None else {r["new_name"] for r in names if r["decision"] == "accepted"}
-    evidence = {r["path"] for r in read_tsv(repo / ASM_EVIDENCE, ASM_COLUMNS)[0] or []}
-    texts = {p: _read(repo / p) for p in files}
+    evidence = {r["path"] for r in read_tsv(ASM_EVIDENCE, ASM_COLUMNS, tree)[0] or []}
+    texts = {p: tree.read(p) for p in files}
     shared: dict[str, str] = {}
     heads = [strip(texts[p]) for p in files if p.endswith(".h") and p != header and texts[p] is not None]
     size = -1
@@ -706,7 +797,7 @@ def baseline_text(counts: dict, skip=(), mode="admit", head=()) -> str:
 
 def first_baseline(repo) -> str:
     """A game's first baseline: the counts of now, `mode admit`, the stub macro's header skipped where one is tracked."""
-    skip = tuple(e for e in FIRST_SKIP if tracked(repo, e))
+    skip = tuple(e for e in FIRST_SKIP if e in Tree(repo).paths)
     return baseline_text(debt_counts(repo, skip), skip, "admit", BASELINE_HEAD)
 
 
@@ -717,28 +808,49 @@ def _totals(counts: dict) -> str:
     return ", ".join("%s %d" % (k, by[k]) for k in KINDS if by[k]) or "none"
 
 
-def debt_status(repo) -> dict:
-    """What the doctor reads: the baseline (or None), the counts of now, the rises and the stale rows."""
+def debt_status(repo, source: str | None = None) -> dict:
+    """What the doctor reads: the baseline (or None), the counts of now, the rises and the stale rows. `source`: the
+    index or a revision in the work tree's place (the baseline is read from the same source)."""
     repo = pathlib.Path(repo)
-    text = _read(repo / BASELINE)
+    tree = Tree(repo, source)
+    text = tree.read(BASELINE)
     rows, skip, mode, head = parse_baseline(text)
-    counts = debt_counts(repo, skip)
+    counts = debt_counts(repo, skip, tree)
     keys = sorted(set(rows) | set(counts), key=lambda k: (k[1], KINDS.index(k[0])))
     return {"baseline": text is not None, "rows": rows, "skip": skip, "mode": mode, "head": head, "counts": counts,
             "rise": [k for k in keys if counts.get(k, 0) > rows.get(k, 0)],
             "stale": [k for k in keys if counts.get(k, 0) < rows.get(k, 0)]}
 
 
-def cmd_debt(repo, update=False, admit=False, down=False) -> int:
+def debt_against(repo, counts: dict, skip, base: str) -> list[str]:
+    """The report lines of `debt --against <base>`: each count that differs from the count of the same file at the
+    revision `base`, counted there with the same `skip` entries."""
+    old = debt_counts(repo, skip, Tree(repo, base))
+    keys = sorted(set(old) | set(counts), key=lambda k: (k[1], KINDS.index(k[0])))
+    out = ["DEBT INFO against %s: %s %s: %d -> %d" % (base, k[0], k[1], old.get(k, 0), counts.get(k, 0))
+           for k in keys if old.get(k, 0) != counts.get(k, 0)]
+    up = sum(counts.get(k, 0) > old.get(k, 0) for k in keys)
+    return out + ["DEBT INFO against %s: totals there: %s (%d count(s) rose, %d fell)" % (
+        base, _totals(old), up, len(out) - up)]
+
+
+def cmd_debt(repo, update=False, admit=False, down=False, source: str | None = None, against: str | None = None) -> int:
     repo = pathlib.Path(repo)
+    if source is not None and (update or down):
+        print("DEBT FAIL --update and --down write the baseline of the work tree: they take no --staged and no --rev")
+        return 1
     try:
-        st = debt_status(repo)
+        st = debt_status(repo, source)
+        report = debt_against(repo, st["counts"], st["skip"], against) if against else []
     except Fail as e:
         print("DEBT FAIL %s" % e)
         return 1
     rows, counts, mode = st["rows"], st["counts"], st["mode"]
     files = len({k[1] for k in counts})
-    print("DEBT INFO totals: %s (%d file(s) with debt)" % (_totals(counts), files))
+    print("DEBT INFO totals: %s (%d file(s) with debt%s)" % (_totals(counts), files, "" if source is None else
+                                                              "; counted in " + source_name(source)))
+    for line in report:
+        print(line)
     if st["skip"]:
         print("DEBT INFO skip: %s (the checker does not read these files)" % ", ".join(st["skip"]))
     if down:
@@ -1416,6 +1528,39 @@ def self_test_debt(check) -> None:
         check("names: a wrong header", _capture(cmd_names, repo)[0] == 1)
 
 
+def self_test_tree(check) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        repo = _repo(td)
+        (repo / "src").mkdir()
+        (repo / "src" / "walk.c").write_text(C_DEBT["goto"][0])
+        (repo / "src" / "two.c").write_bytes(C_DEBT["macro"][0].replace("\n", "\r\n").encode())
+        os.symlink("walk.c", repo / "src" / "link.c")
+        _commit(repo, "one")
+        (repo / "src" / "walk.c").write_text(C_DEBT["goto"][0] * 2)
+        _git(repo, "add", "src/walk.c")
+        (repo / "src" / "walk.c").write_text(C_DEBT["goto"][0] * 3)
+        (repo / "src" / "new.c").write_text(C_DEBT["goto"][0])
+        got = [debt_counts(repo, tree=Tree(repo, src)).get(("goto", "src/walk.c")) for src in ("HEAD", INDEX, None)]
+        check("tree: a revision, the index and the work tree are three sources", got == [1, 2, 3], got)
+        check("tree: CRLF is read as LF, from the disk and from a blob", all(
+            debt_counts(repo, tree=Tree(repo, src)).get(("macro", "src/two.c")) == 2 for src in ("HEAD", INDEX, None)))
+        check("tree: a symbolic link is no file of the tree", all(
+            Tree(repo, src).read("src/link.c") is None for src in ("HEAD", INDEX, None)))
+        check("tree: an untracked file counts only when asked for", "src/new.c" not in Tree(repo).paths
+              and "src/new.c" in Tree(repo, untracked=True).paths and not Tree(repo, "HEAD").has("src/new.c"))
+        try:
+            Tree(repo, "no-such-revision")
+            check("tree: a revision git cannot read is a refusal", False)
+        except Fail:
+            pass
+        rc, out = _capture(cmd_debt, repo, against="HEAD")
+        check("debt --against: the counts that differ from a revision", "DEBT INFO against HEAD: goto src/walk.c: 1 -> 3\n" in out
+              and "(1 count(s) rose, 0 fell)" in out, out)
+        rc, out = _capture(cmd_debt, repo, source=INDEX, update=True)
+        check("debt --staged takes no --update", rc == 1 and "take no --staged" in out, out)
+    check("the two tools stand side by side", sibling().name == pathlib.Path(__file__).name.replace("floor", "publish"))
+
+
 def self_test_toolchain(check) -> None:
     with tempfile.TemporaryDirectory() as td:
         repo = _repo(td)
@@ -1560,6 +1705,7 @@ def self_test() -> int:
     try:
         self_test_plan(check)
         self_test_debt(check)
+        self_test_tree(check)
         self_test_toolchain(check)
         self_test_guard(check)
     finally:
@@ -1579,6 +1725,9 @@ def main(argv=None) -> int:
     ap.add_argument("--down", action="store_true")
     ap.add_argument("--init", action="store_true")
     ap.add_argument("--hook", action="store_true")
+    ap.add_argument("--staged", action="store_true", help="debt: count the index")
+    ap.add_argument("--rev", help="debt: count this revision")
+    ap.add_argument("--against", metavar="BASE", help="debt: report the counts that differ from this revision's")
     ap.add_argument("--self-test", action="store_true")
     args = sys.argv[1:] if argv is None else list(argv)
     if args[:1] == ["guard"]:                          # a hook: no flag, a wrong flag or a missing one never blocks a call
@@ -1594,7 +1743,10 @@ def main(argv=None) -> int:
     if a.cmd == "ladder":
         return cmd_ladder(a.file or os.path.join(a.repo, CONTEXT))
     if a.cmd == "debt":
-        return cmd_debt(a.repo, update=a.update, admit=a.admit, down=a.down)
+        if a.staged and a.rev:
+            ap.error("debt: --staged or --rev, not both")
+        return cmd_debt(a.repo, update=a.update, admit=a.admit, down=a.down,
+                        source=INDEX if a.staged else a.rev, against=a.against)
     if a.cmd == "names":
         return cmd_names(a.repo, init=a.init)
     if a.cmd == "toolchain":

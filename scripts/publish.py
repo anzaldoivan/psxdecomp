@@ -44,6 +44,10 @@
                                           every public prose file against config/style-ratchet.txt (`<count> <path>`
                                           rows, `skip <entry>` lines): exit 1 when a count is over its row; --update
                                           rewrites the rows to the counts of now and refuses a rise
+    publish.py style [--staged | --rev REV] [--against BASE]
+                                          the same check on the index or on the revision REV (no checkout); --against:
+                                          judged by the ratchet, the `skip` lines and the public list of the revision
+                                          BASE as well, so that a change cannot rewrite what judges it
     publish.py style --hook               a Claude Code PostToolUse hook (stdin: the event): tells the session the
                                           findings in the public text it changed; never blocks, always exits 0
     publish.py --self-test
@@ -1237,14 +1241,48 @@ PUBLIC_STR = ("repo", "url", "dev_branch", "private_repo", "private_rev", "image
 PUBLIC_LIST = ("deny", "governance", "checks", "land_check", "audit")
 
 
+INDEX = "index"                                  # a source beside the work tree (None) and a revision: git's index
+
+
+def source_text(repo, source: str | None, rel: str) -> str | None:
+    """One file's text from a source: the work tree (None), the index (INDEX) or a revision. None when the source
+    lacks the file or it is not UTF-8."""
+    if source is None:
+        return _read(pathlib.Path(repo) / rel)
+    r = _git_raw(repo, "show", "%s:%s" % ("" if source == INDEX else source, rel))
+    try:
+        return r.stdout.decode("utf-8") if r.returncode == 0 else None
+    except UnicodeDecodeError:
+        return None
+
+
+def source_entries(repo, source: str) -> dict[str, str]:
+    """{path: blob sha} of the files of the index or of a revision (no symbolic link, no submodule). Raises Fail
+    when git cannot read the source."""
+    if source != INDEX:
+        tree = tree_entries(repo, source)
+        if tree is None:
+            raise Fail("git cannot read the revision %s" % source)
+        return {p: sha for p, (mode, sha) in tree.items() if mode not in ("120000", "160000")}
+    out = {}
+    for rec in _must(repo, "ls-files", "-s", "-z").split("\0"):
+        meta, tab, path = rec.partition("\t")
+        if tab and not meta.startswith(("120000", "160000")):
+            out.setdefault(path, meta.split()[1])
+    return out
+
+
+def sibling() -> pathlib.Path:
+    """psxdecomp's other tool, beside this file: floor.py in the plugin, psxd_floor.py in a game and in a temporary
+    copy of a commit's tools. Each tool runs the other one from its own folder, never from the tree it checks."""
+    me = pathlib.Path(__file__).resolve()
+    return me.with_name(me.name.replace("publish", "floor"))
+
+
 def load_public(repo, rev: str | None = None) -> dict | None:
-    """The [public] table (defaults filled) from the worktree, or from `git show rev:` when rev is given; None when
-    split mode is off. A malformed table raises Fail."""
-    if rev:
-        r = _git(repo, "show", "%s:%s" % (rev, CONFIG_REL))
-        text = r.stdout if r.returncode == 0 else None
-    else:
-        text = _read(pathlib.Path(repo) / CONFIG_REL)
+    """The [public] table (defaults filled) from the worktree, or from the source `rev` (a revision or INDEX) when
+    one is given; None when split mode is off. A malformed table raises Fail."""
+    text = source_text(repo, rev or None, CONFIG_REL)
     if text is None:
         return None
     try:
@@ -1528,10 +1566,11 @@ DEBT_BASELINE = "config/debt-baseline.txt"
 def debt_gate(x: pathlib.Path) -> list[str]:
     """The debt check of the public README workflow, run on an exported tree before it is released: a FAIL line when
     the tree holds the floor's tool and a baseline that is not equal to its source. A tree without either has no such
-    check in its CI, and passes."""
+    check in its CI, and passes. The check is run by the floor tool beside this file, not by the tree's copy."""
     if not ((x / FLOOR_TOOL).is_file() and (x / DEBT_BASELINE).is_file()):
         return []
-    r = subprocess.run([sys.executable, "-I", FLOOR_TOOL, "debt", "--repo", "."], cwd=x, capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "-I", str(sibling()), "debt", "--repo", "."], cwd=x, capture_output=True,
+                       text=True)
     if r.returncode == 0:
         return []
     lines = r.stdout.strip().splitlines() or r.stderr.strip().splitlines() or ["no output"]
@@ -3122,15 +3161,15 @@ STYLE_HOOK_STATE = "psxd-style-hook"             # a folder of the work tree's g
 STYLE_HOOK_KEEP = 7 * 86400                      # seconds a state file lives after its last write
 
 
-def _published(repo):
-    """The test `path -> bool` of what the repository publishes (the comment above)."""
-    text, cfg = _read(pathlib.Path(repo) / PUBLIC_PATHS_REL), None
+def _published(repo, source: str | None = None):
+    """The test `path -> bool` of what the repository publishes (the comment above), as one source records it."""
+    text, cfg = source_text(repo, source, PUBLIC_PATHS_REL), None
     if text is not None:
         try:
-            cfg = load_public(repo)
+            cfg = load_public(repo, source)
         except Fail:                                   # no [public] table that a release reads: no deny of its own
             pass
-    deny = deny_set(_read(pathlib.Path(repo) / PA3_REL), cfg)
+    deny = deny_set(source_text(repo, source, PA3_REL), cfg)
     if text is None:
         return lambda p: not is_denied(deny, p)
     entries = tuple(parse_public_paths(text))
@@ -3172,10 +3211,70 @@ def parse_ratchet(text: str | None) -> tuple[dict[str, int], list[str], list[str
     return rows, skip, head
 
 
-def style_findings(repo, skip=()) -> dict[str, list[tuple[int, str]]]:
-    """{path: [(line, finding)]} for every public prose file that no `skip` entry covers. A file that is not UTF-8
-    text has none."""
-    return {p: lint_style(_read(pathlib.Path(repo) / p) or "") for p in public_prose(repo, skip)}
+def prose_texts(repo, source: str | None = None, skip=(), public=None) -> dict[str, str]:
+    """{path: text} of the public prose files of one source that no `skip` entry covers: the work tree (None, with
+    its untracked files), the index (INDEX) or a revision. CRLF is read as LF. A file that is not UTF-8 text is
+    empty. `public`: another test of what is public than the source's own."""
+    if source is None and public is None:
+        out = {p: _read(pathlib.Path(repo) / p) for p in public_prose(repo, skip)}
+    else:
+        if source is None:
+            r = _git(repo, "--literal-pathspecs", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+            if r.returncode != 0:
+                raise Fail("%s: not a git work tree" % repo)
+            ents = {p: None for p in r.stdout.split("\0") if p and (pathlib.Path(repo) / p).is_file()}
+        else:
+            ents = source_entries(repo, source)
+        public = public or _published(repo, source)
+        want = sorted(p for p in ents if p.endswith(".md") and public(p) and not is_listed(skip, p))
+        if source is None:
+            out = {p: _read(pathlib.Path(repo) / p) for p in want}
+        else:
+            blobs = read_blobs(repo, sorted({ents[p] for p in want}))
+            out = {p: blobs[ents[p]].decode("utf-8", "ignore") if _utf8(blobs[ents[p]]) else None for p in want}
+    return {p: (t or "").replace("\r\n", "\n") for p, t in out.items()}
+
+
+def _utf8(data: bytes) -> bool:
+    try:
+        data.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def style_findings(repo, skip=(), source: str | None = None, public=None) -> dict[str, list[tuple[int, str]]]:
+    """{path: [(line, finding)]} for every public prose file of the source that no `skip` entry covers. A file that
+    is not UTF-8 text has none."""
+    return {p: lint_style(t) for p, t in prose_texts(repo, source, skip, public).items()}
+
+
+def style_against(repo, source: str | None, base: str) -> list[str] | None:
+    """The FAIL lines of `style --against <base>`: the prose of the source judged by what the revision `base`
+    records, which the change itself cannot rewrite. None when `base` holds no ratchet (the check was not delivered
+    there: nothing to judge by). A finding count over the row of `base`, also in a file that left the public list or
+    that a new `skip` line covers. As `policy`: a new `skip` line, a row over its row in `base`, a ratchet that is
+    gone."""
+    old = source_text(repo, base, STYLE_RATCHET_REL)
+    if old is None:
+        return None
+    rows0, skip0, _ = parse_ratchet(old)
+    text = source_text(repo, source, STYLE_RATCHET_REL)
+    out = []
+    if text is None:
+        out.append("policy: %s is gone (%s holds it)" % (STYLE_RATCHET_REL, base))
+    rows, skip, _ = parse_ratchet(text)
+    out += ["policy: a new `skip` line (%s): the files it covers are checked as before" % e
+            for e in skip if e not in skip0]
+    out += ["policy: the row of %s is %d and was %d in %s: a row may only fall" % (p, n, rows0.get(p, 0), base)
+            for p, n in sorted(rows.items()) if n > rows0.get(p, 0)]
+    was, now = _published(repo, base), _published(repo, source)
+    found = style_findings(repo, skip0, source, lambda p: now(p) or was(p))
+    for p, f in sorted(found.items()):
+        if len(f) > rows0.get(p, 0):
+            left = "" if now(p) else "policy: it left the public list with "
+            out.append("%s: %s%d finding(s), its row in %s is %d" % (p, left, len(f), base, rows0.get(p, 0)))
+    return out
 
 
 def style_counts(repo, skip=()) -> dict[str, int]:
@@ -3206,19 +3305,28 @@ def style_files(files) -> int:
     return 2 if bad else 1 if found else 0
 
 
-def cmd_style(files=(), repo=".", update=False) -> int:
+def cmd_style(files=(), repo=".", update=False, source: str | None = None, against: str | None = None) -> int:
     """`style`: the named files, or every public prose file against the ratchet. `update` rewrites the ratchet to
-    the counts of now when no count is over its row."""
+    the counts of now when no count is over its row. `source`: the index or a revision in the work tree's place.
+    `against`: judge the source by the ratchet, the `skip` lines and the public list of that revision as well."""
     if files:
         return style_files(files)
     try:
         repo = repo_root(repo)
-        text = _read(repo / STYLE_RATCHET_REL)
+        text = source_text(repo, source, STYLE_RATCHET_REL)
         rows, skip, head = parse_ratchet(text)
-        found = style_findings(repo, skip)
+        found = style_findings(repo, skip, source)
+        policy = style_against(repo, source, against) if against else []
     except Fail as e:
         _line("STYLE", "FAIL", str(e))
         return 2
+    if policy is None:
+        _line("STYLE", "INFO", "%s holds no %s: the tree is judged by its own ratchet" % (against, STYLE_RATCHET_REL))
+    for line in policy or ():
+        _line("STYLE", "FAIL", line)
+    if policy:
+        print("STYLE CHECK FAIL against %s (%d line(s))" % (against, len(policy)))
+        return 1
     over = [p for p, f in found.items() if len(f) > rows.get(p, 0)]
     for p in over:
         for n, m in found[p]:
@@ -5198,6 +5306,10 @@ def main(argv=None) -> int:
                     help="rewrite the ratchet to the counts of now; refused when a count is over its row")
     sy.add_argument("--hook", action="store_true",
                     help="a Claude Code PostToolUse hook (stdin: the event); never blocks, always exits 0")
+    sy.add_argument("--staged", action="store_true", help="check the index, not the work tree")
+    sy.add_argument("--rev", help="check this revision, not the work tree")
+    sy.add_argument("--against", metavar="BASE",
+                    help="judge by the ratchet, the `skip` lines and the public list of this revision as well")
     a = ap.parse_args(argv)
     own_git_env()
     if a.self_test:
@@ -5207,7 +5319,9 @@ def main(argv=None) -> int:
             return style_hook()
         if a.files and a.update:
             sy.error("--update takes no FILE: it rewrites %s from every public prose file" % STYLE_RATCHET_REL)
-        return cmd_style(a.files, a.repo, a.update)
+        if (a.staged or a.rev or a.against) and (a.files or a.update or (a.staged and a.rev)):
+            sy.error("--staged, --rev and --against take no FILE and no --update; --staged or --rev, not both")
+        return cmd_style(a.files, a.repo, a.update, INDEX if a.staged else a.rev, a.against)
     if a.cmd in ("lint", "render"):
         ctx, readme = _ctx(a)
         text = _read(readme)
