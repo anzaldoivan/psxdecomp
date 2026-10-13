@@ -33,7 +33,7 @@ floor are explained in the game's `docs/ops/psxdecomp-floor.md`.
 | `gate` | WAIT, WARN or FAIL | After phase 1.3: one gate command and the hash files. FAIL once phase 1.9 is closed | a `verify` make target, or `/psxdecomp:upgrade own gate "<command>"` |
 | `toolchain` | WAIT or WARN | After phase 1.4: `docs/ops/compiler-pin.md`, and `config/toolchain.tsv` with every row at its pin | the row names it |
 | `names` | WAIT, WARN or FAIL | After phase 1.4: the two ledgers. FAIL: a malformed row | `python3 tools/psxd_floor.py names` |
-| `debt` | WAIT, WARN or FAIL | From the first C file: the debt baseline is equal to the tree. FAIL: a rise, or a stale row | `python3 tools/psxd_floor.py debt`, then `debt --update` (`--admit` for a rise) |
+| `debt` | WAIT, WARN or FAIL | From the first C file: the debt baseline is equal to the tree. FAIL: a rise, a stale row, or a kind with no policy line. WARN: a version 1 baseline | `python3 tools/psxd_floor.py debt`, then `debt --update` (it refuses a rise in a body that exists) |
 | `readme` | FAIL | A README lint failure. The standard: `docs/PUBLISHING.md` in the plugin | the row names it; the generated blocks: `python3 tools/psxd_publish.py render README.md --write` |
 | `card` | WARN only | `HOW_WE_WORK.md` is over PA3's cap | move a section to `docs/ops/` and link it |
 

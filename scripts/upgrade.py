@@ -22,8 +22,10 @@ are printed as commands for the developer (their own installers, their own gates
 
 psxdecomp also delivers the readability floor: `fin-rule` and `name-rule` (rules/FIN1.md and rules/NAME1.md, written
 as `ste-rule` is), `names-ledger` (the header lines of config/names.tsv and config/asm-evidence.tsv, once) and
-`debt-baseline` (config/debt-baseline.txt, once, last, in `mode admit`); `floor-public` is the manual line of split
-mode. A game with `[own] debt` or `[own] names` gets none of the actions that key replaces.
+`debt-baseline` (config/debt-baseline.txt, once, last, with the starting mode of each debt kind); `debt-recount`
+rewrites a baseline of an earlier psxdecomp in version 2 (the rows of now, a policy line for each kind that has none;
+the game's own lines stay); `floor-public` is the manual line of split mode. A game with `[own] debt` or `[own] names`
+gets none of the actions that key replaces.
 
 docs/ops/psxdecomp-campaign.md (the campaign templates, owned; nothing with `[own] campaign`) is reference text: no
 ledger file is created and no doctor row checks its schemas. While phase 1.8 is open, the `matcher` line offers the
@@ -496,8 +498,14 @@ def plan(repo: pathlib.Path) -> list[dict]:
         add("psxdecomp", "names-ledger: write the header line of %s, once (names with their evidence; assembly with "
             "its reason)" % " and ".join(ledgers), "`names` checks them; `debt` counts a name with no row", "names-ledger")
     if "debt" not in own and not (repo / floor.BASELINE).is_file():
-        add("psxdecomp", "debt-baseline: write %s, once (the count of readability debt of each tracked source file, in "
-            "`mode admit`)" % floor.BASELINE, "`debt` fails when a count is not equal to its row", "debt-baseline")
+        add("psxdecomp", "debt-baseline: write %s, once (the count of readability debt of each tracked source file, "
+            "and the starting mode of each kind)" % floor.BASELINE, "`debt` fails when a count is not equal to its row",
+            "debt-baseline")
+    elif "debt" not in own and recount_due(repo):
+        add("psxdecomp", "debt-recount: rewrite %s in version 2 (the rows of now; %s; the lines of the game stay)"
+            % (floor.BASELINE, recount_due(repo)),
+            "from psxdecomp 0.6.0 the baseline holds a policy line for each kind, and `debt` fails without one",
+            "debt-recount")
     if (repo / PUBLIC_LIST).is_file():
         listed = publish.parse_public_paths(common.read(repo / PUBLIC_LIST))
         need = [floor.VENDORED] + [d.path for d in DELIVERY if d.key in ("names-ledger", "debt-baseline") and d.own not in own]
@@ -753,6 +761,14 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
         w(publish.STYLE_RATCHET_REL, "" if dry else common.first_ratchet(repo))
     if "debt-baseline" in acts:                      # and the debt of the source as the ledgers leave it
         w(floor.BASELINE, "" if dry else floor.first_baseline(repo))
+    if "debt-recount" in acts:                       # the same file of an earlier psxdecomp: the tool's own recount
+        head = floor._head(repo)
+        refused = [d for ck, d in floor.admission(repo, head, floor.Tree(repo))[0] if ck == "debt"] if head else []
+        if refused:                                  # a recount admits nothing: the source is the game's to commit
+            written.append("FAIL debt-recount: the source differs from HEAD in what the policy refuses (%s%s): commit "
+                           "or undo that change, then apply again" % (refused[0], ", …" if len(refused) > 1 else ""))
+        else:
+            w(floor.BASELINE, floor.recount_text(repo)[0])
     # the record, last: the version and the hashes are true only when the files above are written
     if not dry:
         held = rules_delivered(repo)
@@ -762,6 +778,20 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
     if rec is not None:
         w(install.RECORD, rec)
     return written
+
+
+def recount_due(repo: pathlib.Path) -> str | None:
+    """Why the baseline needs `debt --recount`, or None: it is a version 1 file, or a kind has no policy line. A
+    baseline that does not parse is the game's to repair (the doctor's `debt` row says where)."""
+    try:
+        bl = floor.parse_baseline(common.read(repo / floor.BASELINE) if (repo / floor.BASELINE).is_file() else None)
+    except floor.Fail:
+        return None
+    if bl.version == 1:
+        return "it is a version 1 file in `mode %s`, and each kind gets its starting mode" % bl.old_mode
+    if bl.version == 2 and bl.lacks():
+        return "a policy line for %s" % ", ".join(bl.lacks())
+    return None
 
 
 def main(argv=None) -> int:
@@ -1291,7 +1321,14 @@ def self_test() -> int:
         ok &= (repo / floor.NAMES).read_text() == "\t".join(floor.NAME_COLUMNS) + "\n"
         ok &= (repo / floor.ASM_EVIDENCE).read_text() == "\t".join(floor.ASM_COLUMNS) + "\n"
         base = (repo / floor.BASELINE).read_text()
-        ok &= base.endswith("mode admit\n") and "skip " not in base and base.startswith("# %s: " % floor.BASELINE)
+        ok &= base.endswith("mode struct admit-new\n") and "skip " not in base and base.startswith("# %s: " % floor.BASELINE)
+        ok &= "debt-recount" not in keys and recount_due(repo) is None
+        (repo / floor.BASELINE).write_text("# a note of the game\nmode admit\n")           # the file of psxdecomp 0.6.0
+        ok &= "version 1 file in `mode admit`" in next(x["what"] for x in plan(repo) if x["key"] == "debt-recount")
+        apply(repo, False, False)
+        again = (repo / floor.BASELINE).read_text()
+        ok &= again.endswith("mode struct admit-new\n") and "# a note of the game\n" in again and recount_due(repo) is None
+        (repo / floor.BASELINE).write_text(base)
         ok &= "would be created %s" % floor.BASELINE in dry and dry.index("would be created %s" % floor.NAMES) < dry.index(
             "would be created %s" % floor.BASELINE)
         ok &= (repo / floor.VENDORED).read_bytes() == OWNED[floor.VENDORED].read_bytes() and os.access(repo / floor.VENDORED, os.X_OK)

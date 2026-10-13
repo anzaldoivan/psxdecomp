@@ -355,25 +355,35 @@ def names_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, st
 def debt_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, str]:
     """Due with the first tracked C file under src/, or with the first count or row (a header or an assembly file is
     counted before any C file is): config/debt-baseline.txt is equal to the tree (or `[own] debt`). FAIL on a rise, a
-    stale row or a baseline that does not parse; WARN with no baseline, and on `mode admit` once phase 1.8 is closed."""
+    stale row, a kind with no policy line or a baseline that does not parse; WARN with no baseline, with a version 1
+    baseline (the upgrade rewrites it), and on a kind that may still rise once phase 1.8 is closed."""
     if own.get("debt"):
         return "OK", "the game's own debt scanner: %s" % own["debt"]
     if isinstance(debt, Exception):
         return "FAIL", str(debt)
-    if not (debt["counts"] or debt["rows"] or any(p.startswith("src/") and p.endswith(".c") for p in floor.Tree(repo).paths)):
+    bl = debt["baseline"]
+    if not (debt["counts"] or bl.rows or any(p.startswith("src/") and p.endswith(".c") for p in floor.Tree(repo).paths)):
         return "WAIT", "due with the first C file under src/: %s%s" % (
-            floor.BASELINE, "" if debt["baseline"] else " (/psxdecomp:upgrade apply writes it)")
+            floor.BASELINE, "" if bl.version else " (/psxdecomp:upgrade apply writes it)")
     totals = floor._totals(debt["counts"])
-    if not debt["baseline"]:
+    if bl.version == 0:
         return "WARN", "no %s (the tree holds: %s) — /psxdecomp:upgrade apply writes it" % (floor.BASELINE, totals)
+    if bl.version == 1:
+        return "WARN", "%s is a version 1 file (`mode %s`; the tree holds: %s): run the upgrade — /psxdecomp:upgrade " \
+                       "apply rewrites it with a policy line for each kind" % (floor.BASELINE, bl.old_mode, totals)
+    if bl.lacks():
+        return "FAIL", "%s has no policy line for %s: /psxdecomp:upgrade apply writes them" % (
+            floor.BASELINE, ", ".join(bl.lacks()))
     if debt["rise"] or debt["stale"]:
         return "FAIL", "%d count(s) over their row, %d row(s) over their count (`python3 %s debt` lists them; " \
-                       "`debt --update%s` rewrites the baseline)" % (
-                           len(debt["rise"]), len(debt["stale"]), floor.VENDORED, " --admit" if debt["rise"] else "")
-    if debt["mode"] == "admit" and state[8] == "closed":
-        return "WARN", "the baseline is equal to the tree (%s) and still in `mode admit` after phase 1.8 closed: " \
-                       "`python3 %s debt --down` lets a count only fall" % (totals, floor.VENDORED)
-    return "OK", "the baseline is equal to the tree (%s; mode %s)" % (totals, debt["mode"])
+                       "`debt --update` rewrites the rows, and refuses a rise in a function body that exists)" % (
+                           len(debt["rise"]), len(debt["stale"]), floor.VENDORED)
+    loose = [k for k in floor.KINDS if bl.policy(k)[0] != "down"]
+    if loose and state[8] == "closed":
+        return "WARN", "the baseline is equal to the tree (%s) and %d kind(s) may still rise after phase 1.8 closed " \
+                       "(%s): `python3 %s debt --down` lets every count only fall" % (
+                           totals, len(loose), ", ".join(loose), floor.VENDORED)
+    return "OK", "the baseline is equal to the tree (%s; %s)" % (totals, bl.summary())
 
 
 def machine_pa3_version() -> str | None:
@@ -1256,7 +1266,7 @@ def self_test_floor() -> bool:
         equal = rows()["debt"]
         (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0] + floor.C_DEBT["goto"][0].replace("Walk", "Run"))
         rise = rows()["debt"]
-        ok &= rise[0] == "FAIL" and "2 count(s) over their row" in rise[1] and "--admit" in rise[1]   # a goto and an unbased name
+        ok &= rise[0] == "FAIL" and "2 count(s) over their row" in rise[1] and "refuses a rise" in rise[1]   # a goto and an unbased name
         tool = repo / "tools-ext"
         tool.mkdir()
         common.git(tool, "init", "--quiet")
@@ -1320,7 +1330,7 @@ def self_test_floor() -> bool:
             print("  own_missing WRONG for: %s" % wrong)
     print("  floor rows: before %s; at 1.4 %s; a stale row %s; no gate after 1.9 %s; [own] %s" % (
         first["gate"][0], "/".join(due[k][0] for k in due), stale[0], gone[0], "/".join(mine[k][0] for k in mine)))
-    return (ok and equal[0] == "OK" and "mode admit" in equal[1] and stale[0] == "FAIL" and "1 row(s) over their count" in stale[1]
+    return (ok and equal[0] == "OK" and "admit-new: offset" in equal[1] and stale[0] == "FAIL" and "1 row(s) over their count" in stale[1]
             and late["debt"][0] == "WARN" and "debt --down" in late["debt"][1] and gone[0] == "FAIL"
             and broken[0] == "FAIL" and "the header is not" in broken[1]
             and [mine[k][0] for k in ("gate", "toolchain", "names", "debt")] == ["OK", "OK", "OK", "OK"]

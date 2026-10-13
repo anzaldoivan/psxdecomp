@@ -4,23 +4,29 @@
     floor.py plan [--repo DIR]            lint GENERATION_PLAN.md: `PLAN FAIL|WARN|INFO <check>: <detail>`; exit 1 on a FAIL
     floor.py ladder FILE                  the eleven ladder phases a constitution names; exit 1 when one is missing
     floor.py debt [--repo DIR]            count the readability debt of the tracked source against config/debt-baseline.txt;
-                                          exit 1 when a count is over its row (a rise) or under it (a stale row)
+                                          exit 1 when a count is over its row (a rise) or under it (a stale row), with
+                                          no baseline, and with no policy line for a kind
     floor.py debt [--staged | --rev REV] [--against BASE]
                                           count the index or the revision REV in the work tree's place (no checkout);
-                                          --against: print each count that differs from the count at the revision BASE
+                                          --against: judge the change since the revision BASE by BASE's own policy
     floor.py debt --bodies [--staged | --rev REV]
                                           the same counts by function body: one `DEBT BODY <path> <function>` line per
                                           body with debt, `(file scope)` for what no body holds; no check
-    floor.py debt --update [--admit]      rewrite the baseline to the counts of now; a rise needs `mode admit` and --admit
-    floor.py debt --down                  switch the baseline to `mode down`, one way: from then on no rise is admitted
+    floor.py debt --update                rewrite the rows to the counts of now; refused when the change since HEAD is
+                                          one that HEAD's policy does not admit
+    floor.py debt --recount               write the baseline in version 2: the rows of now and a policy line for each
+                                          kind that has none; refused when the source differs from HEAD's
+    floor.py debt --down [KIND]           switch a kind (or every kind) to `down`, one way: it never rises again
+    floor.py debt --raise KIND N --reason TEXT
+                                          the developer's act: a dated `raise` line that lets one change go over by N
     floor.py names [--init] [--repo DIR]  check config/names.tsv and config/asm-evidence.tsv; --init writes their header lines
     floor.py toolchain [--repo DIR]       config/toolchain.tsv: each pinned checkout at its pin and clean, each file at its hash
     floor.py guard --hook                 a PreToolUse hook: stdin is the event, config/guard.tsv holds the rules
     floor.py --self-test
 
 psxdecomp copies this file into a game as tools/psxd_floor.py. It uses the standard library only and it imports
-nothing of the plugin. It writes three files and no other: the baseline (`debt --update`, `debt --down`) and the header
-line of each of the two ledgers (`names --init`).
+nothing of the plugin. It writes three files and no other: the baseline (`debt --update`, `--recount`, `--down`,
+`--raise`) and the header line of each of the two ledgers (`names --init`).
 
 The plan checks. `grammar` and `ladder` are a FAIL, the others a WARN.
   grammar    every phase line has its five keys, a unique id of this generation, a known status, depends that exist
@@ -50,11 +56,24 @@ The debt kinds (one `<count> <kind> <path>` row each in the baseline):
   struct        a struct, union or enum body outside include/
 An `INCLUDE_ASM` stub is not debt: the progress report gives it no credit. The stub macro's own definition and a
 file-scope `__asm__` statement of a header are not debt either.
+
+The baseline's policy lines (one per kind; `debt --recount` writes the starting ones):
+  mode <kind> down                              the kind never rises
+  mode <kind> admit-new                         debt arrives only with a new function body: a body that exists, moves
+                                                or is renamed never gets worse, and what stands outside a function
+                                                rises only in a file that gets a new body
+  budget <kind> <n> base <count> <bodies> <stubs>
+                                                as admit-new, and the total grows by at most n for each 100 new bodies
+                                                since the anchor, plus 2. A new body takes an INCLUDE_ASM line away
+  raise <kind> <n> <date> <reason>              the developer lets the change that adds this line go over by n
+A change is judged by the policy of the revision it starts from (`debt --against`): it cannot weaken a mode, raise a
+budget, move an anchor, add a `skip` line or delete the file.
 """
 from __future__ import annotations
 
 import argparse
 import bisect
+import contextlib
 import fnmatch
 import hashlib
 import json
@@ -115,6 +134,7 @@ class Tree:
         self._blob: dict[str, str] = {}
         self._text: dict[str, str | None] = {}
         self._cat = None
+        self.memo: dict = {}                           # what a check derived from this tree, by its own key
         if source is None:
             r = _git(repo, "ls-files", "-z", *(("--cached", "--others", "--exclude-standard") if untracked else ()))
             if r.returncode == 0:
@@ -593,9 +613,14 @@ BASELINE_HEAD = (
     "%s: the count of readability debt in each tracked source file (`python3 %s --help` lists the kinds)." % (
         BASELINE, VENDORED),
     "`python3 %s debt` fails when a count is over its row, and when a row is over its count." % VENDORED,
-    "After a change, run `python3 %s debt --update`. In `mode admit` a rise needs `--admit` and is printed." % VENDORED,
-    "`python3 %s debt --down` switches to `mode down`, one way: from then on a count may only fall." % VENDORED,
-    "A `skip` line names files that the checker does not read.")
+    "After a change, run `python3 %s debt --update`. It refuses a rise in a function body that exists." % VENDORED,
+    "A policy line gives each kind its mode: `down` (never rises), `admit-new` (debt arrives only with a new function",
+    "body) or `budget <n>` (as admit-new, at most n for each 100 new bodies since the anchor). A mode only gets stronger.",
+    "A `raise` line is the developer's: `python3 %s debt --raise <kind> <n> --reason <text>`." % VENDORED,
+    "A `skip` line names files that the checker does not read. A change cannot add one.")
+OLD_HEADS = ("%s: the count of readability debt" % BASELINE, "`python3 %s debt` fails when" % VENDORED,   # version 1's
+             "After a change, run `python3 %s debt --update`. In `mode admit`" % VENDORED,
+             "`python3 %s debt --down` switches" % VENDORED, "A `skip` line names files that the checker does not read.")
 
 
 def strip(text: str) -> str:
@@ -821,6 +846,8 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, 
     every function body of every C file (also one with no debt), and under SCOPE what no body holds. `tree`: the
     source to count (default: the work tree of `repo`). The ledgers and the record are read from the same source."""
     tree = tree or Tree(repo)
+    if ("bodies", tuple(skip)) in tree.memo:
+        return tree.memo[("bodies", tuple(skip))]
     files = [p for p in tree.paths if is_source(p) and not any(entry_match(e, p) for e in skip)]
     header = address_header(tree)
     names, _ = read_tsv(NAMES, NAME_COLUMNS, tree)
@@ -845,7 +872,19 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, 
         if p in evidence:
             for got in out[p].values():
                 got.pop("asm", None)
+    tree.memo[("bodies", tuple(skip))] = out
     return out
+
+
+def tree_shape(repo, skip=(), tree: Tree | None = None) -> tuple[int, int]:
+    """(the function bodies, the INCLUDE_ASM lines) of the C files that `debt_bodies` reads: what a budget counts."""
+    tree = tree or Tree(repo)
+    bodies = debt_bodies(repo, skip, tree)
+    stubs = 0
+    for p in bodies:
+        if p.endswith(".c"):
+            stubs += scan_file(p, tree.read(p) or "", address_header=address_header(tree))["stubs"]
+    return sum(len([n for n in by if n != SCOPE]) for by in bodies.values()), stubs
 
 
 def debt_counts(repo, skip=(), tree: Tree | None = None, bodies=None) -> dict[tuple[str, str], int]:
@@ -858,84 +897,338 @@ def debt_counts(repo, skip=(), tree: Tree | None = None, bodies=None) -> dict[tu
     return out
 
 
-def parse_baseline(text: str | None) -> tuple[dict[tuple[str, str], int], list[str], str, list[str]]:
-    """(the rows {(kind, path): count}, the `skip` entries, the mode, the comment lines). None is the empty baseline
-    in `mode admit`. Any other line raises Fail with its number, and so do a second row of one pair and a second
-    `mode` line. `--update` writes every comment line above the mode line."""
-    rows, skip, mode, head, modes = {}, [], "admit", [], 0
-    for n, raw in enumerate((text or "").splitlines(), 1):
+# ---- the baseline: one row per count, and the policy that judges a change -------------------------------------------
+# A policy line gives each kind its mode. `down`: the kind never rises. `admit-new`: debt may arrive with a new
+# function body, and a body that exists never gets worse. `budget <n>`: as admit-new, and the kind's total may grow by
+# n for each 100 new bodies since the anchor (`base <count> <bodies> <stubs>`), plus BUDGET_SLACK. A new body is one
+# that takes an INCLUDE_ASM line away: an empty function beside its stub buys nothing. A `raise` line is the
+# developer's act: it lets one change go over by its number. The change itself cannot weaken any of this: `admission`
+# reads the policy of the revision that the change starts from.
+MODES = ("admit-new", "budget", "down")              # weakest first
+START_DOWN = ("pin-unmarked", "asm", "unbased")      # the modes that `debt --recount` gives a kind with no line
+START_BUDGET = {"pin": 30, "goto": 12}
+BUDGET_SLACK = 2
+PUBLIC_PATHS = "config/public-paths.txt"
+
+
+class Baseline:
+    """config/debt-baseline.txt as read. `version` 0: no file. 1: the file of psxdecomp 0.6.0 and earlier (one `mode
+    admit|down` line, in `old_mode`). 2: a policy line per kind. `other`: the lines of a kind this tool does not
+    know (a newer tool wrote them), kept as they are."""
+
+    def __init__(self):
+        self.version, self.old_mode = 0, None
+        self.rows: dict[tuple[str, str], int] = {}
+        self.skip: list[str] = []
+        self.modes: dict[str, str] = {}
+        self.budgets: dict[str, tuple[int, int, int, int]] = {}      # kind: (n, count, bodies, stubs)
+        self.raises: list[tuple[str, int, str, str]] = []            # (kind, n, date, reason)
+        self.head: list[str] = []
+        self.other: list[str] = []
+
+    def policy(self, kind: str) -> tuple | None:
+        """("down",), ("admit-new",) or ("budget", n, count, bodies, stubs); None for a kind with no line."""
+        if kind in self.budgets:
+            return ("budget",) + self.budgets[kind]
+        return (self.modes[kind],) if kind in self.modes else None
+
+    def lacks(self) -> list[str]:
+        return [k for k in KINDS if self.policy(k) is None]
+
+    def summary(self) -> str:
+        by = {m: [k for k in KINDS if (self.policy(k) or ("",))[0] == m] for m in reversed(MODES)}
+        return "; ".join("%s: %s" % (m, ", ".join(
+            "%s %d" % (k, self.budgets[k][0]) if m == "budget" else k for k in ks)) for m, ks in by.items() if ks)
+
+
+def parse_baseline(text: str | None) -> Baseline:
+    """The baseline of a text; None is the absent file (version 0). A line that is no row, no policy line, no `skip`
+    line and no `#` comment raises Fail with its number, and so do a second row of one pair, a second policy of one
+    kind, and a file that mixes the two versions. `--update` writes every comment line above the policy lines."""
+    bl, old = Baseline(), 0
+    if text is None:
+        return bl
+    bl.version = 2
+    for n, raw in enumerate(text.splitlines(), 1):
         l = raw.strip()
         if not l:
             continue
-        m = re.fullmatch(r"(\d+) (\S+) (\S.*)", l)
+        where = "%s:%d" % (BASELINE, n)
+        mode = re.fullmatch(r"mode (\S+) (down|admit-new)", l)
+        budget = re.fullmatch(r"budget (\S+) (\d+) base (\d+) (\d+) (\d+)", l)
+        rise = re.fullmatch(r"raise (\S+) (\d+) (\d{4}-\d\d-\d\d) (\S.*)", l)
+        row = re.fullmatch(r"(\d+) (\S+) (\S.*)", l)
+        m = mode or budget or rise or row
+        kind = m[2] if m is row and row else m[1] if m else None
         if l.startswith("#"):
-            head.append(l)
+            bl.head.append(l)
         elif l in ("mode admit", "mode down"):
-            modes += 1
-            if modes > 1:
-                raise Fail("%s:%d: a second `mode` line: the file holds one" % (BASELINE, n))
-            mode = l[5:]
+            old += 1
+            if old > 1:
+                raise Fail("%s: a second `mode` line: the file holds one" % where)
+            bl.version, bl.old_mode = 1, l[5:]
         elif l.startswith("skip ") and l[5:].strip():
-            skip.append(l[5:].strip())
-        elif m and m[2] in KINDS and (m[2], m[3]) not in rows:
-            rows[(m[2], m[3])] = int(m[1])
+            bl.skip.append(l[5:].strip())
+        elif m is None:
+            raise Fail("%s: not `<count> <kind> <path>`, `mode <kind> down|admit-new`, `budget <kind> <n> base <count> "
+                       "<bodies> <stubs>`, `raise <kind> <n> <date> <reason>`, `skip <entry>` or a `#` comment" % where)
+        elif kind not in KINDS:
+            bl.other.append(l)
+        elif mode or budget:
+            if bl.policy(kind) is not None:
+                raise Fail("%s: %s has two policy lines" % (where, kind))
+            if mode:
+                bl.modes[kind] = mode[2]
+            else:
+                bl.budgets[kind] = tuple(int(x) for x in budget.groups()[1:])
+        elif rise:
+            bl.raises.append((kind, int(rise[2]), rise[3], rise[4]))
+        elif (kind, row[3]) in bl.rows:
+            raise Fail("%s: %s %s has two rows" % (where, kind, row[3]))
         else:
-            raise Fail("%s:%d: %s" % (BASELINE, n, "%s %s has two rows" % (m[2], m[3]) if m and m[2] in KINDS else
-                                      "not `<count> <kind> <path>`, `mode admit|down`, `skip <entry>` or a `#` comment"))
-    return rows, skip, mode, head
+            bl.rows[(kind, row[3])] = int(row[1])
+    if old and (bl.modes or bl.budgets or bl.raises):
+        raise Fail("%s: a `mode %s` line of version 1 beside the policy lines of version 2" % (BASELINE, bl.old_mode))
+    return bl
 
 
-def baseline_text(counts: dict, skip=(), mode="admit", head=()) -> str:
-    lines = [l if l.startswith("#") else "# " + l for l in head] + ["mode %s" % mode] + ["skip %s" % e for e in skip]
-    lines += ["%d %s %s" % (counts[k], k[0], k[1]) for k in sorted(counts, key=lambda k: (k[1], KINDS.index(k[0])))
-              if counts[k] > 0]
+def baseline_text(bl: Baseline, counts: dict | None = None) -> str:
+    """The file of a baseline in version 2: the comment lines, a policy line per kind, the lines of kinds this tool
+    does not know, the `raise` lines, the `skip` lines, then one row per count above zero (`counts`, else its own)."""
+    rows = bl.rows if counts is None else counts
+    lines = [l if l.startswith("#") else "# " + l for l in bl.head]
+    for kind in KINDS:
+        if kind in bl.budgets:
+            lines.append("budget %s %d base %d %d %d" % ((kind,) + tuple(bl.budgets[kind])))
+        elif kind in bl.modes:
+            lines.append("mode %s %s" % (kind, bl.modes[kind]))
+    lines += bl.other
+    lines += ["raise %s %d %s %s" % r for r in bl.raises]
+    lines += ["skip %s" % e for e in bl.skip]
+    lines += ["%d %s %s" % (rows[k], k[0], k[1]) for k in sorted(rows, key=lambda k: (k[1], KINDS.index(k[0])))
+              if rows[k] > 0]
     return "".join(l + "\n" for l in lines)
 
 
-def first_baseline(repo) -> str:
-    """A game's first baseline: the counts of now, `mode admit`, the stub macro's header skipped where one is tracked."""
-    skip = tuple(e for e in FIRST_SKIP if e in Tree(repo).paths)
-    return baseline_text(debt_counts(repo, skip), skip, "admit", BASELINE_HEAD)
-
-
-def _totals(counts: dict) -> str:
+def _kind_totals(counts: dict) -> dict[str, int]:
     by = {k: 0 for k in KINDS}
     for (kind, _), n in counts.items():
         by[kind] += n
+    return by
+
+
+def _totals(counts: dict) -> str:
+    by = _kind_totals(counts)
     return ", ".join("%s %d" % (k, by[k]) for k in KINDS if by[k]) or "none"
 
 
+def recount_text(repo, tree: Tree | None = None) -> tuple[str, list[str]]:
+    """(the baseline that `debt --recount` writes for a tree, the lines that say what it added): the counts of now,
+    the policy lines the file holds, and the starting mode of each kind that has none (every kind `down` after a
+    version 1 file in `mode down`). A budget's anchor is the tree of now."""
+    tree = tree or Tree(repo)
+    bl = parse_baseline(tree.read(BASELINE))
+    notes = []
+    if bl.version == 0:
+        bl.skip = [e for e in FIRST_SKIP if e in tree.paths]
+        bl.head = list(BASELINE_HEAD)
+    counts = debt_counts(repo, bl.skip, tree)
+    totals, shape = _kind_totals(counts), None
+    for kind in bl.lacks():
+        if bl.old_mode == "down" or kind in START_DOWN:
+            bl.modes[kind] = "down"
+        elif kind in START_BUDGET:
+            shape = shape or tree_shape(repo, bl.skip, tree)
+            bl.budgets[kind] = (START_BUDGET[kind], totals[kind]) + shape
+        else:
+            bl.modes[kind] = "admit-new"
+        notes.append("%s: %s" % (kind, " ".join(map(str, bl.policy(kind)))))
+    if bl.version == 1:
+        bl.head = list(BASELINE_HEAD) + [l for l in bl.head if not l.lstrip("# ").startswith(OLD_HEADS)]
+    return baseline_text(bl, counts), notes
+
+
+def first_baseline(repo) -> str:
+    """A game's first baseline: the counts of now, the starting mode of each kind, the stub macro's header skipped
+    where one is tracked."""
+    return recount_text(repo)[0]
+
+
+def state_findings(repo, tree: Tree | None = None) -> tuple[list[str], dict]:
+    """(the FAIL lines of a tree's own baseline, what was read). The baseline must exist, be of version 2, hold a
+    policy line for each kind and hold each count as its row. A row of a file that the tree lacks is not stale where
+    config/public-paths.txt exists and lists no such path: the public tree of a game in split mode holds the rows of
+    the files it does not publish."""
+    tree = tree or Tree(repo)
+    bl = parse_baseline(tree.read(BASELINE))
+    counts = debt_counts(repo, bl.skip, tree)
+    st = {"baseline": bl, "counts": counts, "rise": [], "stale": []}
+    if bl.version == 0:
+        return ["no %s: `python3 %s debt --recount` writes it" % (BASELINE, VENDORED)], st
+    if bl.version == 1:
+        return ["%s is a version 1 file (`mode %s`): run `python3 %s debt --recount`, or /psxdecomp:upgrade"
+                % (BASELINE, bl.old_mode, VENDORED)], st
+    out = ["no policy line for %s in %s: run `python3 %s debt --recount`" % (", ".join(bl.lacks()), BASELINE, VENDORED)
+           ] if bl.lacks() else []
+    public = tree.read(PUBLIC_PATHS)
+    listed = None if public is None else [l.strip() for l in public.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    keys = sorted(set(bl.rows) | set(counts), key=lambda k: (k[1], KINDS.index(k[0])))
+    for k in keys:
+        have, row = counts.get(k, 0), bl.rows.get(k, 0)
+        if have > row:
+            st["rise"].append(k)
+            out.append("rise %s %s: %d, its row is %d" % (k[0], k[1], have, row))
+        elif have < row and not (listed is not None and k[1] not in tree.paths
+                                 and not any(entry_match(e, k[1]) for e in listed)):
+            st["stale"].append(k)
+            out.append("stale %s %s: %d, its row is %d" % (k[0], k[1], have, row))
+    return out, st
+
+
+def policy_findings(old: Baseline, new: Baseline) -> list[str]:
+    """What a change may not do to the policy that judged it: weaken a kind's mode, raise a budget or move its anchor,
+    add a `skip` line, delete the file. `old`: the baseline of the revision the change starts from."""
+    if old.version == 0:
+        return []
+    if new.version == 0:
+        return ["%s is gone" % BASELINE]
+    out = ["a new `skip` line (%s)" % e for e in new.skip if e not in old.skip]
+    if new.version == 1:
+        return out + (["`mode down` became `mode admit`"] if (old.old_mode, new.old_mode) == ("down", "admit") else []) + (
+            ["a version 2 file became a version 1 file"] if old.version == 2 else [])
+    for kind in KINDS:
+        was = ("down",) if old.old_mode == "down" else old.policy(kind)
+        now = new.policy(kind)
+        if was is None:
+            continue
+        if now is None:
+            out.append("the policy line of %s is gone (it was %s)" % (kind, " ".join(map(str, was))))
+        elif MODES.index(now[0]) < MODES.index(was[0]):
+            out.append("%s went from %s to %s: a mode only gets stronger" % (kind, was[0], now[0]))
+        elif now[0] == was[0] == "budget" and now[1] > was[1]:
+            out.append("the budget of %s went from %d to %d" % (kind, was[1], now[1]))
+        elif now[0] == was[0] == "budget" and now[2:] != was[2:]:
+            out.append("the anchor of the %s budget changed (base %s, was %s)" % (
+                kind, " ".join(map(str, now[2:])), " ".join(map(str, was[2:]))))
+    return out
+
+
+def _rises(old: dict, new: dict) -> tuple[dict[str, int], list[tuple[str, str]], dict[str, int]]:
+    """(the rise of each kind in what is not new, its lines [(kind, text)], {path: its new bodies}) between two
+    results of debt_bodies. A body is new when its file holds more bodies than before. A name that left another file
+    in the same change is that body, moved. The other added names of a file stand for the names it lost (a rename is
+    not a new body): of those, the ones with the most debt count as the new ones."""
+    rise: dict[str, int] = {}
+    lines: list[tuple[str, str]] = []
+
+    def compare(was: dict, now: dict, where: str, why: str) -> None:
+        for kind in KINDS:
+            if now.get(kind, 0) > was.get(kind, 0):
+                rise[kind] = rise.get(kind, 0) + now[kind] - was.get(kind, 0)
+                lines.append((kind, "%s: %s %s: %d -> %d" % (why, kind, where, was.get(kind, 0), now[kind])))
+
+    def total(sets) -> dict:
+        got: dict[str, int] = {}
+        for counts in sets:
+            for kind, n in counts.items():
+                got[kind] = got.get(kind, 0) + n
+        return got
+
+    gone = {(p, n): c for p, by in old.items() for n, c in by.items() if n != SCOPE and n not in new.get(p, {})}
+    came = sorted((p, n) for p, by in new.items() for n in by if n != SCOPE and n not in old.get(p, {}))
+    for p, by in sorted(new.items()):
+        for n, c in sorted(by.items()):
+            if n != SCOPE and n in old.get(p, {}):
+                compare(old[p][n], c, "%s %s" % (p, n), "rose in an existing body")
+    left_by: dict[str, list[str]] = {}
+    for p, n in sorted(gone):
+        left_by.setdefault(n, []).append(p)
+    fresh: dict[str, list[str]] = {}
+    for p, n in came:
+        if left_by.get(n):
+            q = left_by[n].pop(0)
+            compare(gone.pop((q, n)), new[p][n], "%s %s (from %s)" % (p, n, q), "rose in a moved body")
+        else:
+            fresh.setdefault(p, []).append(n)
+    new_in: dict[str, int] = {}
+    for p, names in sorted(fresh.items()):
+        lost = [c for (q, _), c in gone.items() if q == p]
+        new_in[p] = max(0, len(names) - len(lost))
+        names.sort(key=lambda n: (-sum(new[p][n].values()), n))
+        rest = names[new_in[p]:]
+        if rest:
+            compare(total(lost), total(new[p][n] for n in rest), "%s %s (in the place of a body that left)" % (
+                p, ", ".join(rest)), "rose in a renamed body")
+    any_new = any(new_in.values())
+    for p, by in sorted(new.items()):
+        holds_bodies = any(n != SCOPE for n in by) or any(n != SCOPE for n in old.get(p, {}))
+        if not (new_in.get(p) if holds_bodies else any_new):
+            compare(old.get(p, {}).get(SCOPE, {}), by.get(SCOPE, {}), "%s (file scope)" % p,
+                    "rose outside a function with no new body")
+    return rise, lines, new_in
+
+
+def admission(repo, base: Tree | None, head: Tree) -> tuple[list[tuple[str, str]], list[str]]:
+    """([(check, detail)] for what a change may not do, the INFO lines). `base`: the tree the change starts from
+    (None: a first commit, with nothing to compare). `head`: the tree it makes. Check `policy`: policy_findings.
+    Check `debt`: a rise in a body that exists, moved or was renamed; a rise outside a function in a file that got no
+    new body; a rise of a `down` kind; a `budget` kind over its allowance. Both trees are counted by this tool, with
+    the `skip` lines that both baselines hold, so a row that the change wrote decides nothing. A `raise` line that
+    the change adds lets its kind go over by its number."""
+    new = parse_baseline(head.read(BASELINE))
+    if base is None:
+        return [], []
+    old = parse_baseline(base.read(BASELINE))
+    fails = [("policy", f) for f in policy_findings(old, new)]
+    skip = tuple(e for e in new.skip if e in old.skip) if old.version else tuple(new.skip)
+    was, now = debt_bodies(repo, skip, base), debt_bodies(repo, skip, head)
+    rise, lines, new_in = _rises(was, now)
+    tot0, tot1 = _kind_totals(debt_counts(repo, bodies=was)), _kind_totals(debt_counts(repo, bodies=now))
+    seen = list(old.raises)
+    slack: dict[str, int] = {}
+    for r in new.raises:
+        if r in seen:
+            seen.remove(r)
+        else:
+            slack[r[0]] = slack.get(r[0], 0) + r[1]
+    infos = []
+    for kind in KINDS:
+        policy = ("down",) if old.old_mode == "down" else (old.policy(kind) or new.policy(kind) or ("admit-new",))
+        over, mine = rise.get(kind, 0), [text for k, text in lines if k == kind]
+        grew = tot1[kind] - tot0[kind]
+        if policy[0] == "down" and grew > over:
+            mine.append("rose in total: %s is `down`: %d -> %d" % (kind, tot0[kind], tot1[kind]))
+            over = grew
+        elif policy[0] == "budget" and grew > 0:
+            bodies, stubs = tree_shape(repo, skip, head)
+            fresh = max(0, min(bodies - policy[3], policy[4] - stubs))
+            room = policy[2] + -(-policy[1] * fresh // 100) + BUDGET_SLACK
+            if tot1[kind] > room and min(grew, tot1[kind] - room) > over:
+                over = min(grew, tot1[kind] - room)
+                mine.append("over its budget: %s is %d, the budget allows %d (%d for each 100 new bodies, %d new since "
+                            "the anchor of %d, plus %d)" % (kind, tot1[kind], room, policy[1], fresh, policy[2], BUDGET_SLACK))
+        if over > slack.get(kind, 0):
+            fails += [("debt", text) for text in mine]
+            if slack.get(kind):
+                fails.append(("debt", "the `raise` line(s) of %s allow %d, the change needs %d" % (kind, slack[kind], over)))
+        elif over:
+            infos.append("%s is over by %d: the change's `raise` line(s) allow %d" % (kind, over, slack[kind]))
+    infos += ["a new `raise` line: %s %d %s %s" % r for r in new.raises if r not in old.raises]
+    return fails, infos
+
+
 def debt_status(repo, source: str | None = None) -> dict:
-    """What the doctor reads: the baseline (or None), the counts of now, the rises and the stale rows. `source`: the
-    index or a revision in the work tree's place (the baseline is read from the same source)."""
-    repo = pathlib.Path(repo)
-    tree = Tree(repo, source)
-    text = tree.read(BASELINE)
-    rows, skip, mode, head = parse_baseline(text)
-    counts = debt_counts(repo, skip, tree)
-    keys = sorted(set(rows) | set(counts), key=lambda k: (k[1], KINDS.index(k[0])))
-    return {"baseline": text is not None, "rows": rows, "skip": skip, "mode": mode, "head": head, "counts": counts,
-            "rise": [k for k in keys if counts.get(k, 0) > rows.get(k, 0)],
-            "stale": [k for k in keys if counts.get(k, 0) < rows.get(k, 0)]}
-
-
-def debt_against(repo, counts: dict, skip, base: str) -> list[str]:
-    """The report lines of `debt --against <base>`: each count that differs from the count of the same file at the
-    revision `base`, counted there with the same `skip` entries."""
-    old = debt_counts(repo, skip, Tree(repo, base))
-    keys = sorted(set(old) | set(counts), key=lambda k: (k[1], KINDS.index(k[0])))
-    out = ["DEBT INFO against %s: %s %s: %d -> %d" % (base, k[0], k[1], old.get(k, 0), counts.get(k, 0))
-           for k in keys if old.get(k, 0) != counts.get(k, 0)]
-    up = sum(counts.get(k, 0) > old.get(k, 0) for k in keys)
-    return out + ["DEBT INFO against %s: totals there: %s (%d count(s) rose, %d fell)" % (
-        base, _totals(old), up, len(out) - up)]
+    """What the doctor reads: the baseline, the counts of now, the rises and the stale rows, the FAIL lines. `source`:
+    the index or a revision in the work tree's place (the baseline is read from the same source)."""
+    fails, st = state_findings(repo, Tree(repo, source))
+    return dict(st, fails=fails)
 
 
 def cmd_bodies(repo, source: str | None = None) -> int:
     """`debt --bodies`: the counts of each function body and of each file's scope, one line per bucket with debt."""
     try:
-        skip = parse_baseline(Tree(repo, source).read(BASELINE))[1]
-        bodies = debt_bodies(repo, skip, Tree(repo, source))
+        tree = Tree(repo, source)
+        bodies = debt_bodies(repo, parse_baseline(tree.read(BASELINE)).skip, tree)
     except Fail as e:
         print("DEBT FAIL %s" % e)
         return 1
@@ -954,66 +1247,120 @@ def cmd_bodies(repo, source: str | None = None) -> int:
     return 0
 
 
-def cmd_debt(repo, update=False, admit=False, down=False, source: str | None = None, against: str | None = None) -> int:
+def _head(repo) -> Tree | None:
+    """The tree of HEAD; None in a repository with no commit."""
+    return Tree(repo, "HEAD") if _git(repo, "rev-parse", "-q", "--verify", "HEAD^{commit}").returncode == 0 else None
+
+
+def _write_baseline(repo, text: str) -> None:
+    (pathlib.Path(repo) / BASELINE).parent.mkdir(parents=True, exist_ok=True)
+    (pathlib.Path(repo) / BASELINE).write_text(text, encoding="utf-8")
+
+
+def cmd_debt(repo, update=False, down=None, source: str | None = None, against: str | None = None, recount=False,
+             raise_=None, reason=None) -> int:
     repo = pathlib.Path(repo)
-    if source is not None and (update or down):
-        print("DEBT FAIL --update and --down write the baseline of the work tree: they take no --staged and no --rev")
+    writes = sum(map(bool, (update, down, recount, raise_)))
+    if writes > 1 or (writes and (source is not None or against)):
+        print("DEBT FAIL one of --update, --recount, --down and --raise at a time; each writes the baseline of the work "
+              "tree, so it takes no --staged, no --rev and no --against")
         return 1
     try:
-        st = debt_status(repo, source)
-        report = debt_against(repo, st["counts"], st["skip"], against) if against else []
+        tree = Tree(repo, source)
+        fails, st = state_findings(repo, tree)
+        bl, counts = st["baseline"], st["counts"]
+        print("DEBT INFO totals: %s (%d file(s) with debt%s)" % (_totals(counts), len({k[1] for k in counts}),
+                                                                  "" if source is None else "; counted in " + source_name(source)))
+        if bl.skip:
+            print("DEBT INFO skip: %s (the checker does not read these files)" % ", ".join(bl.skip))
+        if bl.other:
+            print("DEBT INFO %d line(s) of a kind this tool does not know: kept, not checked" % len(bl.other))
+        if raise_:
+            return _cmd_raise(repo, bl, raise_, reason)
+        if recount or update or down:
+            head = _head(repo)
+            judged, infos = admission(repo, head, tree) if head is not None else ([], [])
+            if recount:                                # the source is what HEAD holds: only the tool or the file is new
+                judged = [f for f in judged if f[0] == "debt"]
+            for check, text in judged:
+                print("DEBT FAIL %s: %s" % (check, text))
+            for text in infos:
+                print("DEBT INFO %s" % text)
+            flag = "--recount" if recount else "--update" if update else "--down"
+            if judged:
+                print("DEBT %s refused: %d finding(s) against HEAD, %s is unchanged%s" % (
+                    flag[2:].upper(), len(judged), BASELINE,
+                    " (a recount admits nothing: commit or undo the change of the source first)" if recount else ""))
+                return 1
+            if recount:
+                text, notes = recount_text(repo, tree)
+                for note in notes:
+                    print("DEBT INFO policy written: %s" % note)
+                _write_baseline(repo, text)
+                print("DEBT RECOUNT written %s (%d row(s))" % (BASELINE, len(parse_baseline(text).rows)))
+                return 0
+            if bl.version != 2 or bl.lacks():
+                print("DEBT FAIL %s" % fails[0])
+                return 1
+            if down:
+                kinds = list(KINDS) if down == "all" else [down]
+                if kinds[0] not in KINDS:
+                    print("DEBT FAIL %s is no kind (%s)" % (down, ", ".join(KINDS)))
+                    return 1
+                if st["rise"] or st["stale"]:
+                    print("DEBT FAIL the baseline is not equal to the tree: run `debt --update` first")
+                    return 1
+                for kind in kinds:
+                    bl.budgets.pop(kind, None)
+                    bl.modes[kind] = "down"
+                _write_baseline(repo, baseline_text(bl))
+                print("DEBT DOWN %s: %s may only fall from now on" % (BASELINE, ", ".join(kinds)))
+                return 0
+            for k in st["rise"]:
+                print("DEBT INFO admitted with a new body: %s %s: %d -> %d" % (k[0], k[1], bl.rows.get(k, 0), counts[k]))
+            for k in st["stale"]:
+                print("DEBT INFO %s %s: %d -> %d" % (k[0], k[1], bl.rows[k], counts.get(k, 0)))
+            _write_baseline(repo, baseline_text(bl, counts))
+            print("DEBT UPDATE written %s (%d row(s), %d fell, %d rose)" % (BASELINE, len(counts), len(st["stale"]),
+                                                                           len(st["rise"])))
+            return 0
+        judged, infos = admission(repo, Tree(repo, against), tree) if against else ([], [])
     except Fail as e:
         print("DEBT FAIL %s" % e)
         return 1
-    rows, counts, mode = st["rows"], st["counts"], st["mode"]
-    files = len({k[1] for k in counts})
-    print("DEBT INFO totals: %s (%d file(s) with debt%s)" % (_totals(counts), files, "" if source is None else
-                                                              "; counted in " + source_name(source)))
-    for line in report:
-        print(line)
-    if st["skip"]:
-        print("DEBT INFO skip: %s (the checker does not read these files)" % ", ".join(st["skip"]))
-    if down:
-        if not st["baseline"]:
-            print("DEBT FAIL no %s: write it first (`debt --update`)" % BASELINE)
-            return 1
-        if st["rise"] or st["stale"]:
-            print("DEBT FAIL the baseline is not equal to the tree: run `debt --update` first")
-            return 1
-        (repo / BASELINE).write_text(baseline_text(rows, st["skip"], "down", st["head"]), encoding="utf-8")
-        print("DEBT DOWN %s is in `mode down`: a count may only fall" % BASELINE)
-        return 0
-    if update:
-        if st["rise"] and (mode == "down" or not admit):
-            for k in st["rise"]:
-                print("DEBT FAIL rise %s %s: %d, its row is %d" % (k[0], k[1], counts.get(k, 0), rows.get(k, 0)))
-            print("DEBT UPDATE refused: %d count(s) over their row%s" % (len(st["rise"]), (
-                " (`mode down` admits none)" if mode == "down" else " (`--admit` admits them in `mode admit`)")))
-            return 1
-        for k in st["rise"]:
-            print("DEBT ADMIT %s %s: %d -> %d" % (k[0], k[1], rows.get(k, 0), counts[k]))
-        for k in st["stale"]:
-            print("DEBT INFO %s %s: %d -> %d" % (k[0], k[1], rows[k], counts.get(k, 0)))
-        (repo / BASELINE).parent.mkdir(parents=True, exist_ok=True)
-        (repo / BASELINE).write_text(baseline_text(counts, st["skip"], mode, st["head"] or BASELINE_HEAD), encoding="utf-8")
-        print("DEBT UPDATE written %s (%d row(s), %d fell, %d admitted; mode %s)" % (
-            BASELINE, len(counts), len(st["stale"]), len(st["rise"]), mode))
-        return 0
-    if not st["baseline"]:
-        print("DEBT CHECK OK (no %s: nothing to compare; `debt --update --admit` writes it)" % BASELINE)
-        return 0
-    for k in st["rise"]:
-        print("DEBT FAIL rise %s %s: %d, its row is %d" % (k[0], k[1], counts.get(k, 0), rows.get(k, 0)))
-    for k in st["stale"]:
-        print("DEBT FAIL stale %s %s: %d, its row is %d: run `python3 %s debt --update`" % (
-            k[0], k[1], counts.get(k, 0), rows[k], VENDORED))
-    bad = bool(st["rise"] or st["stale"])
-    if bad:
-        print("DEBT INFO to record the counts of now: `python3 %s debt --update%s`, then commit %s" % (
-            VENDORED, " --admit" if st["rise"] and mode == "admit" else "", BASELINE))
-    print("DEBT CHECK %s (%d rise(s), %d stale row(s); mode %s)" % ("FAIL" if bad else "OK", len(st["rise"]),
-                                                                    len(st["stale"]), mode))
+    for text in fails:
+        print("DEBT FAIL %s" % text)
+    for check, text in judged:
+        print("DEBT FAIL %s: %s" % (check, text))
+    for text in infos:
+        print("DEBT INFO %s" % text)
+    if st["rise"] or st["stale"]:
+        print("DEBT INFO to record the counts of now: `python3 %s debt --update`, then commit %s" % (VENDORED, BASELINE))
+    bad = len(fails) + len(judged)
+    print("DEBT CHECK %s (%d rise(s), %d stale row(s)%s%s)" % (
+        "FAIL" if bad else "OK", len(st["rise"]), len(st["stale"]),
+        "; %d finding(s) against %s" % (len(judged), against) if against else "",
+        "; %s" % bl.summary() if bl.version == 2 and not bl.lacks() else ""))
     return 1 if bad else 0
+
+
+def _cmd_raise(repo, bl: Baseline, raise_, reason) -> int:
+    """`debt --raise KIND N --reason TEXT`: one dated `raise` line. The developer's act: an agent session is refused,
+    and the pre-push hook asks the developer about each new line."""
+    kind, n = raise_
+    if os.environ.get("CLAUDECODE"):
+        print("DEBT FAIL a raise is the developer's act, not an agent session's (CLAUDECODE is set)")
+        return 1
+    if bl.version != 2 or kind not in KINDS or not n.isdigit() or int(n) < 1 or not (reason or "").strip():
+        print("DEBT FAIL --raise KIND N --reason TEXT: a kind of %s, a number above zero, a reason, and a version 2 %s"
+              % ("|".join(KINDS), BASELINE))
+        return 1
+    import time
+    bl.raises.append((kind, int(n), time.strftime("%Y-%m-%d"), " ".join(reason.split())))
+    _write_baseline(repo, baseline_text(bl))
+    print("DEBT RAISE written: raise %s %d %s %s" % bl.raises[-1])
+    print("DEBT INFO commit it with the change it admits; the pre-push hook asks you about each new `raise` line")
+    return 0
 
 
 # ---- the two ledgers: names with their evidence, assembly with its reason ------------------------------------------
@@ -1078,15 +1425,15 @@ def cmd_names(repo, init=False) -> int:
             (repo / rel).write_text("\t".join(cols) + "\n", encoding="utf-8")
             print("NAMES INIT written %s" % rel)
             if rel == NAMES:
-                print("NAMES INFO with %s in place, each named function with no accepted row is `unbased` debt: run "
-                      "`python3 %s debt --update --admit` (`mode down` admits no rise: create the ledger before "
-                      "`debt --down`)" % (NAMES, VENDORED))
+                print("NAMES INFO with %s in place, each named function with no accepted row is `unbased` debt, and "
+                      "`unbased` never rises: add the accepted rows of the names the source holds, then run "
+                      "`python3 %s debt --update`" % (NAMES, VENDORED))
     found = names_findings(repo)
     for level, detail in found:
         print("NAMES %-4s %s" % (level, detail))
     if not any(f[0] == "FAIL" for f in found) and (repo / NAMES).is_file():
         try:
-            skip = parse_baseline(_read(repo / BASELINE))[1]
+            skip = parse_baseline(_read(repo / BASELINE)).skip
         except Fail as e:
             print("NAMES INFO %s (the `skip` lines are not read)" % e)
             skip = []
@@ -1524,65 +1871,243 @@ def self_test_debt(check) -> None:
           == {"offset": 1})
     check("unbased: a function with no row", file_debt("src/a.c", C_CLEAN, based=set()) == {"unbased": 1})
     check("unbased: a function with a row", file_debt("src/a.c", C_CLEAN, based={"Player_Hp"}) == {})
-    rows, skip, mode, head = parse_baseline("# top\nmode down\nskip src/vendor/\n1 goto src/a.c\n# a note below a row\n")
-    check("the baseline keeps every comment line", head == ["# top", "# a note below a row"] and
-          baseline_text(rows, skip, mode, head).startswith("# top\n# a note below a row\nmode down\n"))
+    bl = parse_baseline("# top\nmode goto down\nbudget pin 30 base 4 10 20\nmode barrier down\n3 barrier src/a.c\n"
+                        "raise goto 2 2026-01-02 the first wave\nskip src/vendor/\n1 goto src/a.c\n# a note below a row\n")
+    check("the baseline: its lines, and the lines of a kind this tool does not know", bl.version == 2
+          and bl.head == ["# top", "# a note below a row"] and bl.policy("goto") == ("down",)
+          and bl.policy("pin") == ("budget", 30, 4, 10, 20) and bl.other == ["mode barrier down", "3 barrier src/a.c"]
+          and bl.raises == [("goto", 2, "2026-01-02", "the first wave")] and bl.lacks()[:2] == ["pin-unmarked", "offset"], vars(bl))
+    check("the baseline is written as it was read", baseline_text(bl) == "# top\n# a note below a row\nbudget pin 30 base 4 10 20\n"
+          "mode goto down\nmode barrier down\n3 barrier src/a.c\nraise goto 2 2026-01-02 the first wave\nskip src/vendor/\n"
+          "1 goto src/a.c\n", baseline_text(bl))
+    for name, text, want in (("two rows of one pair", "1 goto src/a.c\n1 goto src/a.c\n", "has two rows"),
+                             ("two policy lines of one kind", "mode goto down\nbudget goto 3 base 1 1 1\n", "two policy lines"),
+                             ("a second mode line of version 1", "mode down\nmode admit\n", "a second `mode` line"),
+                             ("the two versions in one file", "mode admit\nmode goto down\n", "of version 1 beside"),
+                             ("a line that is no line", "mode sideways\n", ":1: not `<count> <kind> <path>`")):
+        try:
+            parse_baseline(text)
+            check("the baseline: %s is refused" % name, False)
+        except Fail as e:
+            check("the baseline: %s is refused" % name, want in str(e), str(e))
     with tempfile.TemporaryDirectory() as td:
         repo = _repo(td)
         (repo / "src").mkdir()
         (repo / "include").mkdir()
+        (repo / "config").mkdir()
         (repo / "src" / "clean.c").write_text(C_CLEAN)
         (repo / "src" / "walk.c").write_text(C_DEBT["goto"][0])
         (repo / "src" / "boot.s").write_text("nop\n")
         (repo / "include" / "include_asm.h").write_text("#define INCLUDE_ASM(d, n) __asm__(\".include \\\"n\\\"\");\n")
         _git(repo, "add", "src", "include")
-        (repo / "src" / "untracked.c").write_text(C_DEBT["goto"][0])        # never added: a count reads tracked files
         run = lambda *a, **kw: _capture(cmd_debt, repo, *a, **kw)  # noqa: E731
+        judge = lambda base, head=None: admission(repo, Tree(repo, base), Tree(repo, head))[0]  # noqa: E731
+        walk, base_file = repo / "src" / "walk.c", repo / BASELINE
         rc, out = run()
-        check("no baseline: the totals and exit 0", rc == 0 and "totals: goto 1, asm 1 " in out and "no config/" in out
-              and "`debt --update --admit` writes it" in out, out)
+        check("no baseline: the totals, and a failure", rc == 1 and "totals: goto 1, asm 1 " in out
+              and "DEBT FAIL no config/debt-baseline.txt: `python3 tools/psxd_floor.py debt --recount` writes it" in out, out)
+        rc, out = run(update=True)
+        check("--update writes no first baseline", rc == 1 and not base_file.exists(), out)
         text = first_baseline(repo)
-        check("the first baseline", text.endswith("mode admit\nskip include/include_asm.h\n1 asm src/boot.s\n1 goto src/walk.c\n")
-              and text.startswith("# config/debt-baseline.txt: "), text)
-        (repo / "config").mkdir()
-        (repo / BASELINE).write_text(text)
+        check("the first baseline: a policy line per kind, the stub header skipped, the rows", text.startswith(
+            "# config/debt-baseline.txt: ") and text.endswith(
+            "budget pin 30 base 0 2 0\nmode pin-unmarked down\nbudget goto 12 base 1 2 0\nmode offset admit-new\n"
+            "mode address admit-new\nmode macro admit-new\nmode asm down\nmode placeholder admit-new\nmode unbased down\n"
+            "mode struct admit-new\nskip include/include_asm.h\n1 asm src/boot.s\n1 goto src/walk.c\n"), text)
+        rc, out = run(recount=True)
+        check("--recount writes it", rc == 0 and base_file.read_text() == text and "DEBT RECOUNT written" in out
+              and "DEBT INFO policy written: pin: budget 30 0 2 0\n" in out, out)
         rc, out = run()
-        check("an equal baseline passes", rc == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); mode admit)" in out, out)
-        (repo / "src" / "walk.c").write_text(C_DEBT["goto"][0] + C_DEBT["goto"][0].replace("Walk", "Run"))
+        check("an equal baseline passes", rc == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); down: pin-unmarked, asm, "
+              "unbased; budget: pin 30, goto 12; admit-new: offset, address, macro, placeholder, struct)" in out, out)
+        _git(repo, "add", "config")
+        _commit(repo, "the floor")
+        # a body that exists never gets worse, whatever the rows say
+        walk.write_text(C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
         rc, out = run()
         check("a rise fails and names the command", rc == 1 and "DEBT FAIL rise goto src/walk.c: 2, its row is 1\n" in out
-              and "debt --update --admit`, then commit config/debt-baseline.txt" in out
+              and "debt --update`, then commit config/debt-baseline.txt" in out
               and "DEBT INFO skip: include/include_asm.h" in out, out)
         rc, out = run(update=True)
-        check("--update refuses a rise without --admit", rc == 1 and "DEBT UPDATE refused" in out and
-              (repo / BASELINE).read_text() == text, out)
-        rc, out = run(update=True, admit=True)
-        check("--update --admit admits it and prints it", rc == 0 and "DEBT ADMIT goto src/walk.c: 1 -> 2\n" in out and
-              "2 goto src/walk.c\n" in (repo / BASELINE).read_text(), out)
-        (repo / "src" / "walk.c").write_text(C_CLEAN.replace("Player_Hp", "Walk"))
+        check("--update refuses a rise in a body that exists", rc == 1 and base_file.read_text() == text and
+              "DEBT FAIL debt: rose in an existing body: goto src/walk.c Walk: 1 -> 2\n" in out and "DEBT UPDATE refused" in out, out)
+        try:
+            with open(os.devnull, "w") as null, contextlib.redirect_stderr(null):
+                main(["debt", "--update", "--admit", "--repo", str(repo)])
+            check("--admit is no flag", False)
+        except SystemExit as e:
+            check("--admit is no flag: exit 2", e.code == 2, e.code)
+        base_file.write_text(text.replace("1 goto src/walk.c", "2 goto src/walk.c"))
         rc, out = run()
-        check("a stale row fails", rc == 1 and "DEBT FAIL stale goto src/walk.c: 0, its row is 2: run " in out, out)
-        rc, out = run(down=True)
+        check("a row written by hand is equal to the tree", rc == 0, out)
+        rc, out = run(against="HEAD")
+        check("and the change is refused all the same", rc == 1 and "DEBT FAIL debt: rose in an existing body: goto src/walk.c "
+              "Walk: 1 -> 2\n" in out and "1 finding(s) against HEAD" in out, out)
+        base_file.write_text(text)
+        # debt arrives with a new body; outside a function it needs one in the same file
+        more = C_DEBT["goto"][0] + C_DEBT["goto"][0].replace("Walk", "Run")
+        walk.write_text(more)
+        rc, out = run(update=True)
+        check("--update takes the debt of a new body", rc == 0 and "DEBT INFO admitted with a new body: goto src/walk.c: 1 -> 2\n" in out
+              and "2 goto src/walk.c\n" in base_file.read_text() and run()[0] == 0 and not judge("HEAD"), out)
+        base_file.write_text(text)
+        walk.write_text(C_DEBT["goto"][0] + C_DEBT["struct"][0].split("s32 Walk")[0])
+        check("a rise outside a function with no new body", [f[1] for f in judge("HEAD")] == [
+            "rose outside a function with no new body: struct src/walk.c (file scope): 0 -> 1"], judge("HEAD"))
+        walk.write_text(more + C_DEBT["struct"][0].split("s32 Walk")[0])
+        check("a rise outside a function beside a new body", not judge("HEAD"), judge("HEAD"))
+        walk.write_text(C_DEBT["goto"][0])
+        (repo / "include" / "m.h").write_text("#define SWAP(a, b) { s32 t = a; a = b; b = t; }\n")
+        _git(repo, "add", "include/m.h")
+        check("a header's debt needs a new body somewhere", "macro include/m.h (file scope): 0 -> 1" in str(judge("HEAD")), judge("HEAD"))
+        walk.write_text(C_DEBT["goto"][0] + "void Run(void) {\n}\n")
+        check("a header's debt beside a new body", not judge("HEAD"), judge("HEAD"))
+        _git(repo, "rm", "-q", "-f", "--cached", "include/m.h")
+        (repo / "include" / "m.h").unlink()
+        # a renamed and a moved body are the body they were
+        walk.write_text(C_DEBT["goto"][0].replace("Walk", "Stroll").replace("goto loop;", "goto loop;\n    goto loop;"))
+        check("a renamed body is no new body", [f[1] for f in judge("HEAD")] == [
+            "rose in a renamed body: goto src/walk.c Stroll (in the place of a body that left): 1 -> 2"], judge("HEAD"))
+        walk.write_text("s32 g_Walk;\n")
+        (repo / "src" / "far.c").write_text(C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
+        _git(repo, "add", "src/far.c")
+        check("a moved body is no new body", [f[1] for f in judge("HEAD")] == [
+            "rose in a moved body: goto src/far.c Walk (from src/walk.c): 1 -> 2"], judge("HEAD"))
+        (repo / "src" / "far.c").write_text(C_DEBT["goto"][0])
+        check("a body moved as it was", not judge("HEAD"), judge("HEAD"))
+        _git(repo, "rm", "-q", "-f", "--cached", "src/far.c")
+        (repo / "src" / "far.c").unlink()
+        # a `down` kind never rises, also with a new body; a `raise` line is the developer's
+        walk.write_text(C_DEBT["goto"][0] + C_DEBT["pin-unmarked"][0].replace("Walk", "Run"))
+        check("a `down` kind in a new body", [f[1] for f in judge("HEAD")] == [
+            "rose in total: pin-unmarked is `down`: 0 -> 1"], judge("HEAD"))
+        os.environ["CLAUDECODE"] = "1"
+        rc, out = run(raise_=("pin-unmarked", "1"), reason="the trial is pending")
+        check("--raise is refused in an agent session", rc == 1 and "the developer's act" in out and base_file.read_text() == text, out)
+        del os.environ["CLAUDECODE"]
+        rc, out = run(raise_=("pin-unmarked", "0"), reason="x")
+        check("--raise needs a number above zero", rc == 1, out)
+        rc, out = run(raise_=("pin-unmarked", "1"), reason="the trial\nis pending")
+        raised = re.search(r"^raise pin-unmarked 1 \d{4}-\d\d-\d\d the trial is pending$", base_file.read_text(), re.M)
+        check("--raise writes one dated line", rc == 0 and raised is not None, out)
+        rc, out = run(update=True)
+        check("--update takes what a `raise` line allows, and says so", rc == 0 and "DEBT INFO pin-unmarked is over by 1: the "
+              "change's `raise` line(s) allow 1\n" in out and "DEBT INFO a new `raise` line: pin-unmarked 1 " in out, out)
+        _git(repo, "add", "-u")
+        _commit(repo, "a raise")
+        walk.write_text(walk.read_text() + C_DEBT["pin-unmarked"][0].replace("Walk", "Jump"))
+        check("a `raise` line admits one change, not the next", len(judge("HEAD")) == 1, judge("HEAD"))
+        walk.write_text(C_DEBT["goto"][0] + C_DEBT["pin-unmarked"][0].replace("Walk", "Run"))
+        # the policy that judges a change is the one it starts from
+        mine = base_file.read_text()
+        for name, text2, want in (
+                ("a policy line taken out", mine.replace("mode pin-unmarked down\n", ""), "the policy line of pin-unmarked is gone (it was down)"),
+                ("a weaker mode", mine.replace("mode pin-unmarked down", "mode pin-unmarked admit-new"),
+                 "pin-unmarked went from down to admit-new: a mode only gets stronger"),
+                ("a budget in the place of `down`", mine.replace("mode asm down", "budget asm 5 base 1 3 0"),
+                 "asm went from down to budget: a mode only gets stronger"),
+                ("a higher budget", mine.replace("budget goto 12 ", "budget goto 50 "), "the budget of goto went from 12 to 50"),
+                ("a moved anchor", mine.replace("budget goto 12 base 1 2 0", "budget goto 12 base 9 2 9"),
+                 "the anchor of the goto budget changed (base 9 2 9, was 1 2 0)"),
+                ("a new skip line", mine.replace("skip include/", "skip src/\nskip include/"), "a new `skip` line (src/)")):
+            base_file.write_text(text2)
+            got = judge("HEAD")
+            check("policy: " + name, ("policy", want) in got, got)
+        base_file.unlink()
+        check("policy: a deleted baseline", judge("HEAD") == [("policy", "config/debt-baseline.txt is gone")], judge("HEAD"))
+        base_file.write_text(mine.replace("mode offset admit-new", "mode offset down").replace("budget goto 12 ", "budget goto 6 "))
+        check("policy: a stronger mode and a lower budget pass", not judge("HEAD"), judge("HEAD"))
+        base_file.write_text(mine)
+        rc, out = run(down="goto")
+        check("--down switches one kind, a budget too", rc == 0 and "mode goto down\n" in base_file.read_text()
+              and "budget goto" not in base_file.read_text() and "budget pin 30" in base_file.read_text(), out)
+        rc, out = run(down="all")
+        check("--down switches every kind", rc == 0 and parse_baseline(base_file.read_text()).summary() == "down: " + ", ".join(KINDS), out)
+        check("--down of a kind that is no kind", run(down="gotos")[0] == 1)
+        base_file.write_text(mine)
+        # the budget: a new body is one that takes a stub away
+        stubs = "".join('INCLUDE_ASM("asm/nonmatchings/a", func_8001%04X);\n' % i for i in range(10))
+        body = lambda i, n=1: "void func_8001%04X(void) {\nx:\n%s}\n" % (i, "    goto x;\n" * n)  # noqa: E731
+        (repo / "src" / "many.c").write_text(stubs)
+        _git(repo, "add", "-A", "src")
+        walk.write_text(C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
+        rc, out = run(recount=True)
+        check("--recount admits nothing", rc == 1 and "a recount admits nothing" in out and base_file.read_text() == mine, out)
+        walk.write_text(C_DEBT["goto"][0])
+        base_file.write_text("mode admit\nskip include/include_asm.h\n1 asm src/boot.s\n# a note of the game\n")
+        _git(repo, "add", "-A")
+        _commit(repo, "ten stubs, and the baseline of an older psxdecomp")
+        rc, out = run()
+        check("a version 1 baseline fails and names the command", rc == 1 and "is a version 1 file (`mode admit`): run "
+              "`python3 tools/psxd_floor.py debt --recount`" in out, out)
+        rc, out = run(recount=True)
+        new = base_file.read_text()
+        check("--recount makes it version 2 and keeps the game's own lines", rc == 0 and "# a note of the game\n" in new
+              and "budget goto 12 base 1 2 10\n" in new and "skip include/include_asm.h\n" in new and "mode admit\n" not in new
+              and new.count("# ") == len(BASELINE_HEAD) + 1 and run()[0] == 0, out + new)
+        _git(repo, "add", "-A")
+        _commit(repo, "version 2")
+        (repo / "src" / "many.c").write_text("".join(body(i) for i in range(10)))
+        got = judge("HEAD")
+        check("the budget: ten new bodies and ten gotos", len(got) == 1 and "over its budget: goto is 11, the budget allows 5 "
+              "(12 for each 100 new bodies, 10 new since the anchor of 1, plus 2)" in got[0][1], got)
+        (repo / "src" / "many.c").write_text("".join(body(i, int(i < 4)) for i in range(10)))
+        check("the budget: ten new bodies and four gotos", not judge("HEAD"), judge("HEAD"))
+        (repo / "src" / "many.c").write_text(stubs + "".join(body(i + 16, int(i < 4)) for i in range(10)))
+        got = judge("HEAD")
+        check("the budget: a body beside its stub buys nothing", len(got) == 1 and "the budget allows 3 " in got[0][1]
+              and "0 new since the anchor" in got[0][1], got)
+        # one body, taken out in one commit and put back worse in the next: each commit passes, the range does not
+        (repo / "src" / "many.c").write_text(stubs)
+        walk.write_text('INCLUDE_ASM("asm/nonmatchings/a", Walk);\n')
+        run(update=True)
+        _git(repo, "add", "-A")
+        _commit(repo, "the body leaves")
+        walk.write_text(C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
+        rc, out = run(update=True)
+        _git(repo, "add", "-A")
+        _commit(repo, "the body is back, worse")
+        check("a body that left and came back worse: each commit is admitted", rc == 0 and not judge("HEAD~1", "HEAD")
+              and not judge("HEAD~2", "HEAD~1"), out)
+        check("and the range is refused", [f[1] for f in judge("HEAD~2", "HEAD")] == [
+            "rose in an existing body: goto src/walk.c Walk: 1 -> 2"], judge("HEAD~2", "HEAD"))
+        # version 1 in `mode down`: every kind is `down`
+        base_file.write_text("mode down\n2 goto src/walk.c\n1 asm src/boot.s\n")
+        _git(repo, "add", "-A")
+        _commit(repo, "an older baseline in mode down")
+        rc, out = run(recount=True)
+        check("--recount after `mode down`: every kind is `down`", rc == 0 and parse_baseline(base_file.read_text()).summary()
+              == "down: " + ", ".join(KINDS), out)
+        base_file.write_text("mode admit\n2 goto src/walk.c\n1 asm src/boot.s\n")
+        check("policy: `mode down` of version 1 does not become `mode admit`", ("policy", "`mode down` became `mode admit`") in judge("HEAD"))
+        base_file.write_text("mode down\n2 goto src/walk.c\n1 asm src/boot.s\n")
+        # the public tree of a game in split mode holds the rows of the files it does not publish
+        run(recount=True)
+        base_file.write_text(base_file.read_text() + "3 offset src/private.c\n")
+        rc, out = run()
+        check("a row of a file that is gone is stale", rc == 1 and "DEBT FAIL stale offset src/private.c: 0, its row is 3" in out, out)
+        (repo / PUBLIC_PATHS).write_text("# the list\nsrc/walk.c\nsrc/boot.s\ninclude/\nconfig/\n")
+        _git(repo, "add", PUBLIC_PATHS)
+        check("and not where the public list does not name it", run()[0] == 0, run()[1])
+        (repo / PUBLIC_PATHS).write_text("src/\ninclude/\nconfig/\n")
+        check("a listed file that is gone is stale", run()[0] == 1)
+        _git(repo, "rm", "-q", "-f", "--cached", PUBLIC_PATHS)
+        (repo / PUBLIC_PATHS).unlink()
+        run(recount=True)
+        walk.write_text(C_CLEAN.replace("Player_Hp", "Walk"))
+        rc, out = run()
+        check("a stale row fails", rc == 1 and "DEBT FAIL stale goto src/walk.c: 0, its row is 2\n" in out, out)
+        rc, out = run(down="goto")
         check("--down needs an equal baseline", rc == 1 and "not equal" in out, out)
         rc, out = run(update=True)
         check("--update lowers a row", rc == 0 and "DEBT INFO goto src/walk.c: 2 -> 0\n" in out and
-              "goto" not in (repo / BASELINE).read_text(), out)
-        rc, out = run(down=True)
-        check("--down switches the mode", rc == 0 and "\nmode down\n" in (repo / BASELINE).read_text(), out)
-        (repo / "src" / "walk.c").write_text(C_DEBT["goto"][0])
-        rc, out = run(update=True, admit=True)
-        check("mode down admits no rise", rc == 1 and "`mode down` admits none" in out, out)
+              "goto src/walk.c" not in base_file.read_text(), out)
         (repo / "src" / "walk.c").write_text(C_CLEAN)
+        (repo / "src" / "untracked.c").write_text(C_DEBT["goto"][0])        # never added: a count reads tracked files
         check("an untracked file under src/ is not counted", not any(p == "src/untracked.c" for _, p in debt_counts(repo)))
         (repo / ASM_EVIDENCE).write_text("\t".join(ASM_COLUMNS) + "\nmain\tboot\tsrc/boot.s\thand-asm\tdocs/boot.md:3\t2026-01-02\n")
         rc, out = run()
         check("an evidence row clears an assembly file", rc == 1 and "DEBT FAIL stale asm src/boot.s: 0, its row is 1" in out, out)
-        (repo / BASELINE).write_text("mode down\n1 goto src/walk.c\n1 goto src/walk.c\n")
-        rc, out = run()
-        check("a baseline with two rows of one pair", rc == 1 and "has two rows" in out, out)
-        (repo / BASELINE).write_text("mode down\n1 goto src/walk.c\nmode admit\n")
-        rc, out = run()
-        check("a second mode line fails: `mode down` is one way", rc == 1 and "a second `mode` line" in out, out)
         (repo / BASELINE).write_text("mode sideways\n")
         rc, out = run()
         check("a baseline line that is no row", rc == 1 and "config/debt-baseline.txt:1: not " in out, out)
@@ -1594,6 +2119,7 @@ def self_test_debt(check) -> None:
         (repo / RECORD).write_text('[psxdecomp]\nversion = "0.0.0"\n\n[debt]  # ours\naddress_header = "include/hw.h"\n')
         check("the record's address header", address_header(repo) == "include/hw.h" and address_header(repo / "src") == ADDRESS_HEADER)
         (repo / RECORD).unlink()
+        (repo / BASELINE).unlink()
         (repo / BASELINE).write_text(first_baseline(repo))
         cwd = os.getcwd()
         try:
@@ -1612,7 +2138,7 @@ def self_test_debt(check) -> None:
         check("names --init writes the two header lines", rc == 0 and (repo / NAMES).read_text() == "\t".join(NAME_COLUMNS) + "\n"
               and (repo / ASM_EVIDENCE).read_text() == "\t".join(ASM_COLUMNS) + "\n", out)
         check("names: every function is unbased at first", "NAMES INFO 2 function(s) defined" in out
-              and "debt --update --admit" in out, out)
+              and "`unbased` never rises" in out, out)
         row = "function\tmain\t\tfunc_80010000\tPlayer_Hp\taccepted\tstring:src/clean.c:4\tthe string it prints\n"
         (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + row)
         rc, out = _capture(cmd_names, repo)
@@ -1728,10 +2254,10 @@ def self_test_tree(check) -> None:
         except Fail:
             pass
         rc, out = _capture(cmd_debt, repo, against="HEAD")
-        check("debt --against: the counts that differ from a revision", "DEBT INFO against HEAD: goto src/walk.c: 1 -> 3\n" in out
-              and "(1 count(s) rose, 0 fell)" in out, out)
+        check("debt --against: the change since a revision is judged", rc == 1 and "DEBT FAIL debt: rose in an existing body: "
+              "goto src/walk.c Walk: 1 -> 3\n" in out and "1 finding(s) against HEAD" in out, out)
         rc, out = _capture(cmd_debt, repo, source=INDEX, update=True)
-        check("debt --staged takes no --update", rc == 1 and "take no --staged" in out, out)
+        check("debt --staged takes no --update", rc == 1 and "takes no --staged" in out, out)
     check("the two tools stand side by side", sibling().name == pathlib.Path(__file__).name.replace("floor", "publish"))
 
 
@@ -1896,8 +2422,10 @@ def main(argv=None) -> int:
     ap.add_argument("file", nargs="?", help="ladder: the constitution to read")
     ap.add_argument("--repo", help="the repository; default: the git checkout that holds the working directory")
     ap.add_argument("--update", action="store_true")
-    ap.add_argument("--admit", action="store_true")
-    ap.add_argument("--down", action="store_true")
+    ap.add_argument("--down", nargs="?", const="all", metavar="KIND")
+    ap.add_argument("--recount", action="store_true")
+    ap.add_argument("--raise", dest="raise_", nargs=2, metavar=("KIND", "N"))
+    ap.add_argument("--reason", help="debt --raise: why")
     ap.add_argument("--init", action="store_true")
     ap.add_argument("--hook", action="store_true")
     ap.add_argument("--staged", action="store_true", help="debt: count the index")
@@ -1923,8 +2451,8 @@ def main(argv=None) -> int:
             ap.error("debt: --staged or --rev, not both")
         if a.bodies:
             return cmd_bodies(a.repo, INDEX if a.staged else a.rev)
-        return cmd_debt(a.repo, update=a.update, admit=a.admit, down=a.down,
-                        source=INDEX if a.staged else a.rev, against=a.against)
+        return cmd_debt(a.repo, update=a.update, down=a.down, source=INDEX if a.staged else a.rev,
+                        against=a.against, recount=a.recount, raise_=a.raise_, reason=a.reason)
     if a.cmd == "names":
         return cmd_names(a.repo, init=a.init)
     if a.cmd == "toolchain":

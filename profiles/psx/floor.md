@@ -131,12 +131,34 @@ is `rules/FIN1.md`.
   ports and the BIOS. The value `0x80000000` counts only behind a pointer cast, because it is also the sign mask.
 - `config/debt-baseline.txt` holds one `<count> <kind> <path>` row for each count above zero.
 - The check fails when a count is over its row. It also fails when a row is over its count.
-- Run `debt --update` in the commit that changes a count.
-- In `mode admit`, `debt --update --admit` accepts a rise and prints it. Use that mode during the campaign.
-- `debt --down` switches to `mode down`. A count can then only fall. The switch is one way.
-- In `mode down` the tool cannot record a renamed file that holds debt. The developer edits its rows by hand.
-- A `skip <entry>` line takes files out of the count.
+- The check also fails with no baseline, and with no policy line for a kind.
+- Run `debt --update` in the commit that changes a count. The tool refuses a change that the policy does not admit.
+- A `skip <entry>` line takes files out of the count. A change cannot add one.
 - `[debt] address_header` in `config/psxdecomp.toml` names the address header. The default is `include/addr.h`.
+
+### The policy of a kind
+
+The baseline holds one policy line for each kind. `debt --recount` writes the starting lines.
+
+| Line | Meaning |
+|---|---|
+| `mode <kind> down` | The kind never rises. |
+| `mode <kind> admit-new` | Debt arrives only with a new function body. |
+| `budget <kind> <n> base <count> <bodies> <stubs>` | As `admit-new`. The total grows by at most `n` for each 100 new bodies, plus 2. |
+| `raise <kind> <n> <date> <reason>` | The developer lets one change go over by `n`. |
+
+- The starting mode is `down` for `pin-unmarked`, `asm` and `unbased`. It is a budget of 30 for `pin` and of 12 for `goto`.
+- Each other kind starts in `admit-new`.
+- A body that exists never gets worse. That holds for a renamed body and for a body that moved to another file.
+- Debt outside a function rises only in a file that gets a new body.
+- A file that holds no function needs a new body somewhere in the same change.
+- For a budget, a new body is one that takes an `INCLUDE_ASM` line away. An empty body beside its stub counts for nothing.
+- The anchor of a budget is the tree at the time of `debt --recount`.
+- `debt --against <revision>` judges a change by the policy of the revision that it starts from.
+- A change cannot weaken a mode, raise a budget, move an anchor, add a `skip` line or delete the baseline.
+- `debt --down <kind>` switches a kind to `down`. The switch is one way.
+- `debt --raise <kind> <n> --reason <text>` writes a `raise` line. Only the developer runs it.
+- `debt --bodies` prints the counts of each function body.
 
 ## Names and assembly evidence
 
@@ -150,7 +172,7 @@ The rule is `rules/NAME1.md`. `python3 tools/psxd_floor.py names` checks two tab
 - `kind` is `function`, `data`, `type`, `field`, `macro` or `file`.
 - `decision` is `accepted`, `provisional` or `rejected`. Only an accepted row clears `unbased`.
 - `names --init` writes the header line of each file. When `config/names.tsv` exists, each named function with no
-  accepted row is `unbased` debt. Run `debt --update --admit` in the same commit.
+  accepted row is `unbased` debt, and `unbased` never rises. Add the rows before the ledger, or in the same commit.
 - `evidence` is `<class>:<path>:<line>`. `rules/NAME1.md` lists the classes.
 - The `class` of an assembly row is `sdk-object`, `hand-asm` or `data-in-text`.
 - A function that is only hard to match has no class. It stays a stub.

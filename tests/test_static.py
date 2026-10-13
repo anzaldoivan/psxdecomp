@@ -698,8 +698,8 @@ def test_style_workflow_step():
 
 # ---- the floor (scripts/floor.py, vendored into a game as tools/psxd_floor.py) --------------------------------------
 
-def _floor(*args, cwd=None, stdin=None):
-    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", **GIT_ENV)
+def _floor(*args, cwd=None, stdin=None, env=None):
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", **GIT_ENV, **(env or {}))
     env.pop("CLAUDE_PROJECT_DIR", None)
     return subprocess.run([PY, str(ROOT / "scripts/floor.py"), *map(str, args)], input=stdin, cwd=cwd,
                           capture_output=True, text=True, env=env)
@@ -808,24 +808,29 @@ def test_public_list_holds_the_tools_of_the_public_workflow(tmp_path):
 
 
 def test_release_gate_runs_the_debt_check(tmp_path):
-    """publish.debt_gate: the release gate refuses a tree whose debt baseline is not equal to its source, with the
-    command that updates it. An equal baseline passes. A tree without the floor's tool or without a baseline has no
-    such check in its public CI, and passes."""
-    tree = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], floor.BASELINE: "mode admit\n",
-                                  floor.VENDORED: (ROOT / "scripts/floor.py").read_text()})
+    """publish.debt_gate: the release gate refuses a tree whose debt baseline is missing or not equal to its source,
+    with the command that updates it. An equal baseline passes, and so does one that holds a row of a file the tree
+    does not publish. A tree without the floor's tool has no such check in its public CI, and passes."""
+    tree = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], floor.VENDORED: (ROOT / "scripts/floor.py").read_text()})
     assert (publish.FLOOR_TOOL, publish.DEBT_BASELINE) == (floor.VENDORED, floor.BASELINE)
     got = publish.debt_gate(tree)
-    assert len(got) == 1 and "DEBT CHECK FAIL (1 rise(s)" in got[0] and "debt --update --admit" in got[0], got
-    (tree / floor.BASELINE).write_text("mode admit\n1 goto src/a.c\n")
-    assert publish.debt_gate(tree) == []
-    (tree / floor.BASELINE).write_text("mode admit\n2 goto src/a.c\n")           # a stale row fails too
-    assert len(publish.debt_gate(tree)) == 1 and "debt --update --admit" in publish.debt_gate(tree)[0]
-    (tree / floor.BASELINE).write_text("mode admit\n1 goto src/a.c\n1 goto src/private.c\n")   # a row of a file that is not published
+    assert len(got) == 1 and "no %s" % floor.BASELINE in got[0] and publish.PUBLIC_PATHS_REL in got[0], got
+    base = floor.first_baseline(tree)
+    (tree / floor.BASELINE).parent.mkdir()
+    (tree / floor.BASELINE).write_text(base.replace("1 goto src/a.c\n", ""))
     got = publish.debt_gate(tree)
-    assert len(got) == 1 and "src/private.c" in got[0] and "public-paths.txt" in got[0] and "--update" not in got[0], got
-    (tree / floor.BASELINE).unlink()
+    assert len(got) == 1 and "DEBT CHECK FAIL (1 rise(s)" in got[0] and "`debt --update` rewrites the rows" in got[0], got
+    (tree / floor.BASELINE).write_text(base)
     assert publish.debt_gate(tree) == []
-    (tree / floor.BASELINE).write_text("mode admit\n")
+    (tree / floor.BASELINE).write_text(base.replace("1 goto", "2 goto"))         # a stale row fails too
+    assert len(publish.debt_gate(tree)) == 1 and "stale goto src/a.c" in publish.debt_gate(tree)[0]
+    (tree / floor.BASELINE).write_text(base + "1 goto src/private.c\n")          # a row of a file that is not published
+    assert len(publish.debt_gate(tree)) == 1                                     # with no public list it is a stale row
+    (tree / publish.PUBLIC_PATHS_REL).write_text("src/a.c\nconfig/\ntools/\n")
+    run(["git", "-C", tree, "add", publish.PUBLIC_PATHS_REL])
+    assert publish.debt_gate(tree) == []
+    (tree / floor.BASELINE).write_text("mode admit\n1 goto src/a.c\n")           # the file of an earlier psxdecomp
+    assert "version 1 file" in publish.debt_gate(tree)[0]
     (tree / floor.VENDORED).unlink()
     assert publish.debt_gate(tree) == []
     text = (ROOT / "scripts/publish.py").read_text()
@@ -950,14 +955,16 @@ def test_debt_kinds(tmp_path):
     files = {"src/clean.c": floor.C_CLEAN}
     files.update({"src/%s.c" % kind: text for kind, (text, _) in floor.C_DEBT.items()})
     repo = _style_repo(tmp_path, files)
-    rows, skip, mode, head = floor.parse_baseline(floor.first_baseline(repo))
+    bl = floor.parse_baseline(floor.first_baseline(repo))
     want = {(k, "src/%s.c" % kind): n for kind, (_, got) in floor.C_DEBT.items() for k, n in got.items()}
-    assert rows == want and mode == "admit" and skip == [] and len(head) == 5, rows      # no stub header here: no skip line
-    assert {k for k, _ in rows} == set(floor.KINDS) - {"unbased"}
+    assert bl.rows == want and bl.skip == [] and len(bl.head) == len(floor.BASELINE_HEAD), bl.rows   # no stub header here: no skip line
+    assert {k for k, _ in bl.rows} == set(floor.KINDS) - {"unbased"} and not bl.lacks()
+    assert bl.summary() == "down: pin-unmarked, asm, unbased; budget: pin 30, goto 12; admit-new: offset, address, macro, " \
+                           "placeholder, struct"
     (repo / "config").mkdir()
     (repo / floor.BASELINE).write_text(floor.first_baseline(repo))
     r = _floor("debt", "--repo", repo)
-    assert r.returncode == 0 and r.stdout.endswith("DEBT CHECK OK (0 rise(s), 0 stale row(s); mode admit)\n"), r.stdout
+    assert r.returncode == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); down: pin-unmarked" in r.stdout, r.stdout
     _floor("names", "--init", "--repo", repo)                           # the ledger exists: every other name is unbased
     r = _floor("debt", "--repo", repo)
     assert r.returncode == 1 and "DEBT FAIL rise unbased src/clean.c: 1, its row is 0\n" in r.stdout, r.stdout
@@ -1014,8 +1021,8 @@ def test_debt_against_rev(tmp_path):
     counts = [style(*a).stdout for a in ((), ("--staged",), ("--rev", "HEAD"), ("--against", "HEAD"))]
     assert counts == ["STYLE CHECK OK (2 file(s), 1 finding(s), 0 over their row)\n"] * 4, counts
     (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0] * 2)
-    r = debt("--against", "HEAD")
-    assert "DEBT INFO against HEAD: goto src/a.c: 1 -> 2\n" in r.stdout and "(1 count(s) rose, 0 fell)" in r.stdout
+    r = debt("--against", "HEAD")                                               # one body of that name, as before
+    assert "DEBT FAIL debt: rose in an existing body: goto src/a.c Walk: 1 -> 2\n" in r.stdout, r.stdout
     assert totals(debt("--staged")) == want                                     # not added yet
     run(["git", "-C", repo, "add", "src/a.c"])
     assert totals(debt("--staged")) == "goto 2, offset 2, macro 3" and totals(debt("--rev", "HEAD")) == want
@@ -1060,28 +1067,62 @@ def test_tools_find_each_other(tmp_path):
     tree = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], floor.BASELINE: "mode admit\n",
                                   floor.VENDORED: "import sys\nsys.exit(0)\n"})
     got = publish.debt_gate(tree)
-    assert len(got) == 1 and "DEBT CHECK FAIL (1 rise(s)" in got[0], got
+    assert len(got) == 1 and "DEBT CHECK FAIL" in got[0] and "version 1 file" in got[0], got
 
 
 def test_debt_baseline_command(tmp_path):
-    """The equal-baseline rule through the command line: a rise exits 1, `--update` refuses it without `--admit`,
-    `--admit` prints it, a stale row exits 1, `--down` is one way and then no rise is admitted."""
-    repo = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], "config/debt-baseline.txt": "mode admit\n"})
-    debt = lambda *a: _floor("debt", "--repo", repo, *a)  # noqa: E731
+    """The baseline through the command line. There is no `--admit`: the flag exits 2. `--update` exits 1 on a rise in
+    a body that exists, and takes the debt of a new body. A deleted baseline exits 1. A row written by hand passes
+    the row check and fails `--against`. A weaker mode, a new `skip` line and a missing policy line fail as `policy`.
+    `--raise` is refused in an agent session. `--down` is one way."""
+    repo = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0]})
+    debt = lambda *a, **kw: _floor("debt", "--repo", repo, *a, **kw)  # noqa: E731
+    base, more = repo / floor.BASELINE, floor.C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;")
     r = debt()
-    assert r.returncode == 1 and "DEBT FAIL rise goto src/a.c: 1, its row is 0\n" in r.stdout, r.stdout
-    assert debt("--update").returncode == 1 and (repo / floor.BASELINE).read_text() == "mode admit\n"
+    assert r.returncode == 1 and "DEBT FAIL no %s" % floor.BASELINE in r.stdout, r.stdout
+    assert debt("--update").returncode == 1 and not base.exists()
+    r = debt("--recount")
+    assert r.returncode == 0 and "DEBT RECOUNT written" in r.stdout and base.read_text().endswith("1 goto src/a.c\n")
+    first = base.read_text()
+    assert "mode pin-unmarked down\n" in first and "budget pin 30 base 0 1 0\n" in first and "budget goto 12 base 1 1 0\n" in first
+    assert debt().returncode == 0
+    run(["git", "-C", repo, "add", "-A"])
+    run(["git", "-C", repo, "-c", "commit.gpgsign=false", "commit", "-qm", "the baseline"])
+    (repo / "src/a.c").write_text(more)
+    r = debt()
+    assert r.returncode == 1 and "DEBT FAIL rise goto src/a.c: 2, its row is 1\n" in r.stdout, r.stdout
     r = debt("--update", "--admit")
-    assert r.returncode == 0 and "DEBT ADMIT goto src/a.c: 0 -> 1\n" in r.stdout, r.stdout
-    assert (repo / floor.BASELINE).read_text().endswith("mode admit\n1 goto src/a.c\n") and debt().returncode == 0
+    assert r.returncode == 2 and "unrecognized arguments: --admit" in r.stderr and base.read_text() == first, r.stderr
+    r = debt("--update")
+    assert r.returncode == 1 and "DEBT FAIL debt: rose in an existing body: goto src/a.c Walk: 1 -> 2\n" in r.stdout
+    assert "DEBT UPDATE refused" in r.stdout and base.read_text() == first, r.stdout
+    base.write_text(first.replace("1 goto src/a.c", "2 goto src/a.c"))           # the row written by hand
+    assert debt().returncode == 0
+    r = debt("--against", "HEAD")
+    assert r.returncode == 1 and "DEBT FAIL debt: rose in an existing body: goto src/a.c Walk: 1 -> 2\n" in r.stdout, r.stdout
+    for text, want in ((first.replace("mode pin-unmarked down\n", ""), "DEBT FAIL policy: the policy line of pin-unmarked is gone"),
+                       (first.replace("mode asm down", "mode asm admit-new"), "DEBT FAIL policy: asm went from down to admit-new"),
+                       (first.replace("1 goto", "skip src/\n1 goto"), "DEBT FAIL policy: a new `skip` line (src/)")):
+        base.write_text(text)
+        r = debt("--against", "HEAD")
+        assert r.returncode == 1 and want in r.stdout, (want, r.stdout)
+    base.unlink()
+    r = debt("--against", "HEAD")
+    assert r.returncode == 1 and "DEBT FAIL policy: %s is gone" % floor.BASELINE in r.stdout, r.stdout
+    base.write_text(first)
+    (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0] + floor.C_DEBT["goto"][0].replace("Walk", "Run"))
+    r = debt("--update")                                                        # debt that arrives with a new body
+    assert r.returncode == 0 and "DEBT INFO admitted with a new body: goto src/a.c: 1 -> 2\n" in r.stdout, r.stdout
+    assert debt("--against", "HEAD").returncode == 0
+    r = debt("--raise", "goto", "3", "--reason", "x", env={"CLAUDECODE": "1"})
+    assert r.returncode == 1 and "the developer's act" in r.stdout and "raise goto" not in base.read_text()
+    r = debt("--raise", "goto", "3", "--reason", "the stage loader")
+    assert r.returncode == 0 and re.search(r"^raise goto 3 \d{4}-\d\d-\d\d the stage loader$", base.read_text(), re.M)
     (repo / "src/a.c").write_text(floor.C_CLEAN)
     r = debt()
-    assert r.returncode == 1 and "DEBT FAIL stale goto src/a.c: 0, its row is 1" in r.stdout, r.stdout
-    assert debt("--down").returncode == 1 and debt("--update").returncode == 0 and debt("--down").returncode == 0
-    assert "mode down\n" in (repo / floor.BASELINE).read_text()
-    (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0])
-    r = debt("--update", "--admit")
-    assert r.returncode == 1 and "`mode down` admits none" in r.stdout, r.stdout
+    assert r.returncode == 1 and "DEBT FAIL stale goto src/a.c: 0, its row is 2" in r.stdout, r.stdout
+    assert debt("--down", "goto").returncode == 1 and debt("--update").returncode == 0 and debt("--down", "goto").returncode == 0
+    assert "mode goto down\n" in base.read_text() and "budget goto" not in base.read_text()
 
 
 def test_debt_agrees_with_the_corpus_lint():

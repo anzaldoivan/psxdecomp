@@ -675,7 +675,7 @@ def s10_handoff(c: Ctx) -> str:
     if not c.p(publish.STYLE_RATCHET_REL).exists():   # last: each write above can change a count; never rewritten
         c.write(publish.STYLE_RATCHET_REL, "" if c.dry else common.first_ratchet(c.target))
     paths.append(publish.STYLE_RATCHET_REL)
-    if not c.p(floor.BASELINE).exists():          # the debt of the source at the handoff: none, in `mode admit`
+    if not c.p(floor.BASELINE).exists():          # the debt of the source at the handoff: none, a mode for each kind
         c.write(floor.BASELINE, "" if c.dry else floor.first_baseline(c.target))
     paths.append(floor.BASELINE)
     if c.dry:                                     # every write of the stage is listed above; a dry run counts nothing

@@ -483,8 +483,9 @@ number counts. A numbers block of the game's own that a tool generates is a WARN
 After an upgrade, the `readme-blocks` action of `/psxdecomp:upgrade` regenerates the two blocks.
 
 A release runs the same debt check as the README workflow, on the tree that it would publish. `ship` and `release`
-refuse a tree whose `config/debt-baseline.txt` is not equal to its source, and name the command that updates it. The
-pre-push hook of the development repository warns for the same finding.
+refuse a tree whose `config/debt-baseline.txt` is missing or not equal to its source, and name the command that
+updates it. A row of a file that the tree does not publish is no finding. The pre-push hook of the development
+repository warns for the same finding.
 
 `validate` holds the report to the same rule. A unit whose `source_path` is not a C or C++ file (`.c`, `.cpp`,
 `.cc`, `.cxx`) reports no matched code. Assembly is never credited, also a hand-written file that

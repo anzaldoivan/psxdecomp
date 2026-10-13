@@ -13,7 +13,7 @@ A finished file meets six conditions:
 `python3 tools/psxd_floor.py debt` counts conditions 2 to 5 for each file against `config/debt-baseline.txt`.
 
 - Run `python3 tools/psxd_floor.py debt --update` in the commit that changes a count. A row that is not equal fails.
-- In `mode admit`, a new match can add debt. Record it with `--update --admit`. The tool prints each admitted rise.
-- In `mode down`, a count can only fall. The developer makes that switch, and it is one way.
+- New debt arrives only with a new function body. The tool refuses a rise in a body that exists.
+- A kind in `down` never rises. Only the developer raises a count, with `debt --raise`.
 - Never report a matched file as finished, and never report a debt count from memory. Run the tool.
 - The published progress number counts matched code. It says nothing about finished files.

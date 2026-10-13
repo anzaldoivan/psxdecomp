@@ -276,12 +276,13 @@ def test_s10_writes_the_guard_beside_the_style_hook(game, tmp_path):
 
 def test_s10_writes_the_debt_baseline_and_debt_passes(game):
     """S10 writes the readability floor in the handoff commit: rules/FIN1.md and rules/NAME1.md (never promoted), the
-    header lines of the two ledgers, and config/debt-baseline.txt last, in `mode admit` with no row (the game has no
-    C file yet). The vendored `debt` and `names` (the CI step of the README workflow) exit 0, and `debt` exits 1 when
+    header lines of the two ledgers, and config/debt-baseline.txt last, with a policy line for each kind and no row
+    (the game has no C file yet). The vendored `debt` and `names` (the CI step of the README workflow) exit 0, and `debt` exits 1 when
     a source file gains a `goto`."""
     import floor
-    rows, skip, mode, head = floor.parse_baseline((game / floor.BASELINE).read_text())
-    assert (rows, skip, mode) == ({}, [], "admit") and len(head) == 5, (rows, skip, mode)   # no stub header yet: no skip line
+    bl = floor.parse_baseline((game / floor.BASELINE).read_text())
+    assert (bl.rows, bl.skip, bl.version, bl.lacks()) == ({}, [], 2, []), vars(bl)             # no stub header yet: no skip line
+    assert bl.policy("pin-unmarked") == ("down",) and bl.policy("pin") == ("budget", 30, 0, 0, 0), vars(bl)
     assert (game / floor.NAMES).read_text() == "\t".join(floor.NAME_COLUMNS) + "\n"
     assert (game / floor.ASM_EVIDENCE).read_text() == "\t".join(floor.ASM_COLUMNS) + "\n"
     for rid in ("FIN1", "NAME1"):
@@ -292,7 +293,7 @@ def test_s10_writes_the_debt_baseline_and_debt_passes(game):
     handoff = set(run(["git", "-C", game, "show", "--name-only", "--format=", "HEAD"]).stdout.split())
     assert {floor.BASELINE, floor.NAMES, floor.ASM_EVIDENCE, "rules/FIN1.md", "rules/NAME1.md"} <= handoff, handoff
     r = run([PY, floor.VENDORED, "debt"], cwd=game, check=False)
-    assert r.returncode == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); mode admit)" in r.stdout, r.stdout
+    assert r.returncode == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); down: pin-unmarked" in r.stdout, r.stdout
     assert run([PY, floor.VENDORED, "names"], cwd=game, check=False).returncode == 0
     wf = (game / ".github/workflows/psxdecomp-readme.yml").read_text()
     assert "run: python3 %s debt" % floor.VENDORED in wf
