@@ -35,6 +35,8 @@ Rules:
   set, a Redump mirror and a retail image never count.
 - **Where an item is written.** Each item that counts is a row of the table `## archive.org items`. A lead's row
   holds the build's date, its page and the page's hashes, and no identifier.
+- **A build's id (the builds question).** Each builds lead carries an id: a slug of the build's date or its serial,
+  in lower case with hyphens (`proto-2001-10-30`, `slpm-86959`, `pc-2003-02-07`). `retail` is the dump's id.
 
 Report (write it to the output path, Markdown):
 

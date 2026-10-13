@@ -43,7 +43,9 @@ Inputs: the title, region/version and serial (from `.run/bootstrap/interview.jso
 8. **builds** — another build of this program that carries more than the target does. Hand the agent the
    `debug_artifacts` rows of `medium.json` as facts: S2 scanned the developer's own disc. The agent searches the
    other classes of the table below, in its order.
-   - A lead records the build's id: a serial or a build date.
+   - A lead records the build's id: a slug of its date or its serial, in lower case with hyphens. A prototype of
+     2001-10-30 is `proto-2001-10-30`, a release with a serial is `slpm-86959`, a port is `pc-2003-02-07`. `retail`
+     is the dump's id.
    - A lead records what the build carries: names, function boundaries, file layout, types.
    - Its `how to verify` is a byte check. N function bodies are byte-identical at the mapped addresses of both builds.
    - The agent reads pages only. It fetches no disc image, no symbol file and no patch, and it writes no download URL.

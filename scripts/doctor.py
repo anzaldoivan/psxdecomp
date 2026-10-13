@@ -21,9 +21,11 @@ the public repository, the pre-push hook is in place, every workflow action is p
 interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
 PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
-oracle (the record's [oracle], written by `psxd oracle record`: WARN without it or without its disc scan, FAIL when
-$PSXDECOMP_BYO_ORACLE_PATH is inside the repository or config/oracle.sha1 has no `required:` line in the firewall,
-WARN when the copy at that path has no hash there);
+oracle (the record's [oracle], written by `psxd oracle record`, and the builds of config/oracle.toml, written by
+`psxd oracle add`: WARN without the table or its disc scan, and when a registered copy lacks the build's image by
+name or size; FAIL when a checksum file has no `required:` line in the firewall, a build has no checksum file, or a
+registered path lies inside the repository outside a folder that the firewall purges and git ignores. No image is
+hashed, and a build that is not on this machine is no warning);
 gate, toolchain, names and debt (the tooling and readability floor, each WAIT until its phase: one gate command and
 the hash files once 1.3 is closed, FAIL without them once 1.9 is closed; docs/ops/compiler-pin.md and
 config/toolchain.tsv once 1.4 is closed; the two ledgers once 1.4 is closed, FAIL when one is malformed; the debt
@@ -126,7 +128,7 @@ def base_rows(repo: pathlib.Path, add):
             sdk = sdk_row(r.get("psyq"), repo, os.environ.get("PSXDECOMP_BYO_PSYQ_PATH"))
             if sdk:
                 add("sdk", *sdk)
-            add("oracle", *oracle_row(r.get("oracle"), repo, os.environ.get("PSXDECOMP_BYO_ORACLE_PATH")))
+            add("oracle", *oracle_row(r.get("oracle"), repo))
     else:
         add("record", "WARN", "no config/psxdecomp.toml (not bootstrapped by psxdecomp; /psxdecomp:upgrade adopts it)")
     pa = repo / ".claude" / "pa.json"
@@ -639,34 +641,39 @@ def sdk_row(psyq: dict | None, repo: pathlib.Path, byo: str | None) -> tuple[str
     return "OK", what + "; byo path given"
 
 
-def oracle_row(table: dict | None, repo: pathlib.Path, byo: str | None) -> tuple[str, str]:
-    """The oracle-build question's record: the disc scan, and the hash record of a supplied copy. A copy inside the
-    repository and a hash file that the firewall does not read are FAILs; no record and a copy with no hash WARN."""
-    fw = repo / common.FIREWALL
-    held = oracle.parse_hashes(common.read(repo / oracle.HASHES)) if (repo / oracle.HASHES).is_file() else None
-    read = oracle.HASHES in common.firewall_lines(common.read(fw), "required") if fw.is_file() else False
-    path = pathlib.Path(byo).expanduser().resolve() if byo else None
-    if path and oracle.inside(path, repo):
-        return "FAIL", "$PSXDECOMP_BYO_ORACLE_PATH is inside the repository (firewall): move it outside"
-    if held is not None and not read:
-        return "FAIL", "%s exists and %s has no `required: %s` line: the audit does not read it (`%s` writes the line)" % (
-            oracle.HASHES, common.FIREWALL, oracle.HASHES, oracle.COMMAND)
+def oracle_row(table: dict | None, repo: pathlib.Path) -> tuple[str, str]:
+    """The oracle-build question's record: the disc scan, and each other build that a developer supplied. No image is
+    hashed. A checksum file that the firewall does not read, a build without its checksum file and a registered path
+    that the firewall refuses are FAILs; no record, no scan and a copy that lacks the build's image WARN."""
+    try:
+        rows = oracle.status(repo)
+    except common.Fail as e:
+        return "FAIL", str(e)
+    loose = oracle.uncovered(repo)
+    if loose:
+        return "FAIL", "%s exists and %s has no `required:` line that reads it: the audit does not read it (`%s` writes " \
+                       "`required: %s`)" % (", ".join(loose), common.FIREWALL, oracle.ADD_COMMAND, oracle.HASH_GLOB)
+    gone = [r["id"] for r in rows if not (repo / (oracle.HASHES % r["id"])).is_file()]
+    if gone:
+        return "FAIL", "%s names `%s` and %s is missing: run `%s` again with your copy" % (
+            oracle.BUILDS, gone[0], oracle.HASHES % gone[0], oracle.ADD_COMMAND)
+    bad = [r for r in rows if r["problem"]]
+    if bad:
+        return "FAIL", "the registered copy of `%s` is refused (firewall): %s (`psxd oracle link --id %s --path <path>`)" % (
+            bad[0]["id"], bad[0]["problem"], bad[0]["id"])
     if not isinstance(table, dict):
         return "WARN", "no [oracle] in the record: run `%s`" % oracle.COMMAND
-    what = "%s, checked %s; byo %s" % (oracle.scan_line(table), table.get("checked", "?"), table.get("byo", "?"))
-    if table.get("byo_checked"):
-        what += " (%s)" % table["byo_checked"]
+    what = "%s, checked %s; %d build(s): %d on this machine" % (
+        oracle.scan_line(table), table.get("checked", "?"), len(rows), sum(r["here"] for r in rows))
+    lost = [r["id"] for r in rows if r["path"] and not r["here"]]
+    if lost:
+        what += " (the registered path is gone: %s)" % ", ".join(lost)
     if "disc_debug_files" not in table:
         return "WARN", what + ": run `%s`" % oracle.COMMAND
-    if path and table.get("byo") != "own disc":
-        if not path.exists():
-            return "WARN", what + "; $PSXDECOMP_BYO_ORACLE_PATH %s does not exist" % path
-        if path.is_file() and oracle.sha1_file(path) not in (held or {}):
-            return "WARN", what + "; the copy at $PSXDECOMP_BYO_ORACLE_PATH is not in %s: run `psxd oracle record --repo . " \
-                                  "--byo <that path>`" % oracle.HASHES
-        if path.is_dir() and not held:
-            return "WARN", what + "; the folder at $PSXDECOMP_BYO_ORACLE_PATH has no hash in %s: run `psxd oracle record " \
-                                  "--repo . --byo <that path>`" % oracle.HASHES
+    odd = [r for r in rows if r["note"]]
+    if odd:
+        return "WARN", what + "; the copy of `%s` %s: `psxd oracle link --id %s --path <path>` checks a copy" % (
+            odd[0]["id"], odd[0]["note"], odd[0]["id"])
     return "OK", what
 
 
@@ -1169,27 +1176,47 @@ def self_test() -> int:
         for got, want in cases:
             ok &= (got[0] if got else None) == want
         print("  sdk row: %s" % cases[0][0][1])
-        # the oracle row: no table, a copy inside the repository, a hash file the firewall does not read, a copy with
-        # no hash, then the record as `oracle record` leaves it
-        t = {"checked": "2026-10-13", "disc_debug_files": 1, "disc_psyq_sym": 1, "byo": "none"}
-        out = pathlib.Path(td).resolve().parent / (repo.name + "-copy.sym")
+        # the oracle row: no table, no scan, a checksum file the firewall does not read, a build without its file, then
+        # the record as `oracle add` leaves it: a copy on this machine, its image by size, a path that is gone, a path
+        # that the firewall refuses, no copy
+        t = {"checked": "2026-10-13", "disc_debug_files": 1, "disc_psyq_sym": 1}
+        game = repo / "game"
+        common.write(game / common.FIREWALL, "purge: disks/\n")
+        common.write(game / oracle.RECORD, "[psxdecomp]\n")
+        common.write(game / ".gitignore", "/disks/\n")
+        common.git(game, "init", "--quiet")
+        out = repo / "copy.sym"
         out.write_bytes(b"MND\x01copy")
-        common.write(repo / common.FIREWALL, "purge: disks/\n")
-        cases = [(oracle_row(None, repo, None), "WARN"), (oracle_row(t, repo, None), "OK"),
-                 (oracle_row(t, repo, str(repo / "tools" / "GAME.SYM")), "FAIL"),
-                 (oracle_row({"checked": "2026-10-13", "byo": "none"}, repo, None), "WARN"),
-                 (oracle_row(t, repo, str(out) + ".nope"), "WARN"), (oracle_row(t, repo, str(out)), "WARN"),
-                 (oracle_row(dict(t, byo="own disc"), repo, str(out)), "OK")]
-        common.write(repo / oracle.HASHES, "%s  copy.sym\n" % oracle.sha1_file(out))
-        cases += [(oracle_row(t, repo, None), "FAIL")]                    # the hash file, and no `required:` line
-        common.write(repo / common.FIREWALL, "purge: disks/\n" + oracle.REQUIRED)
-        cases += [(oracle_row(dict(t, byo="1 file(s) hashed", byo_checked="1 stated hash(es) matched"), repo, str(out)), "OK")]
+        cases = [(oracle_row(None, game), "WARN"), (oracle_row(t, game), "OK"), (oracle_row({"checked": "2026-10-13"}, game), "WARN")]
+        common.write(game / "config" / "oracle.sha1", "%s  copy.sym\n" % oracle.sha1_file(out))
+        cases += [(oracle_row(t, game), "FAIL")]                          # a checksum file, and no `required:` line
+        (game / "config" / "oracle.sha1").unlink()
+        oracle.add(game, "proto-a", str(out), cls="prototype")
+        cases += [(oracle_row(t, game), "OK")]
+        ok &= cases[-1][0][1].endswith("; 1 build(s): 1 on this machine") and cases[1][0][1].endswith("; 0 build(s): 0 on this machine")
+        print("  oracle row: %s" % cases[-1][0][1])
+        out.write_bytes(b"MND\x01copy!")
+        cases += [(oracle_row(t, game), "WARN")]                          # the image by its size: nothing is hashed
+        ok &= "has 9 bytes, and the record says 8" in cases[-1][0][1]
         out.unlink()
+        cases += [(oracle_row(t, game), "OK")]                            # the path is gone: said, and no warning
+        ok &= cases[-1][0][1].endswith("0 on this machine (the registered path is gone: proto-a)")
+        common.write(game / "tools" / "GAME.SYM", "x")
+        common.local_set(game, "builds", "proto-a", str(game / "tools" / "GAME.SYM"))
+        cases += [(oracle_row(t, game), "FAIL")]                          # a copy inside the repository
+        common.local_set(game, "builds", "proto-a", None)
+        cases += [(oracle_row(t, game), "OK")]                            # a build that is not on this machine
+        hashes = game / (oracle.HASHES % "proto-a")
+        text = common.read(game / common.FIREWALL)
+        common.write(game / common.FIREWALL, "purge: disks/\n")
+        cases += [(oracle_row(t, game), "FAIL")]                          # the build's file, and no `required:` line
+        common.write(game / common.FIREWALL, text)
+        hashes.unlink()
+        cases += [(oracle_row(t, game), "FAIL")]                          # a [[build]] without its checksum file
         for got, want in cases:
             ok &= got[0] == want
-        ok &= oracle.COMMAND in cases[0][0][1] and "not in %s" % oracle.HASHES in cases[5][0][1]
-        ok &= cases[-1][0][1].endswith("byo 1 file(s) hashed (1 stated hash(es) matched)")
-        print("  oracle row: %s" % cases[-1][0][1])
+        ok &= oracle.COMMAND in cases[0][0][1] and "config/oracle.sha1 exists" in cases[3][0][1]
+        ok &= oracle.HASHES % "proto-a" in cases[-1][0][1] and "under no folder" in cases[7][0][1]
     with tempfile.TemporaryDirectory() as td:                           # hygiene: clean tree OK, one planted line WARN
         repo = pathlib.Path(td).resolve()
         common.git(repo, "init", "--quiet")
@@ -1436,7 +1463,7 @@ def self_test_deny() -> bool:
     print("  deny: all %s; one removed %s; PA3-managed %s" % (full[0], short[0], managed[0]))
     print("  guard: no rules file %s; the default rules %s; a bad line %s; no guard group %s; PA3-managed %s" % (
         bare[0], good[0], bad[0], gone[0], theirs[0]))
-    ok = (bare[0] == "WARN" and good[0] == "OK" and "holds 5 rule(s)" in good[1] and bad[0] == "FAIL"
+    ok = (bare[0] == "WARN" and good[0] == "OK" and "holds 7 rule(s)" in good[1] and bad[0] == "FAIL"
           and "line 1" in bad[1] and gone[0] == "FAIL" and "1 of 2" in gone[1] and "guard-hook" in gone[1]
           and theirs[0] == "WARN")
     return (ok and full[0] == "OK" and short[0] == "FAIL" and "1 of %d" % n in short[1] and managed[0] == "WARN"

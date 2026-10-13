@@ -58,10 +58,12 @@ equivalent of a delivery records it in the record's [own] (`own` action for the 
 `upgrade.py own KEY VALUE`): psxdecomp then writes nothing for that key. `record-tables` adds [host] to a record
 that lacks it; [kit] and [psyq] in an adopted record are `manual`.
 
-The oracle-build question (docs/REFS.md) has two actions. `firewall-debug` adds the `glob:` lines of a debug file of
-any build to config/firewall.txt (common.FIREWALL_DEBUG); it is `manual`, with the file names, while a tracked file
-has such an extension. `record-oracle` is always `manual`: a record without [oracle] needs `psxd oracle record`, which
-reads the developer's dump.
+The oracle-build question (docs/REFS.md) has three actions. `firewall-debug` adds the `glob:` lines of a debug file of
+any build to config/firewall.txt (common.FIREWALL_DEBUG), and a block of an earlier version gains the lines it lacks;
+it is `manual`, with the file names, while a tracked file has such an extension. `record-oracle` is always `manual`:
+a record without [oracle] needs `psxd oracle record`, which reads the developer's dump. `oracle-public` is the manual
+line of split mode: the public list must hold config/oracle.toml and config/oracle.*.sha1 once a build is recorded,
+because the public firewall names the checksum files as a `required:` source.
 
     upgrade.py apply --take KEY [--repo DIR]      also overwrite the edited copies of that action's owned files
     upgrade.py own KEY VALUE [--repo DIR]         record `KEY = "VALUE"` in the record's [own]; KEY is one of OWN_KEYS
@@ -154,9 +156,8 @@ TABLE_NOTE = {
     "delivered": "# [delivered]: the sha256 of each owned file as psxdecomp last wrote it. A copy edited here since then is\n"
                  "# never overwritten unasked (`/psxdecomp:upgrade apply --take <action>`).",
     "host": "# [host]: the host recipe of the machine that builds.",
-    "oracle": "# [oracle]: the oracle-build question (psxdecomp's `oracle record`). The disc scan gives counts only. `byo` says\n"
-              "# whether the developer supplied a copy of another build: config/oracle.sha1 holds its hashes, never a path.\n"
-              "# `byo_checked` says whether the last copy held a file with a hash that the build's page states.",
+    "oracle": "# [oracle]: the oracle-build question (psxdecomp's `oracle record`). The disc scan gives counts only. Each other\n"
+              "# build that a developer supplied has a table in config/oracle.toml and a checksum file (`oracle add`).",
 }
 
 
@@ -449,15 +450,15 @@ def plan(repo: pathlib.Path) -> list[dict]:
                 "rows are psxdecomp's profiles/psx/psyq.toml)" % install.RECORD,
                 "doctor's `sdk` row reads it; upgrade never reads a dump", "record-psyq")
     if "oracle" not in tables:
-        add("manual", "record-oracle: run `%s` (it scans your disc for debug files and writes [oracle] to %s; with your "
-            "own copy of another build, `--byo <path>` in place of `--no-copy`)" % (oracle.COMMAND, install.RECORD),
+        add("manual", "record-oracle: run `%s` (it scans your disc for debug files and writes [oracle] to %s; your own "
+            "copy of another build is `%s`)" % (oracle.COMMAND, install.RECORD, oracle.ADD_COMMAND),
             "doctor's `oracle` row reads it; upgrade never reads a dump", "record-oracle")
     fw = repo / common.FIREWALL
     if fw.is_file() and common.firewall_debug_due(common.read(fw)):
         hits = common.firewall_debug_hits(repo)
         if hits:
             add("manual", "firewall-debug: %d tracked file(s) have the extension of a debug file: %s. Remove or rename "
-                "each, then apply again: psxdecomp then adds the two `glob:` lines to %s" % (
+                "each, then apply again: psxdecomp then adds the `glob:` lines to %s" % (
                     len(hits), ", ".join(hits[:6]) + (", …" if len(hits) > 6 else ""), common.FIREWALL),
                 "with these files tracked, the lines would fail the audit", "firewall-debug")
         else:
@@ -555,6 +556,13 @@ def plan(repo: pathlib.Path) -> list[dict]:
         if gone:
             add("manual", "floor-public: add %s to %s" % (", ".join(gone), PUBLIC_LIST),
                 "the public repository's CI runs `debt` and needs the files", "floor-public")
+        held = sorted(p.relative_to(repo).as_posix() for p in (repo / "config").glob("oracle.*.sha1"))
+        gone = [p for p in ([oracle.BUILDS] if (repo / oracle.BUILDS).is_file() else []) + held if not publish.is_listed(listed, p)]
+        if gone:
+            add("manual", "oracle-public: add `%s` and `%s` to %s (not listed today: %s)" % (
+                oracle.BUILDS, oracle.HASH_GLOB, PUBLIC_LIST, ", ".join(gone)),
+                "the public %s names the checksum files of the other builds as a `required:` source, and the public "
+                "audit fails without them" % common.FIREWALL, "oracle-public")
     readme = repo / "README.md"
     if readme.is_file():
         text = common.read(readme)
@@ -1445,8 +1453,20 @@ def self_test() -> int:
         ok &= {"build", "build-fill", "split-doc", "floor-public"} <= {x["key"] for x in plan(repo)}
         need = next(x for x in plan(repo) if x["key"] == "floor-public")
         ok &= need["owner"] == "manual" and all(p in need["what"] for p in (floor.VENDORED, floor.BASELINE, floor.NAMES))
+        # a recorded build in split mode: the public list must hold its table and its checksum file
+        ok &= "oracle-public" not in {x["key"] for x in plan(repo)}
+        (repo / oracle.BUILDS).write_text('[[build]]\nid = "proto-a"\n')
+        (repo / (oracle.HASHES % "proto-a")).write_text("%s  PROTO.SYM\n" % ("a" * 40))
+        need = next(x for x in plan(repo) if x["key"] == "oracle-public")
+        ok &= need["owner"] == "manual" and all(p in need["what"] for p in (oracle.BUILDS, oracle.HASH_GLOB, oracle.HASHES % "proto-a"))
+        (repo / "config/public-paths.txt").write_text("config/public-paths.txt\n%s\n" % oracle.BUILDS)
+        ok &= next(x for x in plan(repo) if x["key"] == "oracle-public")["what"].endswith("today: %s)" % (oracle.HASHES % "proto-a"))
+        (repo / "config/public-paths.txt").write_text("config/public-paths.txt\n%s\n%s\n" % (oracle.BUILDS, oracle.HASH_GLOB))
+        ok &= "oracle-public" not in {x["key"] for x in plan(repo)} and "floor-public" in {x["key"] for x in plan(repo)}
         (repo / "config/public-paths.txt").write_text("config/\ntools/psxd_*.py\n")
-        ok &= "floor-public" not in {x["key"] for x in plan(repo)}
+        ok &= not {"floor-public", "oracle-public"} & {x["key"] for x in plan(repo)}
+        (repo / oracle.BUILDS).unlink()
+        (repo / (oracle.HASHES % "proto-a")).unlink()
         apply(repo, False, False)
         card = repo / "docs/ops/psxdecomp-split.md"
         ok &= card.read_bytes() == SPLIT_OWNED["docs/ops/psxdecomp-split.md"].read_bytes()
@@ -1513,8 +1533,14 @@ def self_test() -> int:
         ok &= common.FIREWALL in written_paths(apply(repo, False, False))
         ok &= (repo / common.FIREWALL).read_text() == "purge: disks/\n\n" + common.FIREWALL_DEBUG
         ok &= "firewall-debug" not in {x["key"] for x in plan(repo)}
+        before = "purge: disks/\n\n" + "".join(common.FIREWALL_DEBUG.splitlines(True)[:5]).replace(
+            common.FIREWALL_DEBUG_NOTE[1], common.FIREWALL_DEBUG_NOTE_OLD) + "\nrequired: x.sha1\n"
+        (repo / common.FIREWALL).write_text(before)                        # the block of an earlier version: two lines
+        ok &= next(x for x in plan(repo) if x["key"] == "firewall-debug")["owner"] == "psxdecomp"
+        apply(repo, False, False)
+        ok &= (repo / common.FIREWALL).read_text() == "purge: disks/\n\n" + common.FIREWALL_DEBUG + "\nrequired: x.sha1\n"
         (repo / install.RECORD).write_text(
-            (repo / install.RECORD).read_text() + '\n[oracle]\nchecked = "2026-10-13"\nbyo = "none"\n')
+            (repo / install.RECORD).read_text() + '\n[oracle]\nchecked = "2026-10-13"\n')
         ok &= "record-oracle" not in {x["key"] for x in plan(repo)}
     return common.self_test_banner("upgrade", ok)
 

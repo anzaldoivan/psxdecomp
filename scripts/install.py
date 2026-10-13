@@ -628,14 +628,24 @@ def s10_handoff(c: Ctx) -> str:
         if not c.p(rel).exists():
             c.write(rel, body)
     paths = [RECORD, "config/psxdecomp.profile.toml", "docs/ops/host-recipe.md"]
-    import oracle                                 # the oracle-build question: the disc scan, the hashes of a given copy
-    if not c.dry and "oracle" not in upgrade.record_tables(c.target):
-        got, line = oracle.record(c.target, (medium or {}).get("debug_artifacts"),
-                                  ans.get("PSXDECOMP_BYO_ORACLE_PATH") or None, ans.get("DUMP_PATH") or None,
-                                  expect=ans.get("PSXDECOMP_BYO_ORACLE_SHA1", "").split())
+    import oracle                                 # the oracle-build question: the developer's copy first, then the scan
+    byo, dump = ans.get("PSXDECOMP_BYO_ORACLE_PATH") or None, ans.get("DUMP_PATH") or None
+    own = bool(byo and dump) and os.path.realpath(os.path.expanduser(byo)) == os.path.realpath(os.path.expanduser(dump))
+    bid = ans.get("PSXDECOMP_BYO_ORACLE_ID", "")
+    if byo and not own and not c.dry and bid not in [b["id"] for b in oracle.builds(c.target)]:
+        got, line = oracle.add(c.target, bid, byo, ans.get("PSXDECOMP_BYO_ORACLE_SHA1", "").split(),
+                               ans.get("PSXDECOMP_BYO_ORACLE_CLASS") or None, None,
+                               ans.get("PSXDECOMP_BYO_ORACLE_PAGE") or None)       # a refusal: nothing was written
         c.written += got
-        print("     oracle %s" % line)
-    paths += [oracle.HASHES, common.FIREWALL]
+        print("     oracle build %s" % line)
+    if not c.dry and "oracle" not in upgrade.record_tables(c.target):
+        got, line = oracle.record(c.target, (medium or {}).get("debug_artifacts"), dump)   # and the dump's path, locally
+        c.written += got
+        print("     oracle %s%s" % (line, "; the copy is your dump: the retail manifest covers it" if own else ""))
+    if not c.dry and dump and common.local_path(c.target) and oracle.RETAIL not in oracle.registered(c.target):
+        common.local_set(c.target, "dump", "path", os.path.abspath(os.path.expanduser(dump)))    # a re-run on another clone
+    paths += [oracle.BUILDS, common.FIREWALL] + sorted(x.relative_to(c.target).as_posix()
+                                                       for x in c.p("config").glob("oracle.*.sha1"))
     pa_src = c.boot("prior-art.md")
     if pa_src.is_file() and not c.p("docs/prior-art.md").exists():
         c.write("docs/prior-art.md", common.read(pa_src))
@@ -691,7 +701,7 @@ def s10_handoff(c: Ctx) -> str:
         c.write(floor.BASELINE, "" if c.dry else floor.first_baseline(c.target))
     paths.append(floor.BASELINE)
     if c.dry:                                     # every write of the stage is listed above; a dry run counts nothing
-        return ("would write the record (with the oracle-build table), the tools, the settings, the rules, the ledgers "
+        return ("would write the record (with the oracle-build table and a supplied build), the tools, the settings, the rules, the ledgers "
                 "and the two baselines")
     c.git("add", "--", *[x for x in paths if c.p(x).exists()])   # the README lint counts tracked paths, not local
     import doctor

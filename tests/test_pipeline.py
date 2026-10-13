@@ -2,6 +2,7 @@
 import functools
 import json
 import os
+import pathlib
 import re
 import shutil
 
@@ -10,6 +11,7 @@ import pytest
 from conftest import PY, PY_TOKEN, ROOT, bootstrap, check_golden, hook_stdout, run, tree
 
 import common
+import oracle
 
 GOLDEN = ROOT / "tests" / "golden" / "fixture-tree.txt"
 
@@ -595,8 +597,9 @@ def test_wrong_kit_refused(tmp_path, kit):
 
 
 def test_s10_refuses_a_copy_with_no_stated_hash(toolchain, tmp_path):
-    """The answers hold a path and the hashes of the build's page (PSXDECOMP_BYO_ORACLE_SHA1). A copy where no file
-    has one: S10 fails before any hash is written, and names no path. With the page's hash, the record says so."""
+    """The answers hold a path, the build's id and the hashes of the build's page (PSXDECOMP_BYO_ORACLE_SHA1). A copy
+    where no file has one: S10 fails before anything of the build is written, and names no path. With the page's hash,
+    the build's table says which one matched."""
     import hashlib
     import tomllib
     proto = tmp_path / "outside" / "PROTO.SYM"
@@ -606,23 +609,26 @@ def test_s10_refuses_a_copy_with_no_stated_hash(toolchain, tmp_path):
 
     def boot(sha, check=True):
         answers.write_text((ROOT / "fixtures/answers.psx.txt").read_text().rstrip("\n")
-                           + "\nPSXDECOMP_BYO_ORACLE_PATH: %s\nPSXDECOMP_BYO_ORACLE_SHA1: %s %s\n" % (proto, "1" * 40, sha))
+                           + "\nPSXDECOMP_BYO_ORACLE_PATH: %s\nPSXDECOMP_BYO_ORACLE_ID: proto-1999-01-01"
+                             "\nPSXDECOMP_BYO_ORACLE_SHA1: %s %s\n" % (proto, "1" * 40, sha))
         return run([PY, ROOT / "scripts/install.py", "run", "--target", target, "--answers", answers, "--dump",
                     toolchain["dump"], "--config-dir", toolchain["cfg"], "--pa3-dir", toolchain["cfg"] / "pa3",
                     "--intake-fixture", "--no-fetch"], env=toolchain["env"], check=check)
 
     r = boot("0" * 40, check=False)
     assert r.returncode == 1 and "no file of the copy has a stated hash" in r.stdout, r.stdout[-1500:]
-    assert not (target / "config/oracle.sha1").exists()
+    assert not list((target / "config").glob("oracle*"))
     assert "oracle" not in tomllib.loads((target / "config/psxdecomp.toml").read_text())
-    assert "config/oracle.sha1" not in common.firewall_lines((target / "config/firewall.txt").read_text(), "required")
-    r = boot(hashlib.sha1(proto.read_bytes()).hexdigest())
+    assert oracle.HASH_GLOB not in common.firewall_lines((target / "config/firewall.txt").read_text(), "required")
+    assert oracle.registered(target) == {}
+    sha = hashlib.sha1(proto.read_bytes()).hexdigest()
+    r = boot(sha)
     assert "BOOTSTRAP OK through S10" in r.stdout, r.stdout[-1500:]
-    table = tomllib.loads((target / "config/psxdecomp.toml").read_text())["oracle"]
-    assert table["byo"] == "1 file(s) hashed" and table["byo_checked"] == "1 stated hash(es) matched", table
+    build = oracle.builds(target)[0]
+    assert build["expect"] == sorted(["1" * 40, sha]) and build["matched"] == [sha] and build["image"] == "PROTO.SYM", build
     assert run(["git", "-C", target, "status", "--porcelain"]).stdout == ""
-    assert re.search(r"DOCTOR oracle\s+OK .*\(1 stated hash\(es\) matched\)",
-                     run([PY, ROOT / "scripts/doctor.py", "--repo", target, "--offline", "--only", "oracle"]).stdout)
+    assert re.search(r"DOCTOR oracle\s+OK .*; 1 build\(s\): 1 on this machine$",
+                     run([PY, ROOT / "scripts/doctor.py", "--repo", target, "--offline", "--only", "oracle"]).stdout, re.M)
 
 
 def test_s10_refuses_to_commit_a_builds_item(toolchain, tmp_path):
@@ -703,7 +709,7 @@ def test_resumed_s10_commits_the_card(toolchain, tmp_path):
     assert tree(target) == GOLDEN.read_text().splitlines()
 
 
-# ---- the oracle-build question: the firewall's block, the record, the hash record, upgrade, doctor ----------------
+# ---- the oracle-build question: the firewall's block, the record, each build's checksum file, upgrade, doctor -------
 
 def _copy(game, tmp_path, name="copy"):
     repo = tmp_path / name
@@ -715,13 +721,13 @@ def _audit(repo):
     return run([PY, "tools/audit_public.py"], cwd=repo, check=False)
 
 
-def _oracle(repo, *args, env=None):
-    return run([PY, ROOT / "scripts/oracle.py", "record", "--repo", repo, *args], env=env, check=False)
+def _oracle(repo, cmd, *args, env=None):
+    return run([PY, ROOT / "scripts/oracle.py", cmd, "--repo", repo, *args], env=env, check=False)
 
 
 def test_firewall_refuses_a_debug_file_of_any_build(game, tmp_path):
-    """S9 wrote the block: the game's audit exits 1 on a tracked symbol file or debug executable, in any folder and
-    in any letter case, and names the `glob:` line. A text file named like a link map passes."""
+    """S9 wrote the block: the game's audit exits 1 on a tracked symbol file, debug executable or debug database, in
+    any folder and in any letter case, and names the `glob:` line. A text file named like a link map passes."""
     fw = (game / "config/firewall.txt").read_text()
     assert fw.count(common.FIREWALL_DEBUG) == 1 and not common.firewall_debug_due(fw), fw[-600:]
     assert common.firewall_debug_hits(game) == []
@@ -729,7 +735,8 @@ def test_firewall_refuses_a_debug_file_of_any_build(game, tmp_path):
     (repo / "docs/notes.map").write_text("a note of the game\n")
     run(["git", "-C", repo, "add", "-f", "docs/notes.map"])
     assert _audit(repo).returncode == 0, _audit(repo).stdout
-    for rel, glob in (("x/GAME.SYM", "*.[Ss][Yy][Mm]"), ("A.cpe", "*.[Cc][Pp][Ee]")):
+    for rel, glob in (("x/GAME.SYM", "*.[Ss][Yy][Mm]"), ("A.cpe", "*.[Cc][Pp][Ee]"), ("x/Game.pdb", "*.[Pp][Dd][Bb]"),
+                      ("GAME.DBG", "*.[Dd][Bb][Gg]")):
         (repo / rel).parent.mkdir(exist_ok=True)
         (repo / rel).write_text("not a byte of any game\n")
         run(["git", "-C", repo, "add", "-f", rel])
@@ -740,21 +747,61 @@ def test_firewall_refuses_a_debug_file_of_any_build(game, tmp_path):
     assert _audit(repo).returncode == 0
 
 
+def test_audit_refuses_a_listing_of_any_build(game, tmp_path):
+    """The proof of the kit's listing rule, which a build's disassembly meets whatever its name and its hash: a tracked
+    text file with 70 objdump-shaped lines in a row fails the audit, and one with 60 passes."""
+    repo = _copy(game, tmp_path)
+    listing = lambda n: "".join("%8x:\t27bdffc0 \taddiu\tsp,sp,-64\n" % (0x80010000 + 4 * i) for i in range(n))  # noqa: E731
+    (repo / "docs/proto-notes.txt").write_text("the prototype's first function:\n" + listing(60))
+    run(["git", "-C", repo, "add", "-f", "docs/proto-notes.txt"])
+    assert _audit(repo).returncode == 0, _audit(repo).stdout
+    (repo / "docs/proto-notes.txt").write_text("the prototype's first function:\n" + listing(70))
+    r = _audit(repo)
+    assert r.returncode == 1 and "OFFENDER docs/proto-notes.txt: disassembly-shaped content: 70 contiguous lines (cap 64)" in \
+        r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_gate_refuses_a_staged_symbol_dump(game, tmp_path):
+    """The audit's rules see no symbol dump that a tool wrote as text: no path rule, no hash, no listing shape. The
+    game's own gate does. A staged text file with 70 lines of a PsyQ symbol dump fails `gate --staged` on `symdump`,
+    and the audit passes the same tree. With 60 lines the check is silent."""
+    repo = _copy(game, tmp_path)
+    line = ("000008: $80010000 1 __SN_ENTRY_POINT\n", "00001d: $00000000 94 Def class TPDEF type UCHAR size 0 name u_char\n")
+    dump = lambda n: "Header : MND version 1\nTarget unit 0\n" + "".join(line[i % 2] for i in range(n))  # noqa: E731
+
+    def gate():
+        run(["git", "-C", repo, "add", "-f", "docs/proto-symbols.txt"])
+        return run([PY, "tools/psxd_floor.py", "gate", "--staged"], cwd=repo, check=False)
+
+    (repo / "docs/proto-symbols.txt").write_text(dump(70))
+    r = gate()
+    assert r.returncode == 1 and "GATE FAIL symdump: docs/proto-symbols.txt: 70 lines in a row have the shape of a PsyQ symbol " \
+        "dump or link map (cap 64)" in r.stdout, r.stdout + r.stderr
+    assert _audit(repo).returncode == 0                                          # what the audit alone lets through
+    (repo / "docs/proto-symbols.txt").write_text(dump(60))
+    assert "symdump" not in gate().stdout
+
+
 def test_s10_records_the_disc_scan(game):
-    """S10 wrote [oracle]: the fixture disc's one debug file, which has the PsyQ SYM magic, and no supplied copy. No
-    hash file and no `required:` line exist without a copy."""
+    """S10 wrote [oracle]: the fixture disc's one debug file, which has the PsyQ SYM magic. No build was supplied: no
+    table, no checksum file and no `required:` line. The dump's path is in the git directory, not in the record."""
     import tomllib
     rec = tomllib.loads((game / "config/psxdecomp.toml").read_text())
-    assert rec["oracle"] == {"checked": common.today(), "disc_debug_files": 1, "disc_psyq_sym": 1, "byo": "none"}, rec["oracle"]
-    assert not (game / "config/oracle.sha1").exists()
-    assert "config/oracle.sha1" not in common.firewall_lines((game / "config/firewall.txt").read_text(), "required")
+    assert rec["oracle"] == {"checked": common.today(), "disc_debug_files": 1, "disc_psyq_sym": 1}, rec["oracle"]
+    assert not list((game / "config").glob("oracle*")) and oracle.builds(game) == []
+    assert oracle.HASH_GLOB not in common.firewall_lines((game / "config/firewall.txt").read_text(), "required")
     assert "MAIN.SYM" not in (game / "config/psxdecomp.toml").read_text()          # counts only, never a name
+    dump = oracle.registered(game)[oracle.RETAIL]
+    assert pathlib.Path(dump).is_file() and common.local_path(game) == game / ".git" / "psxdecomp" / "local.toml"
+    assert dump not in (game / "config/psxdecomp.toml").read_text()                # the kit's environment page holds it, S8
 
 
-def test_oracle_record_refuses_a_tracked_copy(game, tmp_path):
-    """`oracle record --byo` with a file outside the repository: its SHA-1 is in config/oracle.sha1 under its base
-    name, the firewall reads that file, and the audit then exits 1 on a tracked copy under another name. A path inside
-    the repository is refused and writes nothing."""
+def test_oracle_add_refuses_a_tracked_copy(game, tmp_path):
+    """`oracle add` with a file outside the repository: its SHA-1 is in the build's checksum file under its base name,
+    the firewall reads that file, and the audit then exits 1 on a tracked copy under another name. A path inside the
+    repository is refused and writes nothing, but for the ignored home `disks/builds/<id>/`. A second build has a file
+    and a table of its own. A second worktree of the clone finds each path."""
+    import hashlib
     repo = _copy(game, tmp_path)
     proto = tmp_path / "outside" / "PROTO.SYM"
     proto.parent.mkdir()
@@ -762,32 +809,62 @@ def test_oracle_record_refuses_a_tracked_copy(game, tmp_path):
     inside = repo / "docs" / "taken.txt"
     shutil.copyfile(proto, inside)
     before = run(["git", "-C", repo, "status", "--porcelain"]).stdout
-    r = _oracle(repo, "--byo", inside)
+    r = _oracle(repo, "add", "--id", "proto-1999-01-01", "--path", inside)
     assert r.returncode == 1 and "inside the repository" in r.stdout and "Nothing was written" in r.stdout, r.stdout
-    assert run(["git", "-C", repo, "status", "--porcelain"]).stdout == before and not (repo / "config/oracle.sha1").exists()
+    assert run(["git", "-C", repo, "status", "--porcelain"]).stdout == before and not list((repo / "config").glob("oracle*"))
     inside.unlink()
-    r = _oracle(repo, "--byo", proto)
-    assert r.returncode == 0 and "byo: 1 file(s) hashed (1 new)" in r.stdout and "AUDIT OK" in r.stdout, r.stdout
-    assert "NEXT commit config/oracle.sha1 config/firewall.txt config/psxdecomp.toml" in r.stdout, r.stdout
-    import hashlib
+    r = _oracle(repo, "add", "--id", "proto-1999-01-01", "--path", proto, "--class", "prototype", "--page", "https://example.org/proto")
+    assert r.returncode == 0 and "proto-1999-01-01: 1 file(s) hashed (1 new), no stated hash; path registered" in r.stdout, r.stdout
+    assert "AUDIT OK" in r.stdout and "NEXT commit config/oracle.proto-1999-01-01.sha1 config/firewall.txt config/oracle.toml" in r.stdout
     sha = hashlib.sha1(proto.read_bytes()).hexdigest()
-    assert "%s  PROTO.SYM\n" % sha in (repo / "config/oracle.sha1").read_text()
-    assert str(tmp_path) not in (repo / "config/oracle.sha1").read_text() + (repo / "config/psxdecomp.toml").read_text()
-    assert common.firewall_lines((repo / "config/firewall.txt").read_text(), "required").count("config/oracle.sha1") == 1
+    held = (repo / "config/oracle.proto-1999-01-01.sha1").read_text()
+    assert "%s  PROTO.SYM\n" % sha in held
+    assert str(tmp_path) not in held + (repo / "config/oracle.toml").read_text() + (repo / "config/psxdecomp.toml").read_text()
+    assert common.firewall_lines((repo / "config/firewall.txt").read_text(), "required").count(oracle.HASH_GLOB) == 1
     assert run(["git", "-C", repo, "status", "--porcelain"]).stdout.split() == [
-        "M", "config/firewall.txt", "M", "config/psxdecomp.toml", "??", "config/oracle.sha1"]        # never commits
-    shutil.copyfile(proto, inside)                                               # a renamed copy, with no debug extension
+        "M", "config/firewall.txt", "??", "config/oracle.proto-1999-01-01.sha1", "??", "config/oracle.toml"]    # never commits
+    # the ignored home inside the repository: a second build, with a file and a table of its own
+    home = repo / "disks" / "builds" / "slpm-00000"
+    home.mkdir(parents=True)
+    (home / "GAME.SYM").write_bytes(b"MND\x01another region, invented")
+    r = _oracle(repo, "add", "--id", "slpm-00000", "--path", home, "--class", "region")
+    assert r.returncode == 0 and "AUDIT OK" in r.stdout, r.stdout
+    assert [b["id"] for b in oracle.builds(repo)] == ["proto-1999-01-01", "slpm-00000"]
+    assert (repo / "config/oracle.proto-1999-01-01.sha1").read_text() == held
+    assert "GAME.SYM" in (repo / "config/oracle.slpm-00000.sha1").read_text() and "PROTO.SYM" not in (repo / "config/oracle.slpm-00000.sha1").read_text()
+    assert "disks" not in run(["git", "-C", repo, "status", "--porcelain"]).stdout     # git sees no file of the home
+    r = _oracle(repo, "list")
+    assert re.search(r"(?m)^proto-1999-01-01 +prototype +1 file\(s\) +here$", r.stdout) and "ORACLE 2 build(s), 2 on this machine" in r.stdout, r.stdout
+    # a second worktree of the clone: the same local record, and no path in a commit
+    run(["git", "-C", repo, "add", "config"])
+    run(["git", "-C", repo, "commit", "-q", "--no-verify", "-m", "two builds"])
+    other = tmp_path / "second-worktree"
+    run(["git", "-C", repo, "worktree", "add", "-q", other, "-b", "second"])
+    assert _oracle(other, "locate", "--id", "proto-1999-01-01").stdout == "%s\n" % proto
+    assert _oracle(other, "locate", "--id", "slpm-00000").stdout == "%s\n" % home
+    assert pathlib.Path(_oracle(other, "locate", "--id", "retail").stdout.strip()).is_file()
+    assert run(["git", "-C", repo, "grep", "-l", "-F", str(tmp_path), "HEAD"], check=False).stdout == ""
+    moved = tmp_path / "elsewhere" / "RENAMED.SYM"                               # another machine's copy, under another name
+    moved.parent.mkdir()
+    shutil.copyfile(proto, moved)
+    r = _oracle(other, "link", "--id", "slpm-00000", "--path", moved)
+    assert r.returncode == 1 and "this is not the build `slpm-00000`" in r.stdout, r.stdout
+    assert _oracle(other, "link", "--id", "proto-1999-01-01", "--path", moved).returncode == 0
+    assert _oracle(repo, "locate", "--id", "proto-1999-01-01").stdout == "%s\n" % moved
+    # the audit refuses a tracked copy of a file of a build, under another name and with no debug extension
+    shutil.copyfile(proto, inside)
     run(["git", "-C", repo, "add", "-f", "docs/taken.txt"])
     r = _audit(repo)
-    assert r.returncode == 1 and "OFFENDER docs/taken.txt: game-derived content: sha1 == config/oracle.sha1:PROTO.SYM" in \
+    assert r.returncode == 1 and "OFFENDER docs/taken.txt: game-derived content: sha1 == config/oracle.proto-1999-01-01.sha1:PROTO.SYM" in \
         r.stdout + r.stderr, r.stdout + r.stderr
-    r = _oracle(repo, "--no-copy")                                               # and the command says so itself
+    r = _oracle(repo, "add", "--id", "proto-1999-01-01", "--path", proto)        # and the command says so itself
     assert r.returncode == 1 and "FAIL the audit refuses the tree" in r.stdout, r.stdout
 
 
 def test_upgrade_adds_the_firewall_block_and_asks_for_the_record(game, tmp_path):
     """A game of an earlier psxdecomp (no block, no [oracle]): the plan lists `firewall-debug` as psxdecomp's and
-    `record-oracle` as the developer's. Apply restores the block, and the next plan holds no psxdecomp action."""
+    `record-oracle` as the developer's. Apply restores the block, and the next plan holds no psxdecomp action. A game
+    with the block of two lines gains the two it lacks."""
     import tomllib
 
     import upgrade
@@ -801,15 +878,21 @@ def test_upgrade_adds_the_firewall_block_and_asks_for_the_record(game, tmp_path)
     assert "oracle" not in old and old == {k: v for k, v in tomllib.loads(text).items() if k != "oracle"}
     acts = {x["key"]: x for x in upgrade.plan(repo)}
     assert acts["firewall-debug"]["owner"] == "psxdecomp" and acts["record-oracle"]["owner"] == "manual", sorted(acts)
-    assert "psxd oracle record --repo . --dump <your dump> --no-copy" in acts["record-oracle"]["what"]
+    assert "psxd oracle record --repo . --dump <your dump>` " in acts["record-oracle"]["what"]
+    assert "psxd oracle add --repo . --id <id>" in acts["record-oracle"]["what"]
     assert [k for k, x in acts.items() if x["owner"] == "psxdecomp"] == ["firewall-debug"], sorted(acts)
     r = run([PY, ROOT / "scripts/upgrade.py", "apply", "--repo", repo])
     assert "changed config/firewall.txt" in r.stdout and "config/firewall.txt" in r.stdout.splitlines()[-1], r.stdout
     assert fw.read_text() == whole and _audit(repo).returncode == 0
     again = {x["key"]: x["owner"] for x in upgrade.plan(repo)}
     assert "psxdecomp" not in again.values() and again.get("record-oracle") == "manual", again
-    r = _oracle(repo, "--dump", tmp_path / "nope.cue", "--no-copy")
+    r = _oracle(repo, "record", "--dump", tmp_path / "nope.cue")
     assert r.returncode == 1 and r.stdout.startswith("FAIL "), r.stdout
+    earlier = "".join(l for l in whole.splitlines(True) if l.strip() not in ("glob:  *.[Pp][Dd][Bb]", "glob:  *.[Dd][Bb][Gg]"))
+    fw.write_text(earlier)                                                       # the block as psxdecomp first wrote it
+    assert earlier != whole and next(x for x in upgrade.plan(repo) if x["key"] == "firewall-debug")["owner"] == "psxdecomp"
+    run([PY, ROOT / "scripts/upgrade.py", "apply", "--repo", repo])
+    assert fw.read_text() == whole
     (repo / "docs/GAME.SYM").write_text("a note\n")                              # with such a file tracked: no write
     run(["git", "-C", repo, "add", "-f", "docs/GAME.SYM"])
     fw.write_text(whole.replace("\n" + common.FIREWALL_DEBUG, ""))
@@ -818,72 +901,93 @@ def test_upgrade_adds_the_firewall_block_and_asks_for_the_record(game, tmp_path)
 
 
 def test_doctor_oracle_row(game, toolchain, tmp_path):
-    """doctor's `oracle` row in each state: the record of S10 (OK), no [oracle] (WARN with the command), a copy
-    inside the repository (FAIL), a copy with no hash (WARN), the copy recorded (OK), and a hash file that the
-    firewall does not read (FAIL)."""
-    def row(repo, byo=None):
+    """doctor's `oracle` row in each state: the record of S10 (OK), no [oracle] (WARN with the command), a build on
+    this machine (OK, counted), its image changed in size (WARN), a registered path inside the repository (FAIL), no
+    copy on this machine (OK, no warning), and a checksum file that the firewall does not read (FAIL). The row reads
+    no environment variable."""
+    def row(repo):
         r = run([PY, ROOT / "scripts/doctor.py", "--repo", repo, "--offline", "--only", "oracle"],
-                env={"PSXDECOMP_BYO_ORACLE_PATH": str(byo or "")}, check=False)
+                env={"PSXDECOMP_BYO_ORACLE_PATH": str(repo / "tools")}, check=False)
         m = re.search(r"^DOCTOR oracle +(\S+) +(.*)$", r.stdout, re.M)
         assert m, r.stdout
         return m[1], m[2], r.returncode
 
+    scan = "disc: 1 debug file(s), 1 with the PsyQ SYM magic, checked %s" % common.today()
     st, detail, rc = row(game)
-    assert (st, rc) == ("OK", 0) and detail == ("disc: 1 debug file(s), 1 with the PsyQ SYM magic, checked %s; byo none"
-                                                % common.today()), detail
+    assert (st, rc) == ("OK", 0) and detail == scan + "; 0 build(s): 0 on this machine", detail
     repo = _copy(game, tmp_path)
     rec = repo / "config/psxdecomp.toml"
     kept = rec.read_text()
     rec.write_text(kept.split("\n# [oracle]:")[0] + "\n")
     st, detail, rc = row(repo)
-    assert (st, rc) == ("WARN", 0) and "psxd oracle record --repo . --dump <your dump> --no-copy" in detail, detail
-    r = _oracle(repo, "--dump", toolchain["dump"], "--no-copy")                  # the command the row names
-    assert r.returncode == 0 and "disc: 1 debug file(s), 1 with the PsyQ SYM magic; byo: none" in r.stdout, r.stdout
+    assert (st, rc) == ("WARN", 0) and "psxd oracle record --repo . --dump <your dump>" in detail, detail
+    r = _oracle(repo, "record", "--dump", toolchain["dump"])                     # the command the row names
+    assert r.returncode == 0 and "disc: 1 debug file(s), 1 with the PsyQ SYM magic; 0 build(s)" in r.stdout, r.stdout
     assert rec.read_text() == kept                                               # the same table S10 wrote
-    assert row(repo, repo / "tools" / "PROTO.SYM")[0::2] == ("FAIL", 1)
     proto = tmp_path / "outside" / "PROTO.SYM"
     proto.parent.mkdir()
     proto.write_bytes(b"MND\x01invented")
-    st, detail, rc = row(repo, proto)
-    assert (st, rc) == ("WARN", 0) and "is not in config/oracle.sha1" in detail, detail
-    assert _oracle(repo, "--byo", proto).returncode == 0
-    st, detail, rc = row(repo, proto)
-    assert (st, rc) == ("OK", 0) and detail.endswith("byo 1 file(s) hashed (no stated hash)"), detail
-    fw = repo / "config/firewall.txt"
-    fw.write_text(fw.read_text().replace("required: config/oracle.sha1\n", ""))
+    assert _oracle(repo, "add", "--id", "proto-1999-01-01", "--path", proto).returncode == 0
     st, detail, rc = row(repo)
-    assert (st, rc) == ("FAIL", 1) and "no `required: config/oracle.sha1` line" in detail, detail
+    assert (st, rc) == ("OK", 0) and detail == scan + "; 1 build(s): 1 on this machine", detail
+    proto.write_bytes(b"MND\x01invented, and edited")
+    st, detail, rc = row(repo)
+    assert (st, rc) == ("WARN", 0) and "the copy of `proto-1999-01-01` its `PROTO.SYM` has 24 bytes" in detail, detail
+    (repo / "tools" / "PROTO.SYM").write_bytes(b"MND\x01invented")
+    common.local_set(repo, "builds", "proto-1999-01-01", str(repo / "tools" / "PROTO.SYM"))
+    st, detail, rc = row(repo)
+    assert (st, rc) == ("FAIL", 1) and "is refused (firewall)" in detail and "psxd oracle link --id proto-1999-01-01" in detail, detail
+    common.local_set(repo, "builds", "proto-1999-01-01", None)
+    st, detail, rc = row(repo)
+    assert (st, rc) == ("OK", 0) and detail == scan + "; 1 build(s): 0 on this machine", detail
+    fw = repo / "config/firewall.txt"
+    fw.write_text(fw.read_text().replace("required: %s\n" % oracle.HASH_GLOB, ""))
+    st, detail, rc = row(repo)
+    assert (st, rc) == ("FAIL", 1) and "config/oracle.proto-1999-01-01.sha1 exists" in detail and "`required: config/oracle.*.sha1`" in detail, detail
 
 
-def test_s10_hashes_the_copy_the_gate_was_given(toolchain, tmp_path):
-    """The answers file names the developer's own copy of another build (PSXDECOMP_BYO_ORACLE_PATH): S10 writes its
-    hash record and the firewall's `required:` line into the handoff commit, the record says how many files, and the
-    tree is clean. The dump's own path, given as the copy, gives no hash: the retail manifest covers that disc."""
-    import tomllib
+def test_s10_records_the_build_the_gate_was_given(toolchain, tmp_path):
+    """The answers file names the developer's own copy of another build and its id: S10 writes the build's table, its
+    checksum file and the firewall's `required:` line into the handoff commit, the tree is clean, and the two paths
+    are in the git directory alone. The dump's own path, given as the copy, gives no build: the retail manifest covers
+    that disc."""
     proto = tmp_path / "outside" / "PROTO.SYM"
     proto.parent.mkdir()
     proto.write_bytes(b"MND\x01another build, invented")
 
-    def boot(name, byo):
+    def boot(name, byo, more=""):
         answers = tmp_path / ("%s.answers.txt" % name)
         answers.write_text((ROOT / "fixtures/answers.psx.txt").read_text().rstrip("\n")
-                           + "\nPSXDECOMP_BYO_ORACLE_PATH: %s\n" % byo)
+                           + "\nPSXDECOMP_BYO_ORACLE_PATH: %s\n%s" % (byo, more))
         target = tmp_path / name
         r = run([PY, ROOT / "scripts/install.py", "run", "--target", target, "--answers", answers, "--dump",
                  toolchain["dump"], "--config-dir", toolchain["cfg"], "--pa3-dir", toolchain["cfg"] / "pa3",
                  "--intake-fixture", "--no-fetch"], env=toolchain["env"])
         assert "BOOTSTRAP OK through S10" in r.stdout, r.stdout
         assert run(["git", "-C", target, "status", "--porcelain"]).stdout == ""
-        return target, tomllib.loads((target / "config/psxdecomp.toml").read_text())["oracle"], r.stdout
+        return target, r.stdout
 
-    target, table, out = boot("byo", proto)
-    assert table["byo"] == "1 file(s) hashed" and "oracle disc: 1 debug file(s)" in out, (table, out[-800:])
+    target, out = boot("byo", proto, "PSXDECOMP_BYO_ORACLE_ID: proto-1999-01-01\nPSXDECOMP_BYO_ORACLE_CLASS: prototype\n"
+                                     "PSXDECOMP_BYO_ORACLE_PAGE: https://example.org/proto\n")
+    assert "oracle build proto-1999-01-01: 1 file(s) hashed (1 new), no stated hash; path registered" in out, out[-1200:]
+    assert "oracle disc: 1 debug file(s)" in out and "; 1 build(s)" in out, out[-1200:]
+    new = ["config/oracle.proto-1999-01-01.sha1", "config/oracle.toml"]
     handoff = run(["git", "-C", target, "show", "--name-only", "--format=", "HEAD"]).stdout.split()
-    assert {"config/oracle.sha1", "config/firewall.txt", "config/psxdecomp.toml"} <= set(handoff), handoff
-    assert tree(target) == sorted(GOLDEN.read_text().splitlines() + ["config/oracle.sha1"])
-    assert str(tmp_path) not in "".join((target / f).read_text() for f in ("config/oracle.sha1", "config/psxdecomp.toml"))
-    assert re.search(r"DOCTOR oracle\s+OK", run([PY, ROOT / "scripts/doctor.py", "--repo", target, "--offline", "--only",
-                                                 "oracle"], env={"PSXDECOMP_BYO_ORACLE_PATH": str(proto)}).stdout)
-    target, table, _ = boot("own", toolchain["dump"])
-    assert table["byo"] == "own disc" and not (target / "config/oracle.sha1").exists(), table
+    assert set(new) | {"config/firewall.txt", "config/psxdecomp.toml"} <= set(handoff), handoff
+    assert tree(target) == sorted(GOLDEN.read_text().splitlines() + new)
+    build = oracle.builds(target)[0]
+    assert (build["id"], build["class"], build["page"], build["files"]) == ("proto-1999-01-01", "prototype", "https://example.org/proto", 1)
+    assert common.firewall_lines((target / "config/firewall.txt").read_text(), "required").count(oracle.HASH_GLOB) == 1
+    assert run([PY, "tools/audit_public.py"], cwd=target, check=False).returncode == 0
+    assert str(tmp_path) not in "".join((target / f).read_text() for f in new + ["config/psxdecomp.toml"])
+    assert oracle.registered(target) == {"proto-1999-01-01": str(proto), oracle.RETAIL: str(toolchain["dump"])}
+    assert (target / ".git" / "psxdecomp" / "local.toml").is_file()
+    assert run(["git", "-C", target, "grep", "-l", "-F", str(proto)], check=False).stdout == ""
+    assert re.search(r"DOCTOR oracle\s+OK .*; 1 build\(s\): 1 on this machine", run(
+        [PY, ROOT / "scripts/doctor.py", "--repo", target, "--offline", "--only", "oracle"]).stdout)
+    other = tmp_path / "byo-second"                                              # a second worktree locates the build
+    run(["git", "-C", target, "worktree", "add", "-q", other, "-b", "second"])
+    assert run([PY, ROOT / "scripts/oracle.py", "locate", "--repo", other, "--id", "proto-1999-01-01"]).stdout == "%s\n" % proto
+    target, out = boot("own", toolchain["dump"])
+    assert "the copy is your dump" in out and not list((target / "config").glob("oracle*")), out[-800:]
     assert tree(target) == GOLDEN.read_text().splitlines()

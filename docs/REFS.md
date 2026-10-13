@@ -77,12 +77,29 @@ types from it. S2 scans the developer's own disc for one (`medium.json` `debug_a
 searches for the others, and the S4 gate asks the developer.
 
 - **Instructions only.** A build is the publisher's and never distributed. Its class is `byo` (the `oracle-build`
-  row). The developer supplies a copy outside the repository (`PSXDECOMP_BYO_ORACLE_PATH`), and only that a path was
-  given is recorded.
-- **A hash record, and two firewall lines.** `psxd oracle record` writes the SHA-1 of each file of a supplied copy to
-  the game's `config/oracle.sha1`. The game's audit then refuses a tracked copy under any name. S9 adds two `glob:`
-  lines to `config/firewall.txt`: the audit refuses a tracked `.SYM` or `.CPE` file of any build. A `.MAP` file has
-  no line, because a game tracks text files of that name.
+  row). The developer supplies a copy (`PSXDECOMP_BYO_ORACLE_PATH`), and no tracked file holds its path.
+- **The home of a build.** A copy lies in the game's ignored `disks/builds/<id>/`, or outside the repository. The
+  kit ignores and purges `disks/`. Any other path inside the repository is refused. Six projects read on 2026-10-13
+  do the same: the image is ignored, and only a checksum file is committed. They are zeldaret/oot and mm,
+  Xeeynamo/sotn-decomp, celophi/lom-decomp, sushi-shi/kings-field-2-decomp and TOMB5/TOMB5.
+- **An id for each build.** An id is a slug of the build's date or its serial: `proto-2001-10-30`, `slpm-86959`,
+  `pc-2003-02-07`. `retail` is the dump's id. `psxd oracle add` writes one checksum file for each id,
+  `config/oracle.<id>.sha1`, and one `[[build]]` table in `config/oracle.toml`. Both are public in split mode.
+- **A hash record, and the firewall lines.** The checksum file holds the SHA-1 of each file of the copy. The line
+  `required: config/oracle.*.sha1` makes the game's audit refuse a tracked copy under any name. S9 adds four `glob:`
+  lines to `config/firewall.txt`: the audit refuses a tracked `.SYM`, `.CPE`, `.PDB` or `.DBG` file of any build. A
+  `.MAP` file has no line, because a game tracks text files of that name.
+- **The path is local.** `psxd oracle add` and `link` write the path of a copy to
+  `<git-common-dir>/psxdecomp/local.toml`. Git cannot track that file, and each worktree of the clone reads it.
+  `psxd oracle locate --id <id>` prints the path for a makefile. There is no `.env` file. A path with a space or a
+  parenthesis breaks Make and a sourced shell file, and no tool here reads one.
+- **No symbol dump as text.** A dump of a symbol file and a link map are files of the build, whatever tool wrote
+  the text. The gate's `symdump` check (`tools/psxd_floor.py`) refuses a tracked text file that holds a long run of
+  such lines. The game's `docs/ops/psxdecomp-floor.md` states the limit. The audit's own rule refuses a listing of 64
+  lines. A hash and a path rule see neither. diabpsx/psx_decomp commits such a dump (`rom/DIABPSX-SYM.txt`,
+  read 2026-10-13), and we do not follow it.
+- **A file derived from a build** (a dump, a listing, an extracted file, a C header from `psx-mnd-sym`) lies beside
+  the build in `disks/builds/<id>/`. A Ghidra database lies in the ignored `ghidra/`.
 - **Pages only.** A scout reads the page that describes a build. It fetches no disc image, no symbol file and no
   patch. No committed file holds a download URL for one, and none names an archive.org item of one.
 - **archive.org: the check-out rule.** An agent searches archive.org through its metadata API and reads metadata only.
@@ -91,13 +108,12 @@ searches for the others, and the S4 gate asks the developer.
   2. A ROM set, a Redump mirror and a retail image never count.
   3. The developer downloads. The agent never does.
   4. A supplied copy is checked against the hashes that the build's page states, before anything else reads it
-     (`psxd oracle record --byo <path> --expect <sha1>`). A copy with no matching file is refused.
+     (`psxd oracle add --id <id> --path <path> --expect <sha1>`). A copy with no matching file is refused.
   5. A document item (a manual, a guide book) becomes a `link` row under the same confirmation.
 - **Where an item is named.** Only the gate's question and the scout's report under the ignored `.run/` hold an
   item's identifier. S10 refuses to commit when a tracked file holds one.
 - **Any checked build, one at the gate.** The gate asks for the best-ranked build, with symbols or without: a
-  prototype, a review build, another revision. A later copy goes through `psxd oracle record --byo`, which merges the
-  hashes.
+  prototype, a review build, another revision. A later copy goes through `psxd oracle add`, under its own id.
 - **Never a source:** leaked source code and SDK internals. celophi/lom-decomp and abelbriggs1/tm1_decomp state the
   same rule in their READMEs.
 - **A build speaks for itself only.** A name moves to the target after a byte check of the function body at both

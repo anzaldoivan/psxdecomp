@@ -489,8 +489,9 @@ def main(argv=None) -> int:
         if a.cmd == "locate":
             got = registered(repo).get(a.id)
             if not got or not os.path.exists(os.path.expanduser(got)):
-                print("oracle: `%s` is not on this machine%s (`psxd oracle link --id %s --path <path>`)" % (
-                    a.id, ": %s is gone" % got if got else "", a.id), file=sys.stderr)
+                print("oracle: `%s` is not on this machine%s (`%s`)" % (
+                    a.id, ": %s is gone" % got if got else "", "psxd oracle record --dump <your dump>" if a.id == RETAIL
+                    else "psxd oracle link --id %s --path <path>" % a.id), file=sys.stderr)
                 return 1
             print(got)
             return 0
@@ -746,12 +747,14 @@ def self_test() -> int:
             ok &= table(cli) == {"checked": common.today(), "disc_debug_files": 1, "disc_psyq_sym": 1}
             ok &= main(["add", "--repo", str(cli), "--id", "proto-a", "--path", str(sym), "--expect", "0" * 40]) == 1
             ok &= builds(cli) == [] and main(["locate", "--repo", str(cli), "--id", "proto-a"]) == 1
+            ok &= main(["locate", "--repo", str(fresh(td, "nodump")), "--id", RETAIL]) == 1
             ok &= main(["add", "--repo", str(cli), "--id", "proto-a", "--path", str(sym), "--expect", want, "--class", "prototype"]) == 0
             ok &= build(cli, "proto-a")["matched"] == [want] and main(["list", "--repo", str(cli)]) == 0
         ok &= "FAIL no disc scan yet" in buf.getvalue() and "FAIL the dump lies inside the repository" in buf.getvalue()
         ok &= "NEXT commit %s %s %s" % (HASHES % "proto-a", common.FIREWALL, BUILDS) in buf.getvalue()
         ok &= "AUDIT not run" in buf.getvalue() and "FAIL no file of the copy has a stated hash" in buf.getvalue()
         ok &= "ORACLE 1 build(s), 1 on this machine" in buf.getvalue() and "`proto-a` is not on this machine" in err.getvalue()
+        ok &= "`retail` is not on this machine (`psxd oracle record --dump <your dump>`)" in err.getvalue()
         ok &= re.search(r"(?m)^retail +the dump +- +here$", buf.getvalue()) is not None
         ok &= re.search(r"(?m)^proto-a +prototype +1 file\(s\) +here$", buf.getvalue()) is not None
         buf = io.StringIO()
