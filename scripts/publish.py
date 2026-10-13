@@ -2665,6 +2665,21 @@ PRE_PUSH = """#!/bin/sh
 # branch, and any push from an agent session. Written by `python3 tools/psxd_publish.py hook --install`.
 exec python3 "$(git rev-parse --show-toplevel)/%s" pre-push "$@"
 """ % VENDORED
+PRE_COMMIT = """#!/bin/sh
+# psxdecomp: the floor's gate on what is staged, judged by the tools of HEAD and never by the copies that the change
+# holds. Written by `python3 %(publish)s hook --install`, also as pre-merge-commit.
+t=$(mktemp -d) || exit 1
+trap 'rm -rf "$t"' EXIT
+if ! git show HEAD:%(floor)s > "$t/psxd_floor.py" 2>/dev/null || ! grep -q "^def cmd_gate" "$t/psxd_floor.py"; then
+    echo "psxdecomp: HEAD holds no floor with a gate, so this commit is not judged" >&2
+    exit 0
+fi
+git show HEAD:%(publish)s > "$t/psxd_publish.py" 2>/dev/null
+python3 -I "$t/psxd_floor.py" gate --staged
+""" % {"floor": FLOOR_TOOL, "publish": VENDORED}
+HOOKS = {"pre-push": PRE_PUSH, "pre-commit": PRE_COMMIT, "pre-merge-commit": PRE_COMMIT}
+OURS = "#!/bin/sh\n# psxdecomp"                      # how each text of psxdecomp starts: such a file is ours to write again
+TRIALS_REL = "config/trials.tsv"
 ZERO = "0" * 40
 
 
@@ -2746,12 +2761,83 @@ def pre_push_report(dev, url: str, lines: list[str]) -> tuple[list[str], list[st
     return blocks, warns, last
 
 
+def confirm(question: str) -> bool:
+    """Ask the person at the terminal, never on stdin (git gives a hook the refs there). No terminal: no."""
+    try:
+        with open("/dev/tty", "r+", encoding="utf-8") as tty:
+            tty.write(question + " [y/N] ")
+            tty.flush()
+            return tty.readline().strip().lower() in ("y", "yes")
+    except OSError:
+        return False
+
+
+def floor_push(dev, remote: str, lines: list[str]) -> tuple[list[str], list[str]]:
+    """(blocks, what the floor said) for a push, in split mode and outside it. Each branch that the push updates is
+    judged by `gate --push <what the remote holds>..<what is pushed>`, run from the tools of the remote side in a
+    temporary folder (a first push of the floor: from the tools of the pushed commit). Each `raise` line and assembly
+    row that the push adds is the developer's act: the hook asks for it at the terminal. Then the trial rows that the
+    push adds are run again, and ten older ones. A repository with no floor on either side has no such check."""
+    blocks, said = [], []
+    show = lambda rev, rel: _git(dev, "show", "%s:%s" % (rev, rel)).stdout if rev else ""  # noqa: E731
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 4 or parts[1] == ZERO or not parts[2].startswith("refs/heads/"):
+            continue
+        local, there, name = parts[1], parts[3], parts[2][len("refs/heads/"):]
+        base = there if there != ZERO and not _git(dev, "cat-file", "-e", there + "^{commit}").returncode else None
+        if base is None and there == ZERO:             # a new branch: from where it left what the remote holds
+            head = _git(dev, "rev-parse", "-q", "--verify", "refs/remotes/%s/HEAD^{commit}" % remote).stdout.strip()
+            base = _git(dev, "merge-base", local, head).stdout.strip() or None if head else None
+        judge = next((rev for rev in (base, local) if "\ndef cmd_gate" in show(rev, FLOOR_TOOL)), None)
+        if judge is None:
+            continue
+        with tempfile.TemporaryDirectory() as td:
+            for rel in (FLOOR_TOOL, VENDORED):
+                (pathlib.Path(td) / pathlib.Path(rel).name).write_text(show(judge, rel), encoding="utf-8")
+            tool = [sys.executable, "-I", str(pathlib.Path(td) / pathlib.Path(FLOOR_TOOL).name)]
+            r = subprocess.run(tool + ["gate", "--push", "%s..%s" % (base or ZERO, local), "--repo", str(dev)],
+                               capture_output=True, text=True)
+            out = r.stdout.strip().splitlines()
+            said += ["%s: %s" % (name, l) for l in out if not l.startswith("GATE OK")]
+            if r.returncode:
+                blocks.append("the floor's gate refuses the push of %s (judged by the tools of %s): %s" % (
+                    name, judge[:10], out[-1] if out else _tail(r)))
+                continue
+            acts = [l[len("GATE WARN "):] for l in out if l.startswith("GATE WARN ") and "the developer's act" in l]
+            refused = [a for a in acts if not confirm("psxdecomp: %s\nIs this yours, and do you push it?" % a)]
+            if refused:
+                blocks += ["not confirmed at a terminal: %s" % a for a in refused]
+                continue
+            if len([l for l in show(local, TRIALS_REL).splitlines() if l.strip()]) < 2:
+                continue                               # no trial row: nothing to run again
+            if _git(dev, "rev-parse", "HEAD").stdout.strip() != local:
+                if not base or _git(dev, "diff", "--quiet", base, local, "--", TRIALS_REL).returncode:
+                    blocks.append("check out %s to push it: its trial rows are run again before a push, and a trial "
+                                  "compiles the work tree" % name)
+                continue
+            r = subprocess.run(tool + ["trial", "--recheck", "--rows", "10", "--repo", str(dev)] + (
+                ["--against", base] if base else []), capture_output=True, text=True)
+            out = r.stdout.strip().splitlines()
+            said += ["%s: %s" % (name, l) for l in out if l.startswith("TRIAL FAIL")]
+            if r.returncode:
+                blocks.append("the trial rows of %s do not hold: %s" % (name, out[-1] if out else _tail(r)))
+    return blocks, said
+
+
 def cmd_pre_push(remote: str, url: str, stdin=None) -> int:
     own_git_env()                                      # git runs the hook in the worktree's root: "." finds dev
+    said: list[str] = []
     try:
-        blocks, warns, last = pre_push_report(repo_root("."), url or remote, (stdin or sys.stdin).read().splitlines())
+        dev, lines = repo_root("."), (stdin or sys.stdin).read().splitlines()
+        blocks, warns, last = pre_push_report(dev, url or remote, lines)
+        if not blocks:
+            more, said = floor_push(dev, remote, lines)
+            blocks += more
     except Fail as e:
         blocks, warns, last = [str(e)], [], ""
+    for l in said:
+        print("PRE-PUSH %s" % l)
     for f in blocks:
         _line("PRE-PUSH", "FAIL", f)
     for w in warns:
@@ -2761,27 +2847,62 @@ def cmd_pre_push(remote: str, url: str, stdin=None) -> int:
     return 1 if blocks else 0
 
 
-def hook_path(dev) -> pathlib.Path:
-    return pathlib.Path(_must(dev, "rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-push"))
+def hook_path(dev, name: str = "pre-push") -> pathlib.Path:
+    return pathlib.Path(_must(dev, "rev-parse", "--path-format=absolute", "--git-path", "hooks/" + name))
+
+
+def hooks_state(dev) -> dict[str, str]:
+    """{hook: `ok`, `missing`, `old` (a text of psxdecomp that is not the one of now, or not executable) or `other`
+    (another hook: never written over)} for the three git hooks: pre-push, pre-commit and pre-merge-commit."""
+    out = {}
+    for name, text in HOOKS.items():
+        f = hook_path(dev, name)
+        have = _read(f)
+        out[name] = ("missing" if have is None else "ok" if have == text and os.access(f, os.X_OK)
+                     else "old" if have == text or have.startswith(OURS) else "other")
+    return out
+
+
+def hooks_due(dev) -> tuple[list[str], list[str]]:
+    """(the git hooks to write: missing, or an older text of psxdecomp; the ones where another hook stands). Outside a
+    git repository: none of either."""
+    try:
+        state = hooks_state(dev)
+    except Fail:
+        return [], []
+    return [n for n, st in state.items() if st in ("missing", "old")], [n for n, st in state.items() if st == "other"]
+
+
+def install_hooks(dev) -> list[str]:
+    """Write each git hook that is missing or an older text of psxdecomp: the names written. Another hook stays."""
+    written = []
+    for name, state in hooks_state(dev).items():
+        if state in ("missing", "old"):
+            f = hook_path(dev, name)
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(HOOKS[name], encoding="utf-8")
+            f.chmod(0o755)
+            written.append(name)
+    return written
 
 
 @_cmd("HOOK")
 def cmd_hook(repo=".", install=False) -> int:
-    """Report (or, --install, write) the pre-push hook; never overwrites another hook."""
+    """Report (or, --install, write) the git hooks: pre-push (the guard on dev and the floor's gate on what is
+    pushed), pre-commit and pre-merge-commit (the floor's gate on what is staged). Never overwrites another hook."""
     dev = repo_root(repo)
-    f = hook_path(dev)
-    have = _read(f)
-    if have == PRE_PUSH and os.access(f, os.X_OK):
-        print("HOOK OK %s" % f)
-        return 0
-    if have is not None and have != PRE_PUSH:
-        raise Fail("%s is another hook: merge psxdecomp's into it by hand (see `hook` output of a clean clone)" % f)
-    if not install:
-        raise Fail("%s is missing: rerun with --install" % f)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(PRE_PUSH, encoding="utf-8")
-    f.chmod(0o755)
-    print("HOOK written %s" % f)
+    written = install_hooks(dev) if install else []
+    bad = []
+    for name, state in hooks_state(dev).items():
+        f = hook_path(dev, name)
+        if state == "ok":
+            print("HOOK %s %s" % ("written" if name in written else "OK", f))
+        elif state == "other":
+            bad.append("%s is another hook: merge psxdecomp's into it by hand (see `hook` output of a clean clone)" % f)
+        else:
+            bad.append("%s is %s: rerun with --install" % (f, "missing" if state == "missing" else "an older text"))
+    if bad:
+        raise Fail("; ".join(bad))
     return 0
 
 
@@ -5063,6 +5184,91 @@ def _ratchet_self_test(check, td: str):
         os.environ.update(saved)
 
 
+def _hooks_self_test(check, td: str) -> None:
+    """The git hooks on a small game that holds the floor: what a commit and a push are refused for. Needs the other
+    tool beside this file."""
+    global confirm
+    if not sibling().is_file():
+        return
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("psxd_floor_self", sibling())
+    floor_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(floor_mod)
+    repo = pathlib.Path(td).resolve()
+    env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID")}
+    env.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t.invalid", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t.invalid")
+    git = lambda *a: subprocess.run(["git", "-C", str(repo)] + list(a), capture_output=True, text=True, env=env)  # noqa: E731
+    put = lambda rel, text: ((repo / rel).parent.mkdir(parents=True, exist_ok=True), (repo / rel).write_text(text, encoding="utf-8"))  # noqa: E731
+    floor = lambda *a: subprocess.run([sys.executable, "-I", str(repo / FLOOR_TOOL), *a, "--repo", str(repo)],  # noqa: E731
+                                      capture_output=True, text=True, env=env)
+    tip = lambda: git("rev-parse", "HEAD").stdout.strip()  # noqa: E731
+    pushed = lambda new, old: ["refs/heads/main %s refs/heads/main %s" % (new, old)]  # noqa: E731
+    walk = "s32 Walk(s32 n) {\nloop:\n    // !FAKE: the loop of the original\n    if (--n) goto loop;\n    return n;\n}\n"
+    worse = walk.replace("    return n;", "    // !FAKE: the second loop\n    if (n) goto loop;\n    return n;")
+    saved, agent = confirm, {k: os.environ.pop(k) for k in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID") if k in os.environ}
+    try:
+        git("init", "-q", "-b", "main")
+        put(FLOOR_TOOL, sibling().read_text(encoding="utf-8"))
+        put(VENDORED, pathlib.Path(__file__).read_text(encoding="utf-8"))
+        put("src/walk.c", walk)
+        put("src/stubs.c", 'INCLUDE_ASM("asm/nonmatchings/stubs", Run);\n')
+        put("config/psxdecomp.toml", "[psxdecomp]\nversion = \"0.6.0\"\n\n[trial]\nprobe = '%s tools/probe.py'\n" % sys.executable)
+        put("tools/probe.py", "import sys\nsys.exit(0)\n")          # every function matches: no pin is needed
+        git("add", "-A")
+        floor("debt", "--recount")
+        git("add", "-A")
+        git("commit", "-q", "-m", "the floor")
+        base = tip()
+        check("hooks: none at first", set(hooks_state(repo).values()) == {"missing"}, hooks_state(repo))
+        check("hooks: three written, then in place", install_hooks(repo) == list(HOOKS) and install_hooks(repo) == []
+              and set(hooks_state(repo).values()) == {"ok"}, hooks_state(repo))
+        put("src/walk.c", worse)
+        rows = (repo / DEBT_BASELINE).read_text(encoding="utf-8")
+        put(DEBT_BASELINE, rows.replace("1 goto src/walk.c", "2 goto src/walk.c"))
+        git("add", "-A")
+        r = git("commit", "-q", "-m", "a body that exists gets worse")
+        check("pre-commit refuses a rise in a body", r.returncode != 0 and "rose in an existing body" in r.stdout + r.stderr
+              and tip() == base, r.stdout + r.stderr)
+        git("commit", "-q", "--no-verify", "-m", "the same, and no hook saw it")
+        blocks, said = floor_push(repo, "origin", pushed(tip(), base))
+        check("pre-push refuses that commit", any("the floor's gate refuses the push of main" in b for b in blocks)
+              and any("rose in an existing body" in l for l in said), (blocks, said))
+        git("reset", "-q", "--hard", base)
+        put("src/walk.c", worse)
+        floor("debt", "--raise", "goto", "1", "--reason", "the second loop of the original")
+        floor("debt", "--update")
+        git("add", "-A")
+        r = git("commit", "-q", "-m", "the developer's raise")
+        check("pre-commit lets the developer's raise pass", r.returncode == 0 and tip() != base, r.stdout + r.stderr)
+        raised, asked = tip(), []
+        confirm = lambda q: (asked.append(q), False)[1]  # noqa: E731
+        blocks, _ = floor_push(repo, "origin", pushed(raised, base))
+        check("pre-push asks for a new raise line", len(asked) == 1 and "raise goto 1" in asked[0]
+              and any("not confirmed at a terminal" in b for b in blocks), (asked, blocks))
+        confirm = lambda q: True  # noqa: E731
+        check("pre-push: a confirmed raise passes", floor_push(repo, "origin", pushed(raised, base))[0] == [],
+              floor_push(repo, "origin", pushed(raised, base)))
+        pinned = 's32 Run(s32 n) {\n    // !FAKE: the sum must be in $17\n    register s32 t asm("$17") = n;\n    return t;\n}\n'
+        put("src/run.c", pinned)
+        put("src/stubs.c", "// every function is in C\n")
+        put(TRIALS_REL, "path\tfunction\tcrutch\thash\tresult\n" + "".join(
+            "src/run.c\tRun\t%s\t%s\tkept\n" % (c["id"], c["hash"]) for c in floor_mod.crutches("src/run.c", pinned)))
+        git("add", "-A")                               # the count reads what git tracks
+        floor("debt", "--update")
+        git("add", "-A")
+        r = git("commit", "-q", "-m", "a pin with a row that nobody ran")
+        check("pre-commit cannot tell a forged trial row", r.returncode == 0 and tip() != raised, r.stdout + r.stderr)
+        blocks, said = floor_push(repo, "origin", pushed(tip(), raised))
+        check("pre-push runs the new trial rows again", any("the trial rows of main do not hold" in b for b in blocks)
+              and any("TRIAL FAIL removable: src/run.c Run pin:$17:t" in l for l in said), (blocks, said))
+        git("checkout", "-q", "--detach", raised)
+        blocks, _ = floor_push(repo, "origin", pushed(git("rev-parse", "main").stdout.strip(), raised))
+        check("pre-push: new trial rows need the work tree", any("check out main to push it" in b for b in blocks), blocks)
+    finally:
+        confirm = saved
+        os.environ.update(agent)
+
+
 def self_test() -> int:
     ok = True
 
@@ -5294,6 +5500,8 @@ def self_test() -> int:
         _public_self_test(check, td)
     with tempfile.TemporaryDirectory() as td:
         _sim_self_test(check, td)
+    with tempfile.TemporaryDirectory() as td:
+        _hooks_self_test(check, td)
     print("publish %s" % ("SELF-TEST OK" if ok else "SELF-TEST FAILED"))
     return 0 if ok else 1
 

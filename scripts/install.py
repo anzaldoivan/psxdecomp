@@ -660,6 +660,12 @@ def s10_handoff(c: Ctx) -> str:
         print("     style and guard hooks not written: %s; add profiles/psx/hooks.json by hand" % hook_why)
     if not (why and hook_why):                    # a re-run after a failed S10 finds nothing missing but the file staged
         paths.append(common.SETTINGS)
+    due, other = publish.hooks_due(c.target)      # the git hooks of this clone: no file of the tree, so no path to commit
+    if due and not c.dry:
+        print("     git hooks written: %s" % ", ".join(publish.install_hooks(c.target)))
+    if other:
+        print("     git hook(s) not written, another hook stands there: %s; merge psxdecomp's by hand (`python3 %s hook`)"
+              % (", ".join(other), publish.VENDORED))
     for rid in common.PROFILE_RULES:              # the profile's rules, each written with the game's own tool
         rel, body = common.rule_paths(rid)
         if common.rule_state(c.target, rid) == "manual":

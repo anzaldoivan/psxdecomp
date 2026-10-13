@@ -131,6 +131,21 @@ A game has one command that proves a change. The default is `make verify`.
 - A tool changes only to a later version. The new tool then judges the tree.
 - The developer allows one protected change with `debt --raise protected <n> --reason <text>`.
 - That line also allows a change of the policy, such as a new `skip` line.
+- A merge passes when it passes against each parent.
+
+Three git hooks run the gate in each clone. `python3 tools/psxd_publish.py hook --install` writes them.
+
+| Hook | It runs | With the tools of |
+|---|---|---|
+| `pre-commit`, `pre-merge-commit` | `gate --staged` | `HEAD` |
+| `pre-push` | `gate --push` for each branch that the push updates | the commit that the remote holds |
+
+- A hook copies the tools into a temporary folder and runs them there. The copies of the change decide nothing.
+- A hook is no tracked file. The bootstrap and `/psxdecomp:upgrade` write the hooks, and never over another hook.
+- `pre-push` asks at the terminal for each `raise` line and each assembly row that the push adds.
+- With no terminal, the answer is no. An agent session never pushes.
+- `pre-push` then runs the new trial rows again, and ten older rows. The branch must be checked out for that.
+- `pre-push` works in split mode and outside it.
 
 ## Readability debt
 

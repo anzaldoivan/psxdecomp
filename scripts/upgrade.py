@@ -517,6 +517,15 @@ def plan(repo: pathlib.Path) -> list[dict]:
         add("psxdecomp", "asm-ledger: add the `verified_by` column to the header line of %s (the rows stay)"
             % floor.ASM_EVIDENCE, "a new assembly row names who read its evidence, and it names one function of a C "
             "file", "asm-ledger")
+    due, other = publish.hooks_due(repo) if (repo / floor.VENDORED).is_file() else ([], [])
+    if due:
+        add("psxdecomp", "git-hooks: write the git hook(s) %s of this clone (pre-commit and pre-merge-commit: the gate on "
+            "what is staged; pre-push: the gate on what is pushed)" % ", ".join(due),
+            "a commit or a push that the gate refuses does not happen; a hook is no tracked file, so each clone gets it",
+            "git-hooks")
+    if other:
+        add("manual", "git-hooks: another hook stands at %s: merge psxdecomp's into it by hand (`python3 %s hook` shows "
+            "the paths)" % (", ".join(other), publish.VENDORED), "the gate runs at a commit and at a push", "git-hooks-manual")
     if (repo / floor.BASELINE).is_file() and recount_due(repo):
         add("psxdecomp", "debt-recount: rewrite %s in version 2 (the rows of now; %s; the lines of the game stay)"
             % (floor.BASELINE, recount_due(repo)),
@@ -789,6 +798,9 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
                            "or undo that change, then apply again" % (refused[0], ", …" if len(refused) > 1 else ""))
         else:
             w(floor.BASELINE, floor.recount_text(repo)[0])
+    if "git-hooks" in acts:
+        names = publish.hooks_due(repo)[0]
+        written.append("%s git hook(s) %s" % ("would write" if dry else "wrote", ", ".join(names if dry else publish.install_hooks(repo))))
     # the record, last: the version and the hashes are true only when the files above are written
     if not dry:
         held = rules_delivered(repo)

@@ -350,7 +350,7 @@ class Agent(threading.Thread):
         lock.parent.mkdir(parents=True, exist_ok=True)
         with open(lock, "w") as fd:
             fcntl.flock(fd, fcntl.LOCK_EX)
-            self.w.put(d, {"src/pulled/fn_%d.c" % self.n: "int fn_%d(void) { return %d; }\n" % (self.n, self.n)})
+            self.w.put(d, {"src/pulled/fn_%d.c" % self.n: "const int fn_%d = %d;\n" % (self.n, self.n)})
             fcntl.flock(fd, fcntl.LOCK_UN)
         r = subprocess.run(["bash", "tools/commit_task.sh", t, "agent step %d" % self.n, "src/agent_log.c",
                             "src/pulled"] + units, cwd=d, env=self.w.env, capture_output=True, text=True)
@@ -620,7 +620,8 @@ def _story(w: World, agent: Agent):
         r = subprocess.run(["git", "-C", str(d), "push", "-q"] + [str(a) for a in args], capture_output=True,
                            text=True, env=dict(w.env, **(env or {})))
         return r.returncode, r.stdout + r.stderr
-    assert push("backup", "main")[0] == 0
+    rc, out = push("backup", "main")
+    assert rc == 0, out
     rc, out = push(w.pub, "main:refs/heads/dev-history")
     assert rc and "public repository" in out, out
     rc, out = push("--force", "backup", "main~1:main")
