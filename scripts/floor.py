@@ -118,18 +118,23 @@ budget, move an anchor, add a `skip` line or delete the file.
 """
 from __future__ import annotations
 
+import os
+import sys
+
+if __name__ == "__main__" and os.name == "posix" and not sys.flags.isolated and sys.executable and os.path.isfile(__file__):
+    # Start again in isolated mode: a module beside this file or on PYTHONPATH never stands in for the standard library.
+    os.execv(sys.executable, [sys.executable, "-I", os.path.abspath(__file__)] + sys.argv[1:])
+
 import argparse
 import bisect
 import contextlib
 import fnmatch
 import hashlib
 import json
-import os
 import pathlib
 import re
 import signal
 import subprocess
-import sys
 import tempfile
 
 PLAN = "GENERATION_PLAN.md"
@@ -154,6 +159,12 @@ def _read(path) -> str | None:
         return pathlib.Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
+
+
+def lines(text: str | None) -> list[str]:
+    """The lines of a file's text: they end at a newline and at nothing else (no form feed, no line separator), so
+    every reader of a file sees the same lines. A byte order mark is no part of the first one."""
+    return (text or "").lstrip("\ufeff").split("\n")
 
 
 def _git(repo, *args) -> subprocess.CompletedProcess:
@@ -316,7 +327,7 @@ def ladder_found(text: str) -> set[int]:
     """The ladder phases a constitution names: a line that starts with the phase's number as `Phase 4`, `1.4` or the
     table cell `| 4 |`, and holds its name's words. A bare list number (`4. …`) names no phase."""
     found = set()
-    for line in text.splitlines():
+    for line in lines(text):
         m = LADDER_LINE.match(line)
         if m and int(m[1]) <= 10 and re.search(LADDER[int(m[1])][2], m[2], re.I):
             found.add(int(m[1]))
@@ -1012,7 +1023,7 @@ def read_tsv(path, columns, tree: Tree | None = None, also=()) -> tuple[list[dic
     if text is None:
         return None, []
     rows, errs, head = Rows(), [], None
-    for n, line in enumerate(text.lstrip("\ufeff").splitlines(), 1):
+    for n, line in enumerate(lines(text), 1):
         if not line.strip() or line.startswith("#"):
             continue
         cells = [c.strip() for c in line.split("\t")]
@@ -1211,7 +1222,7 @@ def parse_baseline(text: str | None) -> Baseline:
     if text is None:
         return bl
     bl.version = 2
-    for n, raw in enumerate(text.lstrip("\ufeff").splitlines(), 1):
+    for n, raw in enumerate(lines(text), 1):
         l = raw.strip()
         if not l:
             continue
@@ -1333,7 +1344,7 @@ def state_findings(repo, tree: Tree | None = None) -> tuple[list[str], dict]:
     out = ["no policy line for %s in %s: run `python3 %s debt --recount`" % (", ".join(bl.lacks()), BASELINE, VENDORED)
            ] if bl.lacks() else []
     public = tree.read(PUBLIC_PATHS)
-    listed = None if public is None else [l.strip() for l in public.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    listed = None if public is None else [l.strip() for l in lines(public) if l.strip() and not l.lstrip().startswith("#")]
     keys = sorted(set(bl.rows) | set(counts), key=lambda k: (k[1], KINDS.index(k[0])))
     for k in keys:
         have, row = counts.get(k, 0), bl.rows.get(k, 0)
@@ -1574,7 +1585,7 @@ def public_view(tree: Tree) -> Tree:
     listed = tree.read(PUBLIC_PATHS)
     if listed is None:
         return tree
-    entries = [l.strip() for l in listed.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    entries = [l.strip() for l in lines(listed) if l.strip() and not l.lstrip().startswith("#")]
     return tree.only(lambda p: any(entry_match(e, p) for e in entries))
 
 
@@ -1838,8 +1849,8 @@ def names_findings(repo, tree: Tree | None = None, base: Tree | None = None) -> 
     tree, out = tree or Tree(repo), []
     seen = {NAMES: set(), ASM_EVIDENCE: set()}
     for rel in seen if base is not None else ():
-        seen[rel] = set((base.read(rel) or "").split("\n"))
-    raw = {rel: (tree.read(rel) or "").lstrip("﻿").splitlines() for rel in seen}
+        seen[rel] = set(lines(base.read(rel)))
+    raw = {rel: lines(tree.read(rel)) for rel in seen}
     fresh = lambda rel, r: raw[rel][r["_line"] - 1] not in seen[rel]  # noqa: E731
     rows, errs = read_tsv(NAMES, NAME_COLUMNS, tree)
     if rows is None:
@@ -2019,7 +2030,7 @@ def parse_guard(text: str | None) -> list[tuple[str, str, str, str]]:
     """The rules of a guard file, in order: (deny|allow, bash|path, pattern, say). A line that is no rule is skipped:
     the guard never fails on its own file (`guard_errors` names such lines for the doctor)."""
     rules = []
-    for line in (text or "").splitlines():
+    for line in lines(text):
         cells = [c.strip() for c in line.split("\t")]
         if line.startswith("#") or len(cells) < 3 or tuple(cells[:4]) == GUARD_COLUMNS:
             continue
@@ -2030,7 +2041,7 @@ def parse_guard(text: str | None) -> list[tuple[str, str, str, str]]:
 
 def guard_errors(text: str) -> list[str]:
     errs = []
-    for n, line in enumerate(text.splitlines(), 1):
+    for n, line in enumerate(lines(text), 1):
         cells = [c.strip() for c in line.split("\t")]
         if not line.strip() or line.startswith("#") or tuple(cells[:4]) == GUARD_COLUMNS:
             continue
@@ -2663,11 +2674,21 @@ def _baseline_ok(tree: Tree) -> bool:
 def developer_acts(base: Tree, head: Tree) -> list[str]:
     """What only the developer adds, and a change added: a `raise` line of the baseline (also `raise protected`), a
     row of the assembly ledger. Each one lets a count rise or clears one, on a person's word."""
-    lines = lambda t, rel: (t.read(rel) or "").lstrip("\ufeff").split("\n")  # noqa: E731
-    out = ["`%s` in %s" % (l.strip(), BASELINE) for l in lines(head, BASELINE)
-           if l.strip().startswith("raise ") and l not in lines(base, BASELINE)]
-    old = set(lines(base, ASM_EVIDENCE))
-    out += ["the row of %s in %s" % (" ".join(l.split("\t")[1:3]), ASM_EVIDENCE) for l in lines(head, ASM_EVIDENCE)[1:]
+    def raises(tree):                                  # as `parse_baseline` reads them: no second reader of that file
+        try:
+            bl = parse_baseline(tree.read(BASELINE))
+        except Fail:
+            return []
+        return ["raise %s %d %s %s" % r for r in bl.raises] + [l for l in bl.other if l.startswith("raise ")]
+
+    out, had = [], raises(base)
+    for l in raises(head):                             # one for one: a second copy of a line is a second raise
+        if l in had:
+            had.remove(l)
+        else:
+            out.append("`%s` in %s" % (l, BASELINE))
+    old = set(lines(base.read(ASM_EVIDENCE)))
+    out += ["the row of %s in %s" % (" ".join(l.split("\t")[1:3]), ASM_EVIDENCE) for l in lines(head.read(ASM_EVIDENCE))[1:]
             if l.strip() and not l.startswith("#") and l not in old]
     return out
 
@@ -2686,9 +2707,10 @@ def _source_args(tree: Tree) -> list[str]:
 
 def transition(repo, bases: list[Tree], head: Tree, online: bool = False, changed=None) -> tuple[list, list, bool]:
     """([(check, detail)], the INFO lines, a tool was replaced) for the change from a base tree to `head`. With
-    several bases (a merge and its parents) the change passes when it passes against one of them. `changed`: the
-    paths the change touches, when the caller knows them: a check whose files it does not touch is not run."""
-    best = None
+    several bases (a merge and its parents) the change passes when it passes against each of them: what is new
+    against one parent and worse against another is worse. `changed`: the paths the change touches, when the caller
+    knows them: a check whose files it does not touch is not run."""
+    every: tuple[list, list, bool] = ([], [], False)
     debt_due = changed is None or any(p.startswith("config/") or p.endswith((".c", ".h", ".s", ".S", ".inc")) for p in changed)
     style_due = changed is None or any(p.startswith("config/") or p.endswith(".md") for p in changed)
     for base in bases:
@@ -2709,11 +2731,9 @@ def transition(repo, bases: list[Tree], head: Tree, online: bool = False, change
             if rc:
                 fails += [("style", l[11:]) for l in lines if l.startswith("STYLE FAIL ")] or [
                     ("style", "exit %d: %s" % (rc, (lines or ["no output"])[-1]))]
-        if best is None or len(fails) < len(best[0]):
-            best = (fails, infos, replaced)
-        if not fails:
-            break
-    return best if best is not None else ([], [], False)
+        every = (every[0] + [f for f in fails if f not in every[0]], every[1] + [i for i in infos if i not in every[1]],
+                 every[2] or replaced)
+    return every
 
 
 def state(repo, tree: Tree, here: bool = True, base: Tree | None = None) -> list[tuple[str, str]]:
@@ -2874,6 +2894,8 @@ def cmd_gate(repo, mode: str, rng: str | None = None, part: str = "all", range_b
                     fails += game_check(repo, head)
     except Fail as e:
         fails.append(("gate", str(e)))
+    except Exception as e:                             # a check that cannot run passes nothing
+        fails.append(("gate", "the tool failed (%s: %s): nothing was judged" % (type(e).__name__, " ".join(str(e).split())[:200])))
     for check, detail in fails:
         print("GATE FAIL %s: %s" % (check, detail))
     for text in warns:
@@ -4003,6 +4025,15 @@ def self_test_gate(check) -> None:
                 rc, out = staged()
                 check("gate: " + name, rc == 1 and "GATE FAIL protected: " in out and want in out, out)
                 undo()
+            for name, text in (("deny rules that are no list", '{"permissions": {"deny": 5}}'), ("hooks that are no table", '{"hooks": 5}'),
+                               ("a hook group that is no list", '{"hooks": {"PreToolUse": 5}}'), ("settings nested too deep", "[" * 200000)):
+                put(SETTINGS, text)
+                try:
+                    rc, out = staged()
+                except Exception as e:                 # the control: a crash is no answer
+                    rc, out = -1, "%s: %s" % (type(e).__name__, str(e)[:80])
+                check("gate: %s: a FAIL, never a crash" % name, rc == 1 and "GATE FAIL " in out and out.endswith(" finding(s))\n"), out[-200:])
+                undo()
             put("config/names.basis.tsv", "name\tbasis\nWalk\tthe string it prints\nRun\tits caller\n")
             put(WORKFLOWS + "extra.yml", "name: extra\n")
             put(GUARD, "deny\tpath\tasm/\tasm/ is generated\ndeny\tpath\tbuild/\tthe build writes it\n")
@@ -4137,6 +4168,97 @@ def self_test_gate(check) -> None:
             rc, out = gate("ci", "%s..HEAD" % good)
             check("gate --ci: a commit with no parent is judged against the base", rc == 1 and "has no parent: it is judged against the base"
                   in out and "rose in an existing body: goto src/walk.c Walk: 2 -> 4" in out and "GATE FAIL policy: " in out, out)
+    finally:
+        _sibling_run = keep
+
+
+def self_test_judge(check) -> None:
+    """What decides, and what a change cannot move: a merge is judged against each parent, a file has one reader of
+    its lines, and the standard library is the interpreter's."""
+    global _sibling_run
+    keep = _sibling_run
+    if not sibling().is_file():
+        _sibling_run = lambda repo, *args: (0, [])  # noqa: E731
+    policy = "".join("mode %s down\n" % k for k in KINDS)
+    feed = parse_baseline(policy + "# a note\x0craise goto 5 2026-01-02 behind a form feed\n# a note raise pin 5 2026-01-02 behind a separator\n")
+    check("a line ends at a newline and at nothing else", feed.raises == [] and len(feed.head) == 2, feed.raises)
+    rows, errs = read_tsv("x.tsv", ("a", "b"), tree=type("T", (), {"read": lambda self, p: "a\tb\n1\t2\x0c3\n"})())
+    check("a ledger row holds a form feed, it does not end at one", [(r["a"], r["b"]) for r in rows] == [("1", "2\x0c3")] and not errs, (rows, errs))
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            repo = _repo(td)
+            put = lambda rel, text: ((repo / rel).parent.mkdir(parents=True, exist_ok=True), (repo / rel).write_text(text))  # noqa: E731
+            gate = lambda mode, rng=None: _capture(cmd_gate, repo, mode, rng)  # noqa: E731
+            body = lambda name, n: "s32 %s(s32 n) {\n%s    return n;\n}\n" % (name, "    n += *(s32 *)(n + 4);\n" * n)  # noqa: E731
+
+            def rows_of_now():
+                bl = parse_baseline((repo / BASELINE).read_text())
+                put(BASELINE, baseline_text(bl, debt_counts(repo, bl.skip, Tree(repo, None, untracked=True))))
+
+            def merge(first, second, msg):
+                _git(repo, "add", "-A")
+                made = _git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit-tree", _git(repo, "write-tree").stdout.strip(),
+                            "-p", first, "-p", second, "-m", msg).stdout.strip()
+                _git(repo, "reset", "-q", "--hard", made)
+                return made
+
+            put("src/a.c", 'INCLUDE_ASM("asm/nonmatchings/a", Run);\n')
+            put("src/b.c", 'INCLUDE_ASM("asm/nonmatchings/b", Jump);\n')
+            _git(repo, "add", "-A")
+            put(BASELINE, first_baseline(repo))
+            _commit(repo, "the floor")
+            base = _rev(repo, "HEAD")
+            put("src/a.c", body("Run", 1))
+            rows_of_now()
+            _commit(repo, "Run, with one offset")
+            left = _rev(repo, "HEAD")
+            _git(repo, "reset", "-q", "--hard", base)
+            put("src/b.c", body("Jump", 1))
+            rows_of_now()
+            _commit(repo, "Jump, with one offset")
+            right = _rev(repo, "HEAD")
+            put("src/a.c", body("Run", 1))
+            rows_of_now()
+            merge(left, right, "a merge of two banks")
+            rc, out = gate("ci", "%s..HEAD" % base)
+            check("gate --ci: a merge of two admitted branches passes against each parent", (rc, out) == (0, "GATE OK (ci; 3 commit(s))\n"), out)
+            put("src/a.c", body("Run", 2))                 # new against the right parent, worse against the left one
+            rows_of_now()
+            made = merge(left, right, "a merge that adds debt to a body of one parent")
+            rc, out = gate("ci", "%s..HEAD" % base)
+            check("gate --ci: a merge is judged against each parent, not against the kindest one", rc == 1 and
+                  "GATE FAIL debt: %s: rose in an existing body: offset src/a.c Run: 1 -> 2" % made[:10] in out, out)
+            _git(repo, "reset", "-q", "--hard", left)
+            (repo / ".git" / "MERGE_HEAD").write_text(right + "\n")
+            put("src/b.c", body("Jump", 1))
+            put("src/a.c", body("Run", 2))
+            rows_of_now()
+            _git(repo, "add", "-A")
+            rc, out = gate("staged")
+            check("gate --staged: a merge in progress, the same", rc == 1 and "rose in an existing body: offset src/a.c Run: 1 -> 2" in out, out)
+            (repo / ".git" / "MERGE_HEAD").unlink()
+            _git(repo, "reset", "-q", "--hard", left)
+            # the developer's acts are read by the reader of the baseline, line for line and one for one
+            line = "raise offset 1 2026-01-02 the first one\n"
+            put(BASELINE, (repo / BASELINE).read_text() + line)
+            _commit(repo, "the developer's raise")
+            put(BASELINE, (repo / BASELINE).read_text() + line)
+            _git(repo, "add", "-A")
+            acts = developer_acts(Tree(repo, "HEAD"), Tree(repo, INDEX))
+            check("a second copy of a `raise` line is a new act", acts == ["`raise offset 1 2026-01-02 the first one` in config/debt-baseline.txt"], acts)
+            _git(repo, "reset", "-q", "--hard", "HEAD")
+            put(BASELINE, (repo / BASELINE).read_text() + "# a note\x0craise offset 9 2026-01-02 behind a form feed\n")
+            _git(repo, "add", "-A")
+            bl = parse_baseline(Tree(repo, INDEX).read(BASELINE))
+            check("a `raise` behind a form feed raises nothing and is no act", len(bl.raises) == 1 and
+                  developer_acts(Tree(repo, "HEAD"), Tree(repo, INDEX)) == [], bl.raises)
+            # a module of the checkout beside the tool is not the standard library
+            put(VENDORED, pathlib.Path(__file__).read_text(encoding="utf-8"))
+            put("tools/bisect.py", "import os\nprint('GATE OK (a module of the checkout)')\nos._exit(0)\n")
+            r = subprocess.run([sys.executable, str(repo / VENDORED), "--version"], capture_output=True, text=True, cwd=str(repo),
+                               env=dict(os.environ, PYTHONPATH=str(repo / "tools")))
+            check("a module of the checkout does not stand in for the standard library", (r.returncode, r.stdout.strip()) == (0, VERSION),
+                  r.stdout + r.stderr[-200:])
     finally:
         _sibling_run = keep
 
@@ -4290,6 +4412,7 @@ def self_test() -> int:
         self_test_tree(check)
         self_test_trials(check)
         self_test_gate(check)
+        self_test_judge(check)
         self_test_toolchain(check)
         self_test_guard(check)
     finally:

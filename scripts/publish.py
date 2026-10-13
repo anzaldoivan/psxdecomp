@@ -62,6 +62,13 @@ config/check.*.sha, manifest/*.jsonl, the Makefile, and `git remote get-url orig
 """
 from __future__ import annotations
 
+import os
+import sys
+
+if __name__ == "__main__" and os.name == "posix" and not sys.flags.isolated and sys.executable and os.path.isfile(__file__):
+    # Start again in isolated mode: a module beside this file or on PYTHONPATH never stands in for the standard library.
+    os.execv(sys.executable, [sys.executable, "-I", os.path.abspath(__file__)] + sys.argv[1:])
+
 import argparse
 import contextlib
 import copy
@@ -72,13 +79,11 @@ import glob
 import hashlib
 import io
 import json
-import os
 import pathlib
 import re
 import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 import tomllib
