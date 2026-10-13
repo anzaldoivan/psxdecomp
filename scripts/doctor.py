@@ -379,9 +379,9 @@ def _debt_row(repo: pathlib.Path, state: dict, debt) -> tuple[str, str]:
             floor.BASELINE, ", ".join(bl.lacks()))
     if debt["rise"] or debt["stale"]:
         return "FAIL", "%d count(s) over their row, %d row(s) over their count (`python3 %s debt` lists them; " \
-                       "`debt --update` rewrites the rows, and refuses a rise in a function body that exists)" % (
+                       "`debt --update` rewrites the rows, and refuses a rise of a kind in mode `down`)" % (
                            len(debt["rise"]), len(debt["stale"]), floor.VENDORED)
-    loose = [k for k in floor.KINDS if bl.policy(k)[0] != "down"]
+    loose = [k for k in floor.KINDS if bl.policy(k) != "down"]
     if loose and state[8] == "closed":
         return "WARN", "the baseline is equal to the tree (%s) and %d kind(s) may still rise after phase 1.8 closed " \
                        "(%s): `python3 %s debt --down` lets every count only fall" % (
@@ -1335,7 +1335,7 @@ def self_test_floor() -> bool:
             print("  own_missing WRONG for: %s" % wrong)
     print("  floor rows: before %s; at 1.4 %s; a stale row %s; no gate after 1.9 %s; [own] %s" % (
         first["gate"][0], "/".join(due[k][0] for k in due), stale[0], gone[0], "/".join(mine[k][0] for k in mine)))
-    return (ok and equal[0] == "OK" and "admit-new: offset" in equal[1] and stale[0] == "FAIL" and "1 row(s) over their count" in stale[1]
+    return (ok and equal[0] == "OK" and "count: pin, goto" in equal[1] and stale[0] == "FAIL" and "1 row(s) over their count" in stale[1]
             and late["debt"][0] == "WARN" and "debt --down" in late["debt"][1] and gone[0] == "FAIL"
             and broken[0] == "FAIL" and "the header is not" in broken[1]
             and [mine[k][0] for k in ("gate", "toolchain", "names", "debt")] == ["OK", "OK", "OK", "WARN"]   # the count is read all the same

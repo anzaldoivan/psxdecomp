@@ -985,9 +985,9 @@ def test_debt_kinds(tmp_path):
     want = {(k, "src/%s.c" % kind): n for kind, (_, got) in floor.C_DEBT.items() for k, n in got.items()}
     assert bl.rows == want and bl.skip == [] and len(bl.head) == len(floor.BASELINE_HEAD), bl.rows   # no stub header here: no skip line
     assert {k for k, _ in bl.rows} == set(floor.KINDS) - {"unbased", "filename", "flag", "reservation"} and not bl.lacks()
-    assert bl.summary() == "down: pin-unmarked, goto-unmarked, barrier, barrier-unmarked, asm, obscured, unbased, reservation; " \
-                           "budget: pin 30, goto 12; admit-new: offset, address, cast, field, macro, placeholder, " \
-                           "placeholder-use, struct, extern, filename, flag"
+    assert bl.summary() == "down: pin-unmarked, goto-unmarked, barrier-unmarked, asm, obscured; count: pin, goto, barrier, " \
+                           "offset, address, cast, field, macro, placeholder, placeholder-use, unbased, struct, extern, " \
+                           "filename, flag, reservation"
     (repo / "config").mkdir()
     (repo / floor.BASELINE).write_text(floor.first_baseline(repo))
     r = _floor("debt", "--repo", repo)
@@ -1022,7 +1022,7 @@ def test_debt_bodies(tmp_path):
 
 
 def _stubs(*names):
-    """A C file of INCLUDE_ASM lines: a function body is new when it takes the line of its name away."""
+    """A C file of INCLUDE_ASM lines."""
     return "".join('INCLUDE_ASM("asm/nonmatchings/a", %s);\n' % n for n in names) or "// every function is in C\n"
 
 
@@ -1046,16 +1046,17 @@ def _gate_repo(tmp_path):
 def test_gate_modes(tmp_path):
     """`gate --staged` as a commit hook. `git commit -a` and `git commit -- <path>` give the hook an index of their
     own: the gate reads that one, also for the style check of the other tool. A linked worktree is judged against its
-    own HEAD. A merge passes when it adds nothing to either parent, and is refused when it does. A first commit has
-    nothing to be judged against. `gate --ci` judges the same history afterwards."""
+    own HEAD. A merge is judged against HEAD: it passes when no kind in mode `down` rose. A first commit has nothing
+    to be judged against. `gate --ci` judges the two ends of the same history afterwards."""
     repo = _gate_repo(tmp_path)
     git = lambda *a, cwd=repo, check=True: run(["git", "-C", cwd, "-c", "commit.gpgsign=false", *a], check=check)  # noqa: E731
-    worse = floor.C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;")
+    worse = floor.C_DEBT["goto-unmarked"][0]                                    # the same function, its goto with no reason
+    refusal = "goto-unmarked is `down` and its total rose: 0 -> 1 (src/a.c 0 -> 1)"
     start = git("rev-parse", "HEAD").stdout.strip()
     (repo / "src/a.c").write_text(worse)                                        # never staged: `commit -a` stages it
     for form in (("commit", "-qam", "worse"), ("commit", "-qm", "worse", "--", "src/a.c")):
         r = git(*form, check=False)
-        assert r.returncode != 0 and "GATE FAIL debt: rose in an existing body: goto src/a.c Walk: 1 -> 2" in r.stdout + r.stderr, form
+        assert r.returncode != 0 and "GATE FAIL debt: " + refusal in r.stdout + r.stderr, form
     git("checkout", "--", "src/a.c")
     (repo / "docs/a.md").write_text("One; two.\n")
     r = git("commit", "-qam", "prose", check=False)
@@ -1067,12 +1068,12 @@ def test_gate_modes(tmp_path):
     git("worktree", "add", "-q", "-b", "side", side)
     (side / "src/a.c").write_text(worse)
     r = git("commit", "-qam", "worse", cwd=side, check=False)
-    assert r.returncode != 0 and "rose in an existing body" in r.stdout + r.stderr, r.stdout + r.stderr
+    assert r.returncode != 0 and refusal in r.stdout + r.stderr, r.stdout + r.stderr
     git("checkout", "--", "src/a.c", cwd=side)
     (side / "src/b.c").write_text(floor.C_DEBT["goto"][0].replace("Walk", "Run"))
     (side / "src/stubs.c").write_text(_stubs())
     git("add", "-A", cwd=side)
-    r = _floor("gate", "--bank", "--repo", side)                                 # the bank writes the rows of the new body
+    r = _floor("gate", "--bank", "--repo", side)                                 # the bank writes the rows of the new file
     assert r.returncode == 0 and "1 goto src/b.c\n" in (side / floor.BASELINE).read_text(), r.stdout
     git("commit", "-qam", "a new body on the side", cwd=side)
     # a merge: both sides added a body and a row
@@ -1083,11 +1084,11 @@ def test_gate_modes(tmp_path):
     git("commit", "-qm", "a new body on main")
     r = git("merge", "-q", "--no-ff", "--no-commit", "side", check=False)
     (repo / floor.BASELINE).write_bytes(run(["git", "-C", repo, "show", "HEAD:" + floor.BASELINE]).stdout.encode())
-    (repo / "src/a.c").write_text(worse)                                        # and the merge itself makes a body worse
+    (repo / "src/a.c").write_text(worse)                                        # and the merge itself brings an unmarked goto
     assert _floor("debt", "--update", "--repo", repo).returncode == 1
     git("add", "-A")
     r = git("commit", "-qm", "an evil merge", check=False)
-    assert r.returncode != 0 and "rose in an existing body: goto src/a.c Walk: 1 -> 2" in r.stdout + r.stderr, r.stdout + r.stderr
+    assert r.returncode != 0 and refusal in r.stdout + r.stderr, r.stdout + r.stderr
     (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0])
     r = _floor("debt", "--update", "--repo", repo)
     assert r.returncode == 0 and "1 goto src/b.c\n" in (repo / floor.BASELINE).read_text(), r.stdout
@@ -1143,8 +1144,8 @@ def test_debt_against_rev(tmp_path):
     counts = [style(*a).stdout for a in ((), ("--staged",), ("--rev", "HEAD"), ("--against", "HEAD"))]
     assert counts == ["STYLE CHECK OK (2 file(s), 1 finding(s), 0 over their row)\n"] * 4, counts
     (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0] * 2)
-    r = debt("--against", "HEAD")                                               # one body of that name, as before
-    assert "DEBT FAIL debt: rose in an existing body: goto src/a.c Walk: 1 -> 2\n" in r.stdout, r.stdout
+    r = debt("--against", "HEAD")                                               # no baseline in HEAD: no kind is `down` there
+    assert "0 finding(s) against HEAD" in r.stdout, r.stdout
     assert totals(debt("--staged")) == want                                     # not added yet
     run(["git", "-C", repo, "add", "src/a.c"])
     assert totals(debt("--staged")) == "goto 2, offset 2, macro 3" and totals(debt("--rev", "HEAD")) == want
@@ -1193,20 +1194,21 @@ def test_tools_find_each_other(tmp_path):
 
 
 def test_debt_baseline_command(tmp_path):
-    """The baseline through the command line. There is no `--admit`: the flag exits 2. `--update` exits 1 on a rise in
-    a body that exists, and takes the debt of a new body. A deleted baseline exits 1. A row written by hand passes
-    the row check and fails `--against`. A weaker mode, a new `skip` line and a missing policy line fail as `policy`.
-    `--raise` is refused in an agent session. `--down` is one way."""
+    """The baseline through the command line. There is no `--admit`: the flag exits 2. A kind in mode `count` rises
+    with its row. `--update` exits 1 on a rise of a kind in mode `down`. A deleted baseline exits 1. A row written by
+    hand passes the row check and fails `--against`. A weaker mode, a new `skip` line and a missing policy line fail
+    as `policy`. `--raise` is refused in an agent session. `--down` is one way."""
     repo = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], "src/stubs.c": _stubs("Run")})
     debt = lambda *a, **kw: _floor("debt", "--repo", repo, *a, **kw)  # noqa: E731
     base, more = repo / floor.BASELINE, floor.C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;")
+    refusal = "DEBT FAIL debt: goto-unmarked is `down` and its total rose: 0 -> 1 (src/a.c 0 -> 1)\n"
     r = debt()
     assert r.returncode == 1 and "DEBT FAIL no %s" % floor.BASELINE in r.stdout, r.stdout
     assert debt("--update").returncode == 1 and not base.exists()
     r = debt("--recount")
     assert r.returncode == 0 and "DEBT RECOUNT written" in r.stdout and base.read_text().endswith("1 goto src/a.c\n")
     first = base.read_text()
-    assert "mode pin-unmarked down\n" in first and "budget pin 30 base 0 1 1\n" in first and "budget goto 12 base 1 1 1\n" in first
+    assert "mode pin-unmarked down\n" in first and "mode pin count\n" in first and "mode unbased count\n" in first
     assert debt().returncode == 0
     run(["git", "-C", repo, "add", "-A"])
     run(["git", "-C", repo, "-c", "commit.gpgsign=false", "commit", "-qm", "the baseline"])
@@ -1215,15 +1217,19 @@ def test_debt_baseline_command(tmp_path):
     assert r.returncode == 1 and "DEBT FAIL rise goto src/a.c: 2, its row is 1\n" in r.stdout, r.stdout
     r = debt("--update", "--admit")
     assert r.returncode == 2 and "unrecognized arguments: --admit" in r.stderr and base.read_text() == first, r.stderr
+    r = debt("--update")                                                        # a counted kind: the row follows the tree
+    assert r.returncode == 0 and "DEBT INFO goto src/a.c: 1 -> 2\n" in r.stdout and debt("--against", "HEAD").returncode == 0, r.stdout
+    base.write_text(first)
+    (repo / "src/a.c").write_text(floor.C_DEBT["goto-unmarked"][0])
     r = debt("--update")
-    assert r.returncode == 1 and "DEBT FAIL debt: rose in an existing body: goto src/a.c Walk: 1 -> 2\n" in r.stdout
-    assert "DEBT UPDATE refused" in r.stdout and base.read_text() == first, r.stdout
-    base.write_text(first.replace("1 goto src/a.c", "2 goto src/a.c"))           # the row written by hand
+    assert r.returncode == 1 and refusal in r.stdout and "DEBT UPDATE refused" in r.stdout and base.read_text() == first, r.stdout
+    base.write_text(first.replace("1 goto src/a.c", "1 goto src/a.c\n1 goto-unmarked src/a.c"))   # the row written by hand
     assert debt().returncode == 0
     r = debt("--against", "HEAD")
-    assert r.returncode == 1 and "DEBT FAIL debt: rose in an existing body: goto src/a.c Walk: 1 -> 2\n" in r.stdout, r.stdout
+    assert r.returncode == 1 and refusal in r.stdout, r.stdout
+    (repo / "src/a.c").write_text(more)
     for text, want in ((first.replace("mode pin-unmarked down\n", ""), "DEBT FAIL policy: the policy line of pin-unmarked is gone"),
-                       (first.replace("mode asm down", "mode asm admit-new"), "DEBT FAIL policy: asm went from down to admit-new"),
+                       (first.replace("mode asm down", "mode asm count"), "DEBT FAIL policy: asm went from down to count"),
                        (first.replace("1 goto", "skip src/\n1 goto"), "DEBT FAIL policy: a new `skip` line (src/)")):
         base.write_text(text)
         r = debt("--against", "HEAD")
@@ -1232,22 +1238,19 @@ def test_debt_baseline_command(tmp_path):
     r = debt("--against", "HEAD")
     assert r.returncode == 1 and "DEBT FAIL policy: %s is gone" % floor.BASELINE in r.stdout, r.stdout
     base.write_text(first)
-    (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0] + floor.C_DEBT["goto"][0].replace("Walk", "Run"))
-    r = debt("--update")                                                        # a body that takes no stub away is not new
-    assert r.returncode == 1 and "DEBT FAIL debt: rose in a body that is not new: goto src/a.c Run" in r.stdout, r.stdout
-    (repo / "src/stubs.c").write_text(_stubs())
-    r = debt("--update")                                                        # debt that arrives with a new body
-    assert r.returncode == 0 and "DEBT INFO admitted with a new body: goto src/a.c: 1 -> 2\n" in r.stdout, r.stdout
-    assert debt("--against", "HEAD").returncode == 0
-    r = debt("--raise", "goto", "3", "--reason", "x", env={"CLAUDECODE": "1"})
+    assert debt("--update").returncode == 0 and debt("--against", "HEAD").returncode == 0
+    r = debt("--raise", "goto-unmarked", "3", "--reason", "x", env={"CLAUDECODE": "1"})
     assert r.returncode == 1 and "the developer's act" in r.stdout and "raise goto" not in base.read_text()
-    r = debt("--raise", "goto", "3", "--reason", "the stage loader")
-    assert r.returncode == 0 and re.search(r"^raise goto 3 \d{4}-\d\d-\d\d the stage loader$", base.read_text(), re.M)
+    r = debt("--raise", "goto-unmarked", "3", "--reason", "the stage loader")
+    assert r.returncode == 0 and re.search(r"^raise goto-unmarked 3 \d{4}-\d\d-\d\d the stage loader$", base.read_text(), re.M)
+    (repo / "src/a.c").write_text(floor.C_DEBT["goto-unmarked"][0])
+    r = debt("--update")                                                        # the raise line of the change allows it
+    assert r.returncode == 0 and "goto-unmarked is over by 1: the change's `raise` line(s) allow 3" in r.stdout, r.stdout
     (repo / "src/a.c").write_text(floor.C_CLEAN)
     r = debt()
-    assert r.returncode == 1 and "DEBT FAIL stale goto src/a.c: 0, its row is 2" in r.stdout, r.stdout
+    assert r.returncode == 1 and "DEBT FAIL stale goto src/a.c: 0, its row is 1" in r.stdout, r.stdout
     assert debt("--down", "goto").returncode == 1 and debt("--update").returncode == 0 and debt("--down", "goto").returncode == 0
-    assert "mode goto down\n" in base.read_text() and "budget goto" not in base.read_text()
+    assert "mode goto down\n" in base.read_text()
 
 
 def test_debt_agrees_with_the_corpus_lint():

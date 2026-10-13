@@ -785,8 +785,8 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
         head = floor._head(repo)
         refused = [d for ck, d in floor.admission(repo, head, floor.Tree(repo))[0] if ck == "debt"] if head else []
         if refused:                                  # a recount admits nothing: the source is the game's to commit
-            written.append("FAIL debt-recount: the source differs from HEAD in what the policy refuses (%s%s): commit "
-                           "or undo that change, then apply again" % (refused[0], ", …" if len(refused) > 1 else ""))
+            written.append("FAIL debt-recount: a kind in mode `down` rose since HEAD (%s%s): commit or undo that "
+                           "change, then apply again" % (refused[0], ", …" if len(refused) > 1 else ""))
         else:
             w(floor.BASELINE, floor.recount_text(repo)[0])
     if "git-hooks" in acts:
@@ -1351,7 +1351,7 @@ def self_test() -> int:
         ok &= (repo / floor.NAMES).read_text() == "\t".join(floor.NAME_COLUMNS) + "\n"
         ok &= (repo / floor.ASM_EVIDENCE).read_text() == "\t".join(floor.ASM_COLUMNS) + "\n"
         base = (repo / floor.BASELINE).read_text()
-        ok &= base.endswith("mode reservation down\n") and "skip " not in base and base.startswith("# %s: " % floor.BASELINE)
+        ok &= base.endswith("mode reservation count\n") and "skip " not in base and base.startswith("# %s: " % floor.BASELINE)
         ok &= "debt-recount" not in keys and recount_due(repo) is None
         ok &= "asm-ledger" not in keys | keys2
         (repo / floor.ASM_EVIDENCE).write_text("# ours\n" + "\t".join(floor.ASM_COLUMNS_OLD) + "\nmain\tboot\tsrc/boot.s\thand-asm\td.md:1\t2026-01-02\n")
@@ -1364,7 +1364,7 @@ def self_test() -> int:
         ok &= "version 1 file in `mode admit`" in next(x["what"] for x in plan(repo) if x["key"] == "debt-recount")
         apply(repo, False, False)
         again = (repo / floor.BASELINE).read_text()
-        ok &= again.endswith("mode reservation down\n") and "# a note of the game\n" in again and recount_due(repo) is None
+        ok &= again.endswith("mode reservation count\n") and "# a note of the game\n" in again and recount_due(repo) is None
         (repo / floor.BASELINE).write_text(base)
         ok &= "would be created %s" % floor.BASELINE in dry and dry.index("would be created %s" % floor.NAMES) < dry.index(
             "would be created %s" % floor.BASELINE)

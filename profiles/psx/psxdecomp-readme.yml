@@ -23,13 +23,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0          # the gate reads each commit of the change, and the category freeze every version
+          fetch-depth: 0          # the gate reads the base of the change, and the category freeze every version
           persist-credentials: false
       # One command holds every check of the floor (`python3 tools/psxd_floor.py --help`): the README lint, the
-      # writing style, the readability debt, the trial rows, the ledgers, the category ids and the files that carry
+      # writing style, the readability debt, the ledgers, the category ids and the files that carry
       # the floor. The tools that judge are the ones of the commit that the change starts from, copied out of git: a
       # change cannot rewrite its own judge. A tool that the change replaces must be a released psxdecomp tool.
-      - name: "the gate: each commit against its parent, with the tools of the base commit"
+      - name: "the gate: the change against its base, with the tools of the base commit"
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}

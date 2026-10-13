@@ -282,7 +282,7 @@ def test_s10_writes_the_debt_baseline_and_debt_passes(game):
     import floor
     bl = floor.parse_baseline((game / floor.BASELINE).read_text())
     assert (bl.rows, bl.skip, bl.version, bl.lacks()) == ({}, [], 2, []), vars(bl)             # no stub header yet: no skip line
-    assert bl.policy("pin-unmarked") == ("down",) and bl.policy("pin") == ("budget", 30, 0, 0, 0), vars(bl)
+    assert bl.policy("pin-unmarked") == "down" and bl.policy("pin") == "count" and bl.policy("unbased") == "count", vars(bl)
     assert (game / floor.NAMES).read_text() == "\t".join(floor.NAME_COLUMNS) + "\n"
     assert (game / floor.ASM_EVIDENCE).read_text() == "\t".join(floor.ASM_COLUMNS) + "\n"
     for rid in ("FIN1", "NAME1"):
@@ -327,7 +327,7 @@ def test_fresh_game_passes_its_gate(game):
         src.parent.mkdir(exist_ok=True)
         src.write_text(floor.C_DEBT["pin-unmarked"][0])
         r = gate("--bank")
-        assert r.returncode == 1 and "GATE FAIL debt: rose in total: pin-unmarked is `down`: 0 -> 1" in r.stdout, r.stdout
+        assert r.returncode == 1 and "GATE FAIL debt: pin-unmarked is `down` and its total rose: 0 -> 1" in r.stdout, r.stdout
     finally:
         src.unlink()
     ledger = game / floor.NAMES                                  # a row that points at nothing fails `names` and the gate

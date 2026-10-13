@@ -5188,7 +5188,7 @@ def _hooks_self_test(check, td: str) -> None:
     tip = lambda: git("rev-parse", "HEAD").stdout.strip()  # noqa: E731
     pushed = lambda new, old: ["refs/heads/main %s refs/heads/main %s" % (new, old)]  # noqa: E731
     walk = "s32 Walk(s32 n) {\nloop:\n    // !FAKE: the loop of the original\n    if (--n) goto loop;\n    return n;\n}\n"
-    worse = walk.replace("    return n;", "    // !FAKE: the second loop\n    if (n) goto loop;\n    return n;")
+    worse = walk.replace("    return n;", "    if (n) goto loop;\n    return n;")          # a goto with no `// !FAKE:` reason
     saved, agent = confirm, {k: os.environ.pop(k) for k in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID") if k in os.environ}
     try:
         git("init", "-q", "-b", "main")
@@ -5208,18 +5208,18 @@ def _hooks_self_test(check, td: str) -> None:
               and set(hooks_state(repo).values()) == {"ok"}, hooks_state(repo))
         put("src/walk.c", worse)
         rows = (repo / DEBT_BASELINE).read_text(encoding="utf-8")
-        put(DEBT_BASELINE, rows.replace("1 goto src/walk.c", "2 goto src/walk.c"))
+        put(DEBT_BASELINE, rows.replace("1 goto src/walk.c", "2 goto src/walk.c\n1 goto-unmarked src/walk.c"))
         git("add", "-A")
-        r = git("commit", "-q", "-m", "a body that exists gets worse")
-        check("pre-commit refuses a rise in a body", r.returncode != 0 and "rose in an existing body" in r.stdout + r.stderr
+        r = git("commit", "-q", "-m", "a goto with no reason")
+        check("pre-commit refuses an unmarked goto", r.returncode != 0 and "goto-unmarked is `down` and its total rose" in r.stdout + r.stderr
               and tip() == base, r.stdout + r.stderr)
         git("commit", "-q", "--no-verify", "-m", "the same, and no hook saw it")
         blocks, said = floor_push(repo, "origin", pushed(tip(), base))
         check("pre-push refuses that commit", any("the floor's gate refuses the push of main" in b for b in blocks)
-              and any("rose in an existing body" in l for l in said), (blocks, said))
+              and any("goto-unmarked is `down` and its total rose" in l for l in said), (blocks, said))
         git("reset", "-q", "--hard", base)
         put("src/walk.c", worse)
-        floor("debt", "--raise", "goto", "1", "--reason", "the second loop of the original")
+        floor("debt", "--raise", "goto-unmarked", "1", "--reason", "the second loop of the original")
         floor("debt", "--update")
         git("add", "-A")
         r = git("commit", "-q", "-m", "the developer's raise")
@@ -5227,7 +5227,7 @@ def _hooks_self_test(check, td: str) -> None:
         raised, asked = tip(), []
         confirm = lambda q: (asked.append(q), False)[1]  # noqa: E731
         blocks, _ = floor_push(repo, "origin", pushed(raised, base))
-        check("pre-push asks for a new raise line", len(asked) == 1 and "raise goto 1" in asked[0]
+        check("pre-push asks for a new raise line", len(asked) == 1 and "raise goto-unmarked 1" in asked[0]
               and any("not confirmed at a terminal" in b for b in blocks), (asked, blocks))
         confirm = lambda q: True  # noqa: E731
         check("pre-push: a confirmed raise passes", floor_push(repo, "origin", pushed(raised, base))[0] == [],

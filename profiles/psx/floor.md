@@ -116,7 +116,7 @@ A game has one command that proves a change. The default is `make verify`.
 |---|---|---|
 | `--staged` | the index | `HEAD` |
 | `--bank` | the work tree, with the files that git does not track yet | `HEAD` |
-| `--ci <base>..<head>` | each commit of the range, then the head of the range | the parent of each commit, then the base of the range |
+| `--ci <base>..<head>` | the head of the range | the base of the range |
 | `--push` | the same as `--ci` | the same as `--ci` |
 
 - The gate judges a change against a tree that the change cannot rewrite. An edited baseline or tool decides nothing.
@@ -127,11 +127,11 @@ A game has one command that proves a change. The default is `make verify`.
 - It also covers the hooks and the deny rules of `.claude/settings.json`, and the `deny` rows of `config/guard.tsv`.
 - It also covers each check that the record names in `[own]`, `[trial]`, `[floor]` or `[debt]`.
 - A new key in one of those four tables is a protected change. A file that a `skip` line covers keeps its bytes.
-- `--ci` judges a commit with no parent against the base of the range. A base that names no commit fails.
+- The two ends of a range decide. A base that names no commit fails.
 - A tool changes only to a later version. The new tool then judges the tree.
 - The developer allows one protected change with `debt --raise protected <n> --reason <text>`.
 - That line also allows a change of the policy, such as a new `skip` line.
-- A merge passes when it passes against each parent.
+- A merge in progress is judged against `HEAD`, as any other change.
 
 Three git hooks run the gate in each clone. `python3 tools/psxd_publish.py hook --install` writes them.
 
@@ -202,7 +202,7 @@ is `rules/FIN1.md`.
 - `config/debt-baseline.txt` holds one `<count> <kind> <path>` row for each count above zero.
 - The check fails when a count is over its row. It also fails when a row is over its count.
 - The check also fails with no baseline, and with no policy line for a kind.
-- Run `debt --update` in the commit that changes a count. The tool refuses a change that the policy does not admit.
+- Run `debt --update` in the commit that changes a count. The tool refuses a rise of a kind in mode `down`.
 - A `skip <entry>` line takes files out of the count. A change cannot add one.
 - `[debt] address_header` in `config/psxdecomp.toml` names the address header. The default is `include/addr.h`.
 - `[own] debt` names a scanner of the game. The gate runs it beside this count. It replaces no check.
@@ -213,24 +213,16 @@ The baseline holds one policy line for each kind. `debt --recount` writes the st
 
 | Line | Meaning |
 |---|---|
-| `mode <kind> down` | The kind never rises. |
-| `mode <kind> admit-new` | Debt arrives only with a new function body. |
-| `budget <kind> <n> base <count> <bodies> <stubs>` | As `admit-new`. The total grows by at most `n` for each 100 new bodies, plus 2. |
+| `mode <kind> count` | The kind is counted and shown. Nothing is refused. |
+| `mode <kind> down` | The total of the kind in the tree never rises. |
 | `raise <kind> <n> <date> <reason>` | The developer lets one change go over by `n`. |
 
-- The starting mode is `down` for each `-unmarked` kind and for `barrier`, `asm`, `obscured`, `unbased` and `reservation`.
-- The starting mode is a budget of 30 for `pin` and of 12 for `goto`.
-- Each other kind starts in `admit-new`.
-- A body that exists never gets worse. That holds for a renamed body and for a body that moved to another file.
-- Debt outside a function rises only in a file that gets a new body.
-- A file that takes bodies from another file may also take the debt that stood beside them.
-- A file that holds no function is free. A header holds definitions, and the tool counts each use of them.
-- A body is new when it takes an `INCLUDE_ASM` line away. An empty body beside its stub is not new.
-- A body is also new when its file is new and the repository gained a body.
-- The bodies that are not new hold no more debt than the bodies that left the repository.
-- The anchor of a budget is the tree at the time of `debt --recount`.
+- The starting mode is `down` for `asm`, `pin-unmarked`, `goto-unmarked`, `barrier-unmarked` and `obscured`.
+- Each other kind starts in `count`. Its rows show the debt that each commit brings.
+- No kind about names starts in `down`. A function that matches is never refused for its name.
+- The tool compares the total of the tree that a change starts from with the total of the tree that it makes.
 - `debt --against <revision>` judges a change by the policy of the revision that it starts from.
-- A change cannot weaken a mode, raise a budget, move an anchor, add a `skip` line or delete the baseline.
+- A change cannot weaken a mode, add a `skip` line or delete the baseline.
 - `debt --down <kind>` switches a kind to `down`. The switch is one way.
 - `debt --raise <kind> <n> --reason <text>` writes a `raise` line. Only the developer runs it.
 - The gate refuses a new `raise` line in an agent session. The developer commits it from a terminal.
