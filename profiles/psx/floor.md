@@ -130,28 +130,51 @@ A game has one command that proves a change. The default is `make verify`.
 - `--ci` judges a commit with no parent against the base of the range. A base that names no commit fails.
 - A tool changes only to a later version. The new tool then judges the tree.
 - The developer allows one protected change with `debt --raise protected <n> --reason <text>`.
+- That line also allows a change of the policy, such as a new `skip` line.
 
 ## Readability debt
 
-`python3 tools/psxd_floor.py debt` counts ten kinds of debt in the tracked files of `src/` and `include/`. The rule
+`python3 tools/psxd_floor.py debt` counts the debt of each tracked file with a C or an assembly suffix. The rule
 is `rules/FIN1.md`.
 
 | Kind | It counts |
 |---|---|
-| `pin` | a register that the source forces: `register ... asm("$n")` |
-| `pin-unmarked` | a pin with no `// !FAKE:` reason on its line or on the line above |
-| `goto` | a `goto` |
-| `offset` | a field read by its offset: `*(T *)(p + N)`, `((T *)p)[N]`, `M2C_FIELD(`, or a macro that hides one, at each use |
+| `pin` | a register that the source forces: `register ... asm("$n")`, also with `__asm__` or `__asm` |
+| `pin-unmarked` | a pin with no `// !FAKE: <reason>` comment of its own |
+| `goto` | a `goto`, or a macro that hides one, at each use |
+| `goto-unmarked` | a `goto` with no `// !FAKE: <reason>` comment of its own |
+| `barrier` | an empty assembly statement, `__asm__("")` |
+| `barrier-unmarked` | a barrier with no `// !FAKE: <reason>` comment of its own |
+| `offset` | a field read by its offset: `*(T *)(p + N)`, `((T *)p)[N]`, `M2C_FIELD(`, or a byte pointer plus a number. A macro that hides one counts at each use. |
 | `address` | a literal in the address ranges of the console with no symbol, or a macro that hides one, outside the address header |
+| `cast` | an integer made of a pointer, or a pointer made of an integer: `(s32)&x`, `(T *)(s32)x` |
+| `field` | a name such as `unk_10` or `field_0x10`: a field with an offset and no name |
 | `macro` | a `#define` whose body holds `{`, `;` or a line continuation |
-| `asm` | an assembly file under `src/`, or an inline assembly statement, with no row in `config/asm-evidence.tsv` |
-| `placeholder` | a `func_` or `D_` address name that a C file defines |
+| `asm` | an assembly file, an inline assembly statement, or a macro that holds one, with no row in `config/asm-evidence.tsv` |
+| `obscured` | text that hides code from the tool: a statement outside each function body that the tool sees, or a line continuation outside a directive. A digraph for a brace and a source behind a symbolic link count too. |
+| `placeholder` | a `func_` or `D_` address name that a C file defines, also `FUN_`, `DAT_`, `sub_` and `loc_` |
+| `placeholder-use` | each other place where such a name stands |
 | `unbased` | any other function that a C file defines, with no accepted row in `config/names.tsv` |
-| `struct` | a struct, union or enum body outside `include/` |
+| `struct` | a struct, union or enum body outside an `include/` folder |
+| `extern` | an `extern` declaration or a prototype in a C file |
+| `filename` | a source file named by an address or a number, such as `func_80012344.c` or `misc12.c` |
+| `flag` | a compiler option of one file |
+| `reservation` | a register that a file takes from the compiler, `-ffixed-N` |
 
+- The tool does not read `asm/`, `build/`, `expected/`, `extracted/`, `refs/`, `tools/`, `docs/`, `config/`,
+  `tests/`, `fixtures/` and `cookbook/`.
+- It does not read the work folders of a campaign: `drafts/`, `waves/`, `repro/`, `scratch/` and `sandbox/`.
+- It also does not read a folder whose name starts with a dot. It reads each other folder.
+- An `#include` of C code from a folder that the tool does not read counts as `obscured`.
+- A file with `.inc` in its name is a fragment. Other files include it inside a function body.
+- The debt of a fragment rises only when each body that includes it is new.
+- The tool sees a function body when its head starts in column 0 as `type name(arguments) {`.
+- The game counts `flag` and `reservation`. `[debt] flags` in `config/psxdecomp.toml` names its command.
+- That command prints one `<count> <kind> <path>` line for each count.
 - An `INCLUDE_ASM` stub is not debt. The progress report gives it no credit. The definition of the stub macro is
   not debt either.
-- Pointer arithmetic that reads nothing is not an `offset`. The address ranges are main RAM, the scratchpad, the I/O
+- A file-scope assembly statement of a header is not debt when it holds assembler directives only.
+- A pointer sum with a variable is not an `offset`. The address ranges are main RAM, the scratchpad, the I/O
   ports and the BIOS. The value `0x80000000` counts only behind a pointer cast, because it is also the sign mask.
 - `config/debt-baseline.txt` holds one `<count> <kind> <path>` row for each count above zero.
 - The check fails when a count is over its row. It also fails when a row is over its count.
@@ -171,7 +194,8 @@ The baseline holds one policy line for each kind. `debt --recount` writes the st
 | `budget <kind> <n> base <count> <bodies> <stubs>` | As `admit-new`. The total grows by at most `n` for each 100 new bodies, plus 2. |
 | `raise <kind> <n> <date> <reason>` | The developer lets one change go over by `n`. |
 
-- The starting mode is `down` for `pin-unmarked`, `asm` and `unbased`. It is a budget of 30 for `pin` and of 12 for `goto`.
+- The starting mode is `down` for each `-unmarked` kind and for `barrier`, `asm`, `obscured`, `unbased` and `reservation`.
+- The starting mode is a budget of 30 for `pin` and of 12 for `goto`.
 - Each other kind starts in `admit-new`.
 - A body that exists never gets worse. That holds for a renamed body and for a body that moved to another file.
 - Debt outside a function rises only in a file that gets a new body.

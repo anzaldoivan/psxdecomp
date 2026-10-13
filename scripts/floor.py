@@ -61,22 +61,42 @@ The plan checks. `grammar` and `ladder` are a FAIL, the others a WARN.
   markers    a `TODO(phase-N)` in a tracked file while phase 1.N is closed (not in phase-ends/, templates/, .claude/,
              refs/ or psxdecomp's own tools/psxd_*.py)
 
-The debt kinds (one `<count> <kind> <path>` row each in the baseline):
-  pin           `register T x asm("$n")`: a register forced by hand
-  pin-unmarked  a pin with no `// !FAKE: <reason>` comment of its own: on its line, or alone on the line above. One
-                marker covers one pin, and a marker with no reason covers none
-  goto          a `goto`
-  offset        a field read by its offset: `*(T *)(p + N)`, `((T *)p)[N]`, `M2C_FIELD(`, or a macro that hides one
-                (each use). Pointer arithmetic that reads nothing is not counted
-  address       a literal in the console's address ranges (RAM, scratchpad, I/O, BIOS) with no symbol, or a macro that
-                hides one (each use), outside the address header (`[debt] address_header`, include/addr.h)
-  macro         a `#define` whose body holds `{`, `;` or a line continuation
-  asm           a tracked assembly file under src/, or an inline asm statement, with no row in config/asm-evidence.tsv
-  placeholder   a `func_XXXXXXXX` or `D_XXXXXXXX` name defined in a C file
-  unbased       any other function defined in a C file with no accepted row in config/names.tsv (once that file exists)
-  struct        a struct, union or enum body outside include/
-An `INCLUDE_ASM` stub is not debt: the progress report gives it no credit. The stub macro's own definition and a
-file-scope `__asm__` statement of a header are not debt either.
+The debt kinds (one `<count> <kind> <path>` row each in the baseline). Every tracked file with a C or an assembly
+suffix is read, in any folder but the splitter's output, the build's, the reference library, the folders of tools,
+documents, records and tests, and the work folders of a campaign (drafts/, waves/, repro/, scratch/, sandbox/):
+  pin              `register T x asm("$n")` (also `__asm__`, `__asm`): a register forced by hand
+  goto             a `goto`, or a macro that hides one (each use)
+  barrier          an empty asm statement, `__asm__("")`: it forces the compiler and holds no instruction
+  <those three>-unmarked
+                   one of them with no `// !FAKE: <reason>` comment of its own: on its line, or alone on the line
+                   above. One marker covers one construct, and a marker with no reason covers none
+  offset           a field read by its offset: `*(T *)(p + N)`, `((T *)p)[N]`, `M2C_FIELD(`, a byte pointer plus a
+                   number, or a macro that hides one (each use). A sum with a variable is not counted
+  address          a literal in the console's address ranges (RAM, scratchpad, I/O, BIOS) with no symbol, or a macro
+                   that hides one (each use), outside the address header (`[debt] address_header`, include/addr.h)
+  cast             an integer made of a pointer, or a pointer made of an integer: `(s32)&x`, `(T *)(s32)x`
+  field            a member or a name `unk_10`, `field_0x10`: a field that has an offset and no name
+  macro            a `#define` whose body holds `{`, `;` or a line continuation
+  asm              an assembly file, an inline asm statement, or a macro that holds one (the macro and each use),
+                   with no row in config/asm-evidence.tsv
+  obscured         text that hides code from this tool: a statement outside every function body it sees (a head in
+                   K&R form, by a macro, or not in column 0), a line continuation outside a directive, a digraph or
+                   a trigraph for a brace, a source behind a symbolic link, an `#include` of C code from a folder
+                   that is not read. A file with `.inc` in its name is a fragment that other files include inside a
+                   function body: its statements are counted in its own file, and they rise only when each body that
+                   includes it is new
+  placeholder      a `func_XXXXXXXX` or `D_XXXXXXXX` name defined in a C file (also `FUN_`, `DAT_`, `sub_`, `loc_`)
+  placeholder-use  each other place where such a name stands: a call, a read, a declaration
+  unbased          any other function defined in a C file with no accepted row in config/names.tsv (once that file
+                   exists)
+  struct           a struct, union or enum body outside an include/ folder
+  extern           an `extern` declaration or a prototype in a C file: a declaration has one owner, a header
+  filename         a source file named by an address or a number (`func_80012344.c`, `misc12.c`)
+  flag, reservation
+                   a compiler option of one file, and a register taken from the compiler (`-ffixed-N`). The game
+                   counts them: `[debt] flags` of the record names a command that prints `<count> <kind> <path>` lines
+An `INCLUDE_ASM` stub is not debt: the progress report gives it no credit. The stub macro's own definition is not debt
+either, nor is a file-scope asm statement of a header that holds assembler directives only.
 
 The baseline's policy lines (one per kind; `debt --recount` writes the starting ones):
   mode <kind> down                              the kind never rises
@@ -158,6 +178,7 @@ class Tree:
         self._cat = None
         self.memo: dict = {}                           # what a check derived from this tree, by its own key
         self._set: set | None = None
+        self.links: list[str] = []                     # the tracked symbolic links: no file of the tree, and said so
         if source is None:
             r = _git(repo, "ls-files", "-z", *(("--cached", "--others", "--exclude-standard") if untracked else ()))
             if r.returncode == 0:
@@ -166,6 +187,7 @@ class Tree:
                 found = {f.relative_to(self.repo).as_posix() for f in self.repo.rglob("*")
                          if f.is_file() and ".git" not in f.relative_to(self.repo).parts}
             self.paths = sorted(found)
+            self.links = [p for p in self.paths if is_source(p) and (self.repo / p).is_symlink()]
             return
         r = _git(repo, "ls-files", "-z", "-s") if source == INDEX else _git(repo, "ls-tree", "-r", "-z", source)
         if r.returncode != 0:
@@ -176,6 +198,8 @@ class Tree:
             cells = meta.split()
             if tab and len(cells) == 3 and cells[0] not in LINKS:
                 self._blob.setdefault(path, cells[1] if source == INDEX else cells[2])
+            elif tab and cells[:1] == ["120000"]:
+                self.links.append(path)
         self.paths = sorted(self._blob)
 
     def has(self, path: str) -> bool:
@@ -612,37 +636,60 @@ def cmd_plan(repo) -> int:
 
 
 # ---- the readability debt -----------------------------------------------------------------------------------------
-KINDS = ("pin", "pin-unmarked", "goto", "offset", "address", "macro", "asm", "placeholder", "unbased", "struct")
+KINDS = ("pin", "pin-unmarked", "goto", "goto-unmarked", "barrier", "barrier-unmarked", "offset", "address", "cast",
+         "field", "macro", "asm", "obscured", "placeholder", "placeholder-use", "unbased", "struct", "extern", "filename",
+         "flag", "reservation")
 NUM = r"(?:0[xX][0-9A-Fa-f]+|\d+)"
 OFFX = rf"(?:\([^()]*\)|{NUM}|[A-Za-z_]\w*)(?:\s*[-+*]\s*(?:\([^()]*\)|{NUM}|[A-Za-z_]\w*))*"
 OPND = r"\(?\s*&?\s*\w+(?:\s*(?:->|\.)\s*\w+|\s*\[[^\[\]\n]*\])*\s*\)?"
 PTR = r"\(\s*[\w ]+?\s*\*+\s*\)"
 CAST = r"\(\s*[\w ]+?\s*\**\s*\)"
 CHR = r"(?:const\s+)?(?:(?:unsigned|signed)\s+)?(?:char|[su]8)"
-# A field read by its offset, in four forms. A sum that is not read (`dst = (u8 *)dst + n`) is pointer arithmetic.
+# A field read by its offset, in four forms, and a byte pointer plus a number. A sum with a variable (`(u8 *)dst + n`)
+# is pointer arithmetic.
 OFFSET = re.compile(
     rf"\*\s*{PTR}\s*\(\s*(?:{CAST}\s*)?{OPND}\s*\+\s*{OFFX}\s*\)"                  # *(T *)(p + N), *(T *)((U *)p + N)
     rf"|\*\s*\(\s*{PTR}\s*{OPND}\s*\+\s*{OFFX}\s*\)"                               # *((T *)p + N)
     rf"|{PTR}\s*\(\s*{PTR}\s*{OPND}\s*\+\s*{OFFX}\s*\)\s*\)\s*(?:->|\[)"            # ((T *)((U *)p + N))->f
     rf"|\(\s*{PTR}\s*{OPND}\s*\)\s*\[\s*{NUM}\s*\]"                                 # ((T *)p)[N]
+    rf"|\(\s*{CHR}\s*\*+\s*\)\s*{OPND}\s*\+\s*{NUM}(?![\w.])"                         # (u8 *)p + N
     r"|\bM2C_FIELD\s*\(")
+INT = r"(?:(?:(?:un)?signed\s+)?(?:int|long|short)|[su](?:8|16|32)|u?intptr_t)"
+# An integer made of a pointer, or a pointer made of an integer: (s32)&x, (s32)(T *)p, (T *)(s32)x, (T *)((s32)x + n)
+CASTS = re.compile(rf"\(\s*{INT}\s*\)\s*(?:&\s*\w|{PTR})|{PTR}\s*\(?\s*\(\s*{INT}\s*\)")
+FIELD = re.compile(r"\b(?:unk|field)_?(?:0[xX])?[0-9A-Fa-f]{1,6}\b")
 # A literal in the console's address ranges: main RAM and its mirrors, the scratchpad and the I/O ports, the BIOS ROM.
-ADDRESS = re.compile(r"(?<![\w.])0[xX](?:(?:8|[aA])0[01][0-9A-Fa-f]{5}|[19bB][fF]80[0-9A-Fa-f]{4}"
+ADDRESS = re.compile(r"(?<![\w.])0[xX]0*(?:(?:8|[aA])0[01][0-9A-Fa-f]{5}|[19bB][fF]80[0-9A-Fa-f]{4}"
                      r"|[19bB][fF][cC][0-7][0-9A-Fa-f]{4})(?![0-9A-Fa-f])")
-SIGN_BIT = re.compile(r"0[xX]80000000")               # the sign mask too: an address only behind a pointer cast
+SIGN_BIT = re.compile(r"0[xX]0*80000000")               # the sign mask too: an address only behind a pointer cast
 STUB_MACROS = ("INCLUDE_ASM", "INCLUDE_RODATA")       # the stub's own definition: assembly by design
-PIN = re.compile(r'\bregister\b[^;{}]*?\b(?:asm|__asm__)\s*\(\s*"')
+ASM_WORD = r"(?:asm|__asm__|__asm)"
+PIN = re.compile(r'\bregister\b[^;{}]*?\b%s\s*\(\s*"' % ASM_WORD)
 GOTO = re.compile(r"\bgoto\s+\w+\s*;")
-STRUCT = re.compile(r"\b(?:struct|union|enum)\b\s*\w*\s*\{")
-INLINE_ASM = re.compile(r"\b(?:asm|__asm__)\b\s*(?:(?:volatile|__volatile__)\b\s*)?\(")
+STRUCT = re.compile(r"\b(?:struct|union|enum)\b(?:\s*__attribute__\s*\(\(.*?\)\))?\s*\w*\s*\{")
+INLINE_ASM = re.compile(r"\b%s\b\s*(?:(?:volatile|__volatile__)\b\s*)?\(" % ASM_WORD)
+ASM_TEXT = re.compile(r'\s*((?:"(?:\\.|[^"\\\n])*"\s*)+)\)')              # the strings of an asm statement, behind its `(`
+# Text that hides code from this tool: a statement outside every function body that the tool sees (a head in K&R
+# form, by a macro, or not in column 0), a line continuation outside a directive, a digraph or a trigraph for a brace.
+STATEMENT = re.compile(r"\breturn\b|\bgoto\s+\w+\s*;|\b(?:if|for|while|switch)\s*\(")
+SPLICE = re.compile(r"\\\n|<%|%>|\?\?[<>/]")
+EXTERN = re.compile(r"\bextern\b|^(?!static\b|typedef\b)(?:[A-Za-z_]\w*[\s*]+)+?[A-Za-z_]\w*\s*\([^;{}]*\)\s*;", re.M)
+FILENAME = re.compile(r"(?:(?:func|code|text|seg|file|unk|misc|task|gap|data|rodata|bss)_?[0-9A-Fa-f]{2,}|[0-9A-Fa-f]{5,8})", re.I)
 DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(\w+)((?:\\\n|[^\n])*)", re.M)
 PREPROC = re.compile(r"^[ \t]*#(?:\\\n|[^\n])*", re.M)
 DEF_FUNC = re.compile(r"^(?:[A-Za-z_]\w*[\s*]+)+?([A-Za-z_]\w*)\s*\([^;{}]*\)\s*\{", re.M)
-DEF_DATA = re.compile(r"^(?!extern\b)(?:[A-Za-z_]\w*[\s*]+)+?(D_[0-9A-Fa-f]{8}\w*)\s*(?:\[[^\]\n]*\]\s*)*[=;]", re.M)
-PLACEHOLDER = re.compile(r"^(?:func|D)_[0-9A-Fa-f]{8}")
+DEF_DATA = re.compile(r"^(?!extern\b)(?:[A-Za-z_]\w*[\s*]+)+?((?:D|DAT)_[0-9A-Fa-f]{8}\w*)\s*(?:\[[^\]\n]*\]\s*)*[=;]", re.M)
+PLACEHOLDER = re.compile(r"^(?:func|D|FUN|DAT|sub|loc)_[0-9A-Fa-f]{8}")      # a splitter's name, or a disassembler's
+PLACEHOLDER_USE = re.compile(r"\b(?:func|D|FUN|DAT|sub|loc)_[0-9A-Fa-f]{8}\w*")
 NOT_A_NAME = {"if", "for", "while", "switch", "return", "sizeof", "do", "else", "main"}
 _STRIP = re.compile(r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.S)
-SOURCE_DIRS = {"src/": (".c", ".h", ".s", ".S"), "include/": (".h",)}        # the folders and the suffixes that count
+C_SUFFIXES = (".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".inc")              # read as C; the suffix is read in lower case
+ASM_SUFFIXES = (".s", ".asm", ".sx")                                          # an assembly file: one count, unless a row
+# Every tracked file with one of those suffixes counts, in any folder but these: the splitter's output, what a build
+# or a dump writes, the reference library, and the folders that hold tools, documents, records and tests.
+NOT_SOURCE = ("asm/", "build/", "expected/", "extracted/", "refs/", "tools/", "docs/", "config/", "tests/", "fixtures/",
+              "cookbook/", "drafts/", "waves/", "repro/", "scratch/", "sandbox/")     # the last five: where a campaign works
+INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*"([^"\n]+)"', re.M)
 ADDRESS_HEADER = "include/addr.h"
 FIRST_SKIP = ("include/include_asm.h",)             # the stub macro's header, where a game keeps one
 BASELINE_HEAD = (
@@ -680,13 +727,21 @@ def _addresses(text: str) -> int:
     return len(_address_at(text))
 
 
+MACRO_KINDS = ("asm", "goto", "offset", "address")   # what a macro can hide; the first that its body holds is its kind
+
+
 def _macros(body: str, known=None) -> dict[str, str]:
-    """{macro name: "offset" | "address"} for each `#define` whose body holds one, or uses a macro that does (`known`
-    and the file's own, to a fixed point). M2C_FIELD is counted by its name, and the stub macros are not debt."""
+    """{macro name: its kind of MACRO_KINDS} for each `#define` whose body holds an asm word, a `goto`, an offset
+    read or an address, or uses a macro that does (`known` and the file's own, to a fixed point). M2C_FIELD is
+    counted by its name, and the stub macros are not debt."""
     defs = [(m.group(1), m.group(2)) for m in DEFINE.finditer(body) if m.group(1) not in ("M2C_FIELD",) + STUB_MACROS]
     out = {}
     for name, text in defs:
-        if OFFSET.search(text):
+        if re.search(r"\b%s\b" % ASM_WORD, text):
+            out[name] = "asm"
+        elif re.search(r"\bgoto\b", text):
+            out[name] = "goto"
+        elif OFFSET.search(text):
             out[name] = "offset"
         elif _addresses(text):
             out[name] = "address"
@@ -697,7 +752,7 @@ def _macros(body: str, known=None) -> dict[str, str]:
         for name, text in defs:
             if name in out:
                 continue
-            for kind in ("offset", "address"):
+            for kind in MACRO_KINDS:
                 if _uses([k for k, v in seen.items() if v == kind and k != name], text):
                     out[name], grew = kind, True
                     break
@@ -751,48 +806,75 @@ def extents(code: str) -> list[tuple[str, int, int]]:
 _SCANS: dict[tuple, dict] = {}                         # one scan per text and context: a range of commits repeats most
 
 
+def _plumbing(plain: str, at: int) -> bool:
+    """The asm statement whose `(` ends at `at` holds assembler directives only (`.include`, `.macro` and its lines):
+    the plumbing of the stub macro, not an instruction."""
+    m = ASM_TEXT.match(plain, at)
+    if not m:
+        return False
+    text = "".join(re.findall(r'"((?:\\.|[^"\\\n])*)"', m[1]))
+    return all(not l.strip() or l.strip().startswith((".", "\\", "#")) or l.strip().endswith(":")
+               for l in re.split(r"\\n|;", text))
+
+
 def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -> dict:
-    """One C file or header, read once. `hits`: [(kind, position)] of every kind but `unbased`. `extents`: its
-    function bodies. `funcs`: {name: position} of the functions it defines under a name that is no placeholder.
-    `stubs`: its INCLUDE_ASM lines. `shared`: the offset and address macros of the headers."""
-    key = (hashlib.sha1(text.encode("utf-8", "replace")).digest(), rel.startswith("include/"), rel.endswith(".c"),
-           rel == address_header, tuple(sorted((shared or {}).items())))
+    """One C file or header, read once. `hits`: [(kind, position)] of every kind that the text alone decides (not
+    `unbased`, `filename`, `flag`, `reservation`). `extents`: its function bodies. `funcs`: {name: position} of the
+    functions it defines under a name that is no placeholder. `stubs`: its INCLUDE_ASM lines. `shared`: the macros of
+    the headers that hide a construct."""
+    key = (hashlib.sha1(text.encode("utf-8", "replace")).digest(), in_include(rel), is_c(rel), is_header(rel),
+           is_fragment(rel), rel == address_header, tuple(sorted((shared or {}).items())))
     if key in _SCANS:
         return _SCANS[key]
     body = strip(text)
     code = PREPROC.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), body)
+    plain = _STRIP.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)) if m.group(0)[0] == "/" else m.group(0), text)
     macros = dict(shared or {})
     macros.update(_macros(body, macros))
     defines = [m for m in DEFINE.finditer(body) if m.group(1) not in ("M2C_FIELD",) + STUB_MACROS]
+    ext = extents(code)
     hits: list[tuple[str, int]] = []
-    pins = list(PIN.finditer(code))
     found = _crutches(text, code)
-    reasons = {c["a"]: c["reason"] for c in found if c["kind"] == "pin"}
-    for m in pins:
-        hits.append(("pin", m.start()))
-        if not reason_ok(reasons.get(m.start())):                      # no marker of its own, or a marker with no reason
-            hits.append(("pin-unmarked", m.start()))
-    hits += [("goto", m.start()) for m in GOTO.finditer(code)]
-    # each read in the code, each read that a macro's own body holds, and each use of such a macro
+    for c in found:                                    # a pin, a goto, an empty asm statement: each with its own marker
+        hits.append((c["kind"], c["a"]))
+        if not reason_ok(c["reason"]):                 # no marker of its own, or a marker with no reason
+            hits.append((c["kind"] + "-unmarked", c["a"]))
+    # each construct in the code, each one that a macro's own body holds, and each use of such a macro
     hits += [("offset", m.start()) for m in OFFSET.finditer(code)]
     hits += [("offset", d.start()) for d in defines for _ in OFFSET.findall(d.group(2))]
-    rx = _use_rx([k for k, v in macros.items() if v == "offset"])
-    hits += [("offset", m.start()) for m in rx.finditer(code)] if rx else []
     if rel != address_header:
         hits += [("address", at) for at in _address_at(code)]
         hits += [("address", d.start()) for d in defines for _ in _address_at(d.group(2))]
-        rx = _use_rx([k for k, v in macros.items() if v == "address"])
-        hits += [("address", m.start()) for m in rx.finditer(code)] if rx else []
+    hits += [("asm", d.start()) for d in defines if re.search(r"\b%s\b" % ASM_WORD, d.group(2))]
+    for kind in MACRO_KINDS:
+        rx = _use_rx([k for k, v in macros.items() if v == kind])
+        if rx and not (kind == "address" and rel == address_header):
+            hits += [(kind, m.start()) for m in rx.finditer(code)]
+            hits += [("goto-unmarked", m.start()) for m in rx.finditer(code)] if kind == "goto" else []
+    hits += [("cast", m.start()) for m in CASTS.finditer(code)]
+    hits += [("field", m.start()) for m in FIELD.finditer(code)]
     hits += [("macro", m.start()) for m in DEFINE.finditer(body) if m.group(1) not in STUB_MACROS
              and re.search(r"[{;]|\\\n", m.group(2))]
-    spans = [(m.start(), m.end()) for m in pins]
-    header_scope = rel.startswith("include/")          # a header's file-scope asm statement is the stub's plumbing
-    hits += [("asm", m.start()) for m in INLINE_ASM.finditer(code) if not any(a <= m.start() < b for a, b in spans)
-             and not (header_scope and code.count("{", 0, m.start()) == code.count("}", 0, m.start()))]
-    if not rel.startswith("include/"):
+    spans = [(c["a"], c["b"]) for c in found if c["kind"] != "goto"]
+    starts = [a for _, a, _ in ext]
+
+    def outside(at: int) -> bool:                      # in no function body
+        i = bisect.bisect_right(starts, at) - 1
+        return not (i >= 0 and at < ext[i][2])
+
+    for m in INLINE_ASM.finditer(code):                # a header's own plumbing at file scope is the stub's, not debt
+        if not any(a <= m.start() < b for a, b in spans) and not (is_header(rel) and outside(m.start()) and _plumbing(plain, m.end())):
+            hits.append(("asm", m.start()))
+    if not is_fragment(rel):
+        hits += [("obscured", m.start()) for m in STATEMENT.finditer(code) if outside(m.start())]
+    hits += [("obscured", m.start()) for m in SPLICE.finditer(code)]
+    if not in_include(rel):
         hits += [("struct", m.start()) for m in STRUCT.finditer(code)]
     funcs: dict[str, int] = {}
-    if rel.endswith(".c"):
+    stub_lines = [(m.start(), code.find("\n", m.start())) for m in STUB_USE.finditer(code)]
+    uses = [m for m in PLACEHOLDER_USE.finditer(code) if not any(a <= m.start() and (b < 0 or m.start() < b) for a, b in stub_lines)]
+    if is_c(rel):
+        hits += [("extern", m.start()) for m in EXTERN.finditer(code)]
         named: dict[str, int] = {}
         for m in list(DEF_FUNC.finditer(code)) + list(DEF_DATA.finditer(code)):
             if m.group(1) not in NOT_A_NAME or m.re is DEF_DATA:
@@ -800,13 +882,21 @@ def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -
                 if m.re is DEF_FUNC and not PLACEHOLDER.match(m.group(1)):
                     funcs.setdefault(m.group(1), m.start())
         hits += [("placeholder", at) for n, at in named.items() if PLACEHOLDER.match(n)]
-    ext = extents(code)
+        for n, at in named.items():                    # the name in its own definition is no use of it
+            own = next((u for u in uses if u.group(0) == n and u.start() >= at), None)
+            if own is not None:
+                uses.remove(own)
+    hits += [("placeholder-use", m.start()) for m in uses]
     inner: dict[str, str] = {}                         # a body from its first brace on: a rename leaves it as it was
     for name, a, b in ext:
         at = code.find("{", a, b)
         inner[name] = hashlib.sha1((inner.get(name, "") + " ".join(code[at if at >= 0 else a:b].split())).encode()).hexdigest()[:16]
+    includes = []                                      # [(the body that holds the directive, the path it names)]
+    for m in INCLUDE.finditer(plain):
+        i = bisect.bisect_right(starts, m.start()) - 1
+        includes.append((ext[i][0] if i >= 0 and m.start() < ext[i][2] else SCOPE, m.group(1)))
     _SCANS[key] = {"hits": hits, "extents": ext, "funcs": funcs, "stubs": len(STUB_USE.findall(code)),
-                   "stub_names": STUB_NAME.findall(code), "inner": inner,
+                   "stub_names": STUB_NAME.findall(code), "inner": inner, "includes": includes,
                    "crutches": found}
     return _SCANS[key]
 
@@ -839,7 +929,33 @@ def file_debt(rel: str, text: str, shared=None, based=None, address_header=ADDRE
 
 
 def is_source(path: str) -> bool:
-    return any(path.startswith(d) and path.endswith(sfx) for d, sfx in SOURCE_DIRS.items())
+    """A file that the debt count reads: a C or an assembly suffix, in no folder of NOT_SOURCE and in no folder whose
+    name starts with a dot."""
+    return (path.lower().endswith(C_SUFFIXES + ASM_SUFFIXES) and not path.startswith(NOT_SOURCE)
+            and not any(part.startswith(".") for part in path.split("/")))
+
+
+def is_fragment(path: str) -> bool:
+    """A body that other files include inside their own function braces (`shared.inc.c`, `body.inc`): its statements
+    stand outside a function by design. `_rises` holds it to the bodies that include it."""
+    return ".inc" in path.rsplit("/", 1)[-1].lower()
+
+
+def is_asm(path: str) -> bool:
+    return path.lower().endswith(ASM_SUFFIXES)
+
+
+def is_c(path: str) -> bool:
+    """A translation unit: a file that defines functions and data, not a header and not a fragment."""
+    return path.lower().endswith((".c", ".cc", ".cpp", ".cxx"))
+
+
+def is_header(path: str) -> bool:
+    return path.lower().endswith((".h", ".hpp"))
+
+
+def in_include(path: str) -> bool:
+    return path.startswith("include/") or "/include/" in path
 
 
 def address_header(repo) -> str:
@@ -893,14 +1009,41 @@ def read_tsv(path, columns, tree: Tree | None = None, also=()) -> tuple[list[dic
     return rows, errs
 
 
+def flag_counts(repo, tree: Tree) -> dict[tuple[str, str], int]:
+    """{(kind, path): count} of the two kinds that a game counts itself, `flag` (a compiler option of one file) and
+    `reservation` (a register taken from the compiler, `-ffixed-N`). `[debt] flags` of the record names the game's
+    lister: a command that prints `<count> flag|reservation <path>` lines for the work tree. It is run for the work
+    tree and the index. A revision cannot be listed without a checkout, so its counts are the rows of its own
+    baseline, which the gate held equal to the lister when that revision was committed."""
+    cmd = record_table(tree, "debt").get("flags")
+    out: dict[tuple[str, str], int] = {}
+    if tree.source not in (None, INDEX):
+        try:
+            rows = parse_baseline(tree.read(BASELINE)).rows
+        except Fail:
+            rows = {}
+        return {k: n for k, n in rows.items() if k[0] in ("flag", "reservation")} if cmd else {}
+    if not cmd:
+        return out
+    r = subprocess.run(cmd, shell=True, cwd=str(repo), capture_output=True, text=True)
+    if r.returncode != 0:
+        raise Fail("the lister of `[debt] flags` (`%s`) exited %d: %s" % (cmd, r.returncode, (r.stderr or r.stdout).strip()[-200:]))
+    for line in r.stdout.splitlines():
+        m = re.fullmatch(r"(\d+) (flag|reservation) (\S.*)", line.strip())
+        if m and int(m[1]):
+            out[(m[2], m[3])] = out.get((m[2], m[3]), 0) + int(m[1])
+    return out
+
+
 def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, dict[str, int]]]:
-    """{path: {function name: {kind: count}}} over the tracked src/ and include/ files that no `skip` entry covers:
+    """{path: {function name: {kind: count}}} over the tracked source files (is_source) that no `skip` entry covers:
     every function body of every C file (also one with no debt), and under SCOPE what no body holds. `tree`: the
     source to count (default: the work tree of `repo`). The ledgers and the record are read from the same source."""
     tree = tree or Tree(repo)
     if ("bodies", tuple(skip)) in tree.memo:
         return tree.memo[("bodies", tuple(skip))]
-    files = [p for p in tree.paths if is_source(p) and not any(entry_match(e, p) for e in skip)]
+    covered = lambda p: any(entry_match(e, p) for e in skip)  # noqa: E731
+    files = [p for p in tree.paths if is_source(p) and not covered(p)]
     header = address_header(tree)
     names, _ = read_tsv(NAMES, NAME_COLUMNS, tree)
     based = None if names is None else {r["new_name"] for r in names if r["decision"] == "accepted"}
@@ -909,7 +1052,7 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, 
         evidence.setdefault(r["path"], set()).add(r["symbol"])
     texts = {p: tree.read(p) for p in files}
     shared: dict[str, str] = {}
-    heads = [strip(texts[p]) for p in files if p.endswith(".h") and p != header and texts[p] is not None]
+    heads = [strip(texts[p]) for p in files if (is_header(p) or p.lower().endswith(".inc")) and p != header and texts[p] is not None]
     size = -1
     while len(shared) != size:                         # a macro of one header may use a macro of another
         size = len(shared)
@@ -919,29 +1062,53 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, 
     for p in files:
         if texts[p] is None:
             continue
-        if p.endswith((".s", ".S")):
+        if is_asm(p):
             out[p] = {} if p in evidence else {SCOPE: {"asm": 1}}
+        else:
+            out[p] = file_bodies(p, texts[p], shared, based, header)
+            for name in evidence.get(p, ()):
+                if name != SCOPE:
+                    out[p].get(name, {}).pop("asm", None)
+        if FILENAME.fullmatch(p.rsplit("/", 1)[-1].rsplit(".", 1)[0]):
+            out[p].setdefault(SCOPE, {})["filename"] = 1       # a name that says an address or a number, not a subject
+    users: dict[str, set] = {}                         # {an included source: the (path, body) pairs that include it}
+    for p in files:
+        if texts[p] is None or is_asm(p):
             continue
-        out[p] = file_bodies(p, texts[p], shared, based, header)
-        for name in evidence.get(p, ()):
-            if name != SCOPE:
-                out[p].get(name, {}).pop("asm", None)
+        for name, inc in scan_file(p, texts[p], shared, header)["includes"]:
+            folder = p.rsplit("/", 1)[0] + "/" if "/" in p else ""
+            target = next((c for c in (os.path.normpath(folder + inc), os.path.normpath(inc), "include/" + inc) if tree.has(c)), None)
+            if target is None or not target.lower().endswith(C_SUFFIXES):
+                continue
+            if not is_source(target) or covered(target):
+                got = out[p].setdefault(SCOPE, {})     # code from a folder that the count does not read
+                got["obscured"] = got.get("obscured", 0) + 1
+            elif not is_header(target):
+                users.setdefault(target, set()).add((p, name))
+    tree.memo[("users", tuple(skip))] = users
+    for p in tree.links:                               # a source behind a symbolic link is compiled and never read here
+        if is_source(p) and not covered(p):
+            out.setdefault(p, {}).setdefault(SCOPE, {})["obscured"] = 1
+    for (kind, p), n in flag_counts(repo, tree).items():
+        if not covered(p):
+            out.setdefault(p, {}).setdefault(SCOPE, {})[kind] = n
     tree.memo[("bodies", tuple(skip))] = out
     return out
 
 
-def tree_stubs(repo, skip=(), tree: Tree | None = None) -> tuple[dict[str, list[str]], dict[tuple[str, str], str]]:
-    """({path: the names of its INCLUDE_ASM lines}, {(path, function): the hash of its body from the first brace on})
-    over the C files that `debt_bodies` reads: what tells a new body from a renamed one."""
+def tree_stubs(repo, skip=(), tree: Tree | None = None) -> tuple[dict, dict, dict]:
+    """({path: the names of its INCLUDE_ASM lines}, {(path, function): the hash of its body from the first brace on},
+    {a fragment: the (path, function) pairs that include it}) over the C files that `debt_bodies` reads: what tells a
+    new body from a renamed one, and which bodies a fragment belongs to."""
     tree = tree or Tree(repo)
     if ("stubs", tuple(skip)) not in tree.memo:
         stubs, inner = {}, {}
         for p in debt_bodies(repo, skip, tree):
-            if not p.endswith((".s", ".S")):
+            if is_source(p) and not is_asm(p) and tree.read(p) is not None:
                 scan = scan_file(p, tree.read(p) or "", address_header=address_header(tree))
                 stubs[p] = list(scan["stub_names"])
                 inner.update({(p, n): h for n, h in scan["inner"].items()})
-        tree.memo[("stubs", tuple(skip))] = (stubs, inner)
+        tree.memo[("stubs", tuple(skip))] = (stubs, inner, tree.memo.get(("users", tuple(skip)), {}))
     return tree.memo[("stubs", tuple(skip))]
 
 
@@ -951,7 +1118,7 @@ def tree_shape(repo, skip=(), tree: Tree | None = None) -> tuple[int, int]:
     bodies = debt_bodies(repo, skip, tree)
     stubs = 0
     for p in bodies:
-        if p.endswith(".c"):
+        if is_c(p) and tree.read(p) is not None:
             stubs += scan_file(p, tree.read(p) or "", address_header=address_header(tree))["stubs"]
     return sum(len([n for n in by if n != SCOPE]) for by in bodies.values()), stubs
 
@@ -974,7 +1141,8 @@ def debt_counts(repo, skip=(), tree: Tree | None = None, bodies=None) -> dict[tu
 # developer's act: it lets one change go over by its number. The change itself cannot weaken any of this: `admission`
 # reads the policy of the revision that the change starts from.
 MODES = ("admit-new", "budget", "down")              # weakest first
-START_DOWN = ("pin-unmarked", "asm", "unbased")      # the modes that `debt --recount` gives a kind with no line
+START_DOWN = ("pin-unmarked", "goto-unmarked", "barrier", "barrier-unmarked", "asm", "obscured", "unbased",
+              "reservation")                         # the modes that `debt --recount` gives a kind with no line
 START_BUDGET = {"pin": 30, "goto": 12}
 BUDGET_SLACK = 2
 PUBLIC_PATHS = "config/public-paths.txt"
@@ -1193,8 +1361,9 @@ def _rises(old: dict, new: dict, was=None, now=None) -> tuple[dict[str, int], li
     same change, the added bodies with the most debt count as the new ones."""
     rise: dict[str, int] = {}
     lines: list[tuple[str, str]] = []
-    stubs0, inner0 = was or ({}, {})
-    stubs1, inner1 = now or ({}, {})
+    stubs0, inner0, _ = was or ({}, {}, {})
+    stubs1, inner1, users = now or ({}, {}, {})
+    fresh: set = set()                                 # the (path, name) pairs that are new bodies
 
     def compare(before: dict, after: dict, where: str, why: str) -> None:
         for kind in KINDS:
@@ -1255,6 +1424,7 @@ def _rises(old: dict, new: dict, was=None, now=None) -> tuple[dict[str, int], li
             else:
                 next(names for names in lost_stubs.values() if n in names).remove(n)
             new_in[p] = new_in.get(p, 0) + 1
+            fresh.add((p, n))
         else:
             rest.append((p, n))
     for p in sorted({q for q, _ in rest}):             # a new body under a new name: a stub left its file
@@ -1262,6 +1432,7 @@ def _rises(old: dict, new: dict, was=None, now=None) -> tuple[dict[str, int], li
         lost = [c for (q, _), c in sorted(gone.items()) if q == p]
         slots = max(0, min(len(lost_stubs.get(p, ())), len(names) - len(lost)))
         new_in[p] = new_in.get(p, 0) + slots
+        fresh |= {(p, n) for n in names[:slots]}
         if names[slots:]:
             for (q, n) in [k for k in gone if k[0] == p]:
                 gone.pop((q, n))
@@ -1271,7 +1442,13 @@ def _rises(old: dict, new: dict, was=None, now=None) -> tuple[dict[str, int], li
     any_new = any(new_in.values())
     for p, by in sorted(new.items()):
         holds_bodies = any(n != SCOPE for n in by) or any(n != SCOPE for n in old.get(p, {}))
-        if not (new_in.get(p) if holds_bodies else any_new):
+        if users.get(p):                               # a fragment is the body of each function that includes it
+            if not all(u in fresh for u in users[p]):
+                stay = sorted("%s %s" % u for u in users[p] if u not in fresh)
+                compare(old.get(p, {}).get(SCOPE, {}), by.get(SCOPE, {}), "%s (a fragment that %s includes)" % (
+                    p, stay[0] + (" and %d more" % (len(stay) - 1) if len(stay) > 1 else "")),
+                    "rose in a fragment of a body that is not new")
+        elif not (new_in.get(p) if holds_bodies else any_new):
             compare(old.get(p, {}).get(SCOPE, {}), by.get(SCOPE, {}), "%s (file scope)" % p,
                     "rose outside a function with no new body")
     return rise, lines, new_in
@@ -1519,7 +1696,7 @@ def tree_symbols(tree: Tree) -> dict[str, set]:
     if "symbols" not in tree.memo:
         out: dict[str, set] = {k: set() for k in NAME_KINDS}
         for p in tree.paths:
-            if is_source(p) and not p.endswith((".s", ".S")):
+            if is_source(p) and not is_asm(p):
                 for kind, names in file_symbols(tree.read(p) or "").items():
                     out[kind] |= names
         tree.memo["symbols"] = out
@@ -1924,6 +2101,7 @@ def _crutches(text: str, code: str) -> list[dict]:
     for m in BARRIER.finditer(code):
         if not plain[m.start(1):m.end(1)].strip():     # the string is empty in the text too, not only once it is blanked
             found.append({"kind": "barrier", "a": m.start(), "b": m.end(), "keep": "", "name": "barrier"})
+    found += [{"kind": "goto", "a": m.start(), "b": m.end(), "keep": None, "name": "goto"} for m in GOTO.finditer(code)]
     found.sort(key=lambda c: c["a"])
     marks, used = markers(text), set()
     for c in found:
@@ -1953,7 +2131,7 @@ def crutches(rel: str, text: str) -> list[dict]:
         i = bisect.bisect_right(starts, c["a"]) - 1
         c["func"] = scan["extents"][i][0] if i >= 0 and c["a"] < scan["extents"][i][2] else SCOPE
         n = seen[(c["func"], c["name"])] = seen.get((c["func"], c["name"]), 0) + 1
-        c["id"] = c["name"] + (":%d" % n if c["kind"] == "barrier" else "#%d" % n if n > 1 else "")
+        c["id"] = c["name"] + (":%d" % n if c["kind"] != "pin" else "#%d" % n if n > 1 else "")
         c["hash"] = body_hash(text, spans.get(c["func"], [(0, len(text))]))
         out.append(c)
     return out
@@ -2022,7 +2200,7 @@ def trial_function(text: str, rel: str, func: str, ask) -> tuple[str | None, dic
     """(the text with what the match does not need taken out and each survivor marked, the counts) for one function.
     `ask(text) -> 0|1|2` is the probe. None when the function cannot be tried: it does not match as it is, the probe
     answers otherwise for a comment (a control), or the probe failed."""
-    mine = lambda t: [c for c in crutches(rel, t) if c["func"] == func]  # noqa: E731
+    mine = lambda t: [c for c in crutches(rel, t) if c["func"] == func and c["kind"] != "goto"]  # noqa: E731
     stats = {"tried": 0, "removed": 0, "kept": 0, "probes": 0, "why": ""}
 
     def probe(t):
@@ -2081,17 +2259,19 @@ def trials_findings(repo, tree: Tree | None = None) -> list[str]:
             have.setdefault((r["function"], r["crutch"]), set()).add(r["hash"])
     marked = 0
     for p in tree.paths:
-        text = tree.read(p) if is_source(p) and not p.endswith((".s", ".S")) else None
-        if not text or ("asm" not in text and "!FAKE:" not in text):
+        text = tree.read(p) if is_source(p) and not is_asm(p) else None
+        if not text or "!FAKE:" not in text:
             continue
         for c in crutches(p, text):
             if c["mark"] is None:
                 continue
-            marked += 1
+            marked += c["kind"] != "goto"
             where = "%s %s %s" % (p, c["func"] or "(file scope)", c["id"])
             row = have.get((c["func"], c["id"]))
             if not reason_ok(c["reason"]):
                 out.append("no reason: %s: a `// !FAKE:` marker says why the crutch stays" % where)
+            elif c["kind"] == "goto":                  # a goto needs its reason, and no trial
+                continue
             elif c["func"] == SCOPE:
                 out.append("no function: %s: a crutch outside a function cannot be tried" % where)
             elif not row:
@@ -2136,7 +2316,8 @@ def cmd_trial(repo, file: str | None, func: str | None = None, recheck: bool = F
     if text is None:
         print("TRIAL FAIL %s: no file of this repository (`trial <file> [--func <name>]`)" % (file or "no file"))
         return 1
-    funcs = list(dict.fromkeys(c["func"] for c in crutches(rel, text) if c["func"] != SCOPE and func in (None, c["func"])))
+    funcs = list(dict.fromkeys(c["func"] for c in crutches(rel, text) if c["func"] != SCOPE and c["kind"] != "goto"
+                               and func in (None, c["func"])))
     if not funcs:
         print("TRIAL OK %s%s: no pin and no barrier in a function" % (rel, " " + func if func else ""))
         return 0
@@ -2154,7 +2335,7 @@ def cmd_trial(repo, file: str | None, func: str | None = None, recheck: bool = F
         here = lambda r: r["path"] == rel or name not in [n for n, _, _ in scan_file(r["path"], tree.read(r["path"]) or "")["extents"]]  # noqa: E731
         rows = [r for r in rows if not (r["function"] == name and here(r))]
         rows += [{"path": rel, "function": name, "crutch": c["id"], "hash": c["hash"], "result": "kept", "probe": digest}
-                 for c in crutches(rel, text) if c["func"] == name]
+                 for c in crutches(rel, text) if c["func"] == name and c["kind"] != "goto"]
     if text != tree.read(rel):
         (repo / rel).write_text(text, encoding="utf-8")
     if rows != trial_rows(tree)[0] or tree.read(TRIALS) is None and bad < len(funcs):
@@ -2372,6 +2553,8 @@ def transition(repo, bases: list[Tree], head: Tree, online: bool = False, change
     for base in bases:
         fails, infos = admission(repo, base, head) if debt_due else ([], [])
         found, more, replaced = protected_findings(base, head, online)
+        found += ["policy: " + d for ck, d in fails if ck == "policy"]       # a change of the policy is a protected change
+        fails = [f for f in fails if f[0] != "policy"]
         other = parse_baseline(base.read(BASELINE)).other
         slack = sum(int(m[1]) for l in parse_baseline(head.read(BASELINE)).other if l not in other
                     for m in [re.fullmatch(r"raise protected (\d+) \S+ \S.*", l)] if m)
@@ -2379,7 +2562,7 @@ def transition(repo, bases: list[Tree], head: Tree, online: bool = False, change
         if found and len(found) <= slack:
             infos += ["protected, and a `raise protected` line of the change allows it: %s" % f for f in found]
         else:
-            fails += [("protected", f) for f in found]
+            fails += [("policy", f[8:]) if f.startswith("policy: ") else ("protected", f) for f in found]
         if style_due:
             rc, lines = _sibling_run(repo, "style", *_source_args(head), "--against", base.source, "--repo", str(repo))
             if rc:
@@ -2578,7 +2761,25 @@ C_DEBT = {
     "pin": ('void Walk(void) {\n    // !FAKE: the loop counter\n    register s32 i asm("$16");\n    i = 1;\n}\n',
             {"pin": 1}),
     "pin-unmarked": ('void Walk(void) {\n    register s32 i asm("$16");\n    i = 1;\n}\n', {"pin": 1, "pin-unmarked": 1}),
-    "goto": ("void Walk(s32 n) {\nloop:\n    if (--n) goto loop;\n}\n", {"goto": 1}),
+    "goto": ("void Walk(s32 n) {\nloop:\n    // !FAKE: the loop of the original\n    if (--n) goto loop;\n}\n", {"goto": 1}),
+    "goto-unmarked": ("void Walk(s32 n) {\nloop:\n    if (--n) goto loop;\n}\n", {"goto": 1, "goto-unmarked": 1}),
+    "goto, through a macro": ("#define AGAIN goto loop\nvoid Walk(s32 n) {\nloop:\n    if (--n) AGAIN;\n}\n", {"goto": 1, "goto-unmarked": 1}),
+    "barrier": ('void Walk(void) {\n    // !FAKE: the load must come first\n    __asm__("");\n}\n', {"barrier": 1}),
+    "barrier-unmarked": ('void Walk(void) {\n    asm("");\n}\n', {"barrier": 1, "barrier-unmarked": 1}),
+    "pin, the other spellings": ('void Walk(void) {\n    register s32 i __asm("$16");\n    register s32 j\n        __asm__ ( "$17" );\n}\n',
+                                 {"pin": 2, "pin-unmarked": 2}),
+    "asm, through a macro": ('#define PIN(r) asm(r)\nvoid Walk(void) {\n    register s32 i PIN("$16");\n}\n', {"asm": 2}),
+    "cast": ("void Walk(Obj *p, s32 a) {\n    a = (s32)&p->next;\n    p = (Obj *)(s32)a;\n    a = (s32)(u8 *)p;\n}\n", {"cast": 3}),
+    "field": ("s32 Walk(Obj *p) {\n    return p->unk_10 + p->field_0x14 + p->unk3C + p->hp;\n}\n", {"field": 3}),
+    "obscured, a head in K&R form": ("s32 Walk(n)\ns32 n;\n{\n    if (n) {\n        return 1;\n    }\n    return 0;\n}\n", {"obscured": 3}),
+    "obscured, a spliced line": ("void Walk(s32 n) {\n    n = n + \\\n        1;\n}\n", {"obscured": 1}),
+    "obscured, a digraph": ("void Walk(s32 n) <%\n    n = 1;\n%>\n", {"obscured": 2}),
+    "extern": ("extern s32 g_Mode;\ns32 Other(s32 a);\nstatic s32 Mine(s32 a);\ns32 Walk(void) {\n    extern s32 g_Late;\n    return g_Mode;\n}\n",
+               {"extern": 3}),
+    "placeholder, a disassembler's name": ("s32 FUN_80012344(void) {\n    return DAT_800A1234 + sub_80012000();\n}\n",
+                                           {"placeholder": 1, "placeholder-use": 2}),
+    "address, with leading zeros": ("void Walk(void) {\n    *(volatile u32 *)0x01F801070 = 0;\n}\n", {"address": 1}),
+    "struct, with an attribute": ("struct __attribute__((packed)) Pair {\n    s32 a;\n};\n", {"struct": 1}),
     "offset": ("#define HP(p) (*(s16 *)((u8 *)(p) + 0x10))\ns32 Walk(void *p) {\n    return HP(p) + HP(p) + M2C_FIELD(p, s32 *, 8);\n}\n",
                {"offset": 4}),
     "address": ("void Walk(void) {\n    *(volatile u32 *)0x1F801070 = 0;\n}\n", {"address": 1}),
@@ -2589,18 +2790,19 @@ C_DEBT = {
     "no address": ("s32 Walk(s32 a) {\n    void *end = (void *)0xFFFFFFFF;\n    return (a & 0x80000000) ? 0x12345 : 0x1F;\n}\n", {}),
     "the sign mask behind a pointer cast": ("void Walk(void) {\n    *(u32 *)0x80000000 = 0;\n}\n", {"address": 1}),
     "offset, one cast": ("void Walk(s32 a) {\n    *(short *)(a + 0x9C) = 0;\n    *(unsigned char *)(a + 0x7B) = 4;\n"
-                         "    *(s32 *)((s32)a + 8) = 1;\n}\n", {"offset": 3}),
+                         "    *(s32 *)((s32)a + 8) = 1;\n}\n", {"offset": 3, "cast": 1}),
     "offset, the index form": ("s32 Walk(void *self) {\n    return ((s8 *)self)[0x45] + *((u8 *)self + 2);\n}\n", {"offset": 2}),
     "offset, through a member": ("void Walk(Ctx *ctx, Obj *a) {\n    *(short *)(ctx->pc + 4) = 0;\n    ((u8 *)a->link.owner)[0x14]--;\n"
                                  "    *(s32 *)(a->tbl[2] + 8) = 1;\n}\n", {"offset": 3}),
     "offset, a cast sum read through": ("s32 Walk(void *p) {\n    return ((Obj *)((u8 *)p + 0x10))->hp;\n}\n", {"offset": 1}),
-    "no offset": ("void Walk(void *dst, s32 n) {\n    dst = (void *)((char *)dst + 0xC);\n    end = (u8 *)dst + n;\n}\n", {}),
+    "offset, a byte pointer plus a number": ("void Walk(void *dst, s32 n) {\n    dst = (void *)((char *)dst + 0xC);\n}\n", {"offset": 1}),
+    "no offset": ("void Walk(void *dst, s32 n) {\n    end = (u8 *)dst + n;\n    p = q + 4;\n}\n", {}),
     "the define of M2C_FIELD": ("#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))\n", {}),
     "the stub macro": ("#define INCLUDE_ASM(FOLDER, NAME) \\\n    __asm__(\".include \\\"\" FOLDER \"/\" #NAME \".s\\\"\");\n", {}),
     "macro": ("#define SWAP(a, b) { s32 t = a; a = b; b = t; }\n#define TWO(a) \\\n    ((a) * 2)\n", {"macro": 2}),
     "asm": ('void Walk(void) {\n    __asm__("nop");\n}\n', {"asm": 1}),
     "placeholder": ("s32 D_800A1234 = 4;\nextern s32 D_800A5678;\nINCLUDE_ASM(\"asm/nonmatchings\", func_80010000);\n"
-                    "s32 func_80012344(s32 a) {\n    return a;\n}\n", {"placeholder": 2}),
+                    "s32 func_80012344(s32 a) {\n    return a;\n}\n", {"placeholder": 2, "placeholder-use": 1, "extern": 1}),
     "struct": ("struct Pair {\n    s32 a;\n};\ns32 Walk(struct Pair *p) {\n    return p->a;\n}\n", {"struct": 1}),
 }
 
@@ -2796,14 +2998,14 @@ def self_test_debt(check) -> None:
           == {"offset": 1})
     check("unbased: a function with no row", file_debt("src/a.c", C_CLEAN, based=set()) == {"unbased": 1})
     check("unbased: a function with a row", file_debt("src/a.c", C_CLEAN, based={"Player_Hp"}) == {})
-    bl = parse_baseline("# top\nmode goto down\nbudget pin 30 base 4 10 20\nmode barrier down\n3 barrier src/a.c\n"
+    bl = parse_baseline("# top\nmode goto down\nbudget pin 30 base 4 10 20\nmode shift down\n3 shift src/a.c\n"
                         "raise goto 2 2026-01-02 the first wave\nskip src/vendor/\n1 goto src/a.c\n# a note below a row\n")
     check("the baseline: its lines, and the lines of a kind this tool does not know", bl.version == 2
           and bl.head == ["# top", "# a note below a row"] and bl.policy("goto") == ("down",)
-          and bl.policy("pin") == ("budget", 30, 4, 10, 20) and bl.other == ["mode barrier down", "3 barrier src/a.c"]
-          and bl.raises == [("goto", 2, "2026-01-02", "the first wave")] and bl.lacks()[:2] == ["pin-unmarked", "offset"], vars(bl))
+          and bl.policy("pin") == ("budget", 30, 4, 10, 20) and bl.other == ["mode shift down", "3 shift src/a.c"]
+          and bl.raises == [("goto", 2, "2026-01-02", "the first wave")] and bl.lacks()[:2] == ["pin-unmarked", "goto-unmarked"], vars(bl))
     check("the baseline is written as it was read", baseline_text(bl) == "# top\n# a note below a row\nbudget pin 30 base 4 10 20\n"
-          "mode goto down\nmode barrier down\n3 barrier src/a.c\nraise goto 2 2026-01-02 the first wave\nskip src/vendor/\n"
+          "mode goto down\nmode shift down\n3 shift src/a.c\nraise goto 2 2026-01-02 the first wave\nskip src/vendor/\n"
           "1 goto src/a.c\n", baseline_text(bl))
     for name, text, want in (("two rows of one pair", "1 goto src/a.c\n1 goto src/a.c\n", "has two rows"),
                              ("two policy lines of one kind", "mode goto down\nbudget goto 3 base 1 1 1\n", "two policy lines"),
@@ -2839,19 +3041,22 @@ def self_test_debt(check) -> None:
         text = first_baseline(repo)
         check("the first baseline: a policy line per kind, the stub header skipped, the rows", text.startswith(
             "# config/debt-baseline.txt: ") and text.endswith(
-            "budget pin 30 base 0 2 2\nmode pin-unmarked down\nbudget goto 12 base 1 2 2\nmode offset admit-new\n"
-            "mode address admit-new\nmode macro admit-new\nmode asm down\nmode placeholder admit-new\nmode unbased down\n"
-            "mode struct admit-new\nskip include/include_asm.h\n1 asm src/boot.s\n1 goto src/walk.c\n"), text)
+            "budget pin 30 base 0 2 2\nmode pin-unmarked down\nbudget goto 12 base 1 2 2\nmode goto-unmarked down\nmode barrier down\n"
+            "mode barrier-unmarked down\nmode offset admit-new\nmode address admit-new\nmode cast admit-new\nmode field admit-new\n"
+            "mode macro admit-new\nmode asm down\nmode obscured down\nmode placeholder admit-new\nmode placeholder-use admit-new\n"
+            "mode unbased down\nmode struct admit-new\nmode extern admit-new\nmode filename admit-new\nmode flag admit-new\n"
+            "mode reservation down\nskip include/include_asm.h\n1 asm src/boot.s\n1 goto src/walk.c\n"), text)
         rc, out = run(recount=True)
         check("--recount writes it", rc == 0 and base_file.read_text() == text and "DEBT RECOUNT written" in out
               and "DEBT INFO policy written: pin: budget 30 0 2 2\n" in out, out)
         rc, out = run()
-        check("an equal baseline passes", rc == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); down: pin-unmarked, asm, "
-              "unbased; budget: pin 30, goto 12; admit-new: offset, address, macro, placeholder, struct)" in out, out)
+        check("an equal baseline passes", rc == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); down: pin-unmarked, goto-unmarked, "
+              "barrier, barrier-unmarked, asm, obscured, unbased, reservation; budget: pin 30, goto 12; admit-new: offset, address, cast, "
+              "field, macro, placeholder, placeholder-use, struct, extern, filename, flag)" in out, out)
         _git(repo, "add", "config")
         _commit(repo, "the floor")
         # a body that exists never gets worse, whatever the rows say
-        walk.write_text(C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
+        walk.write_text(C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
         rc, out = run()
         check("a rise fails and names the command", rc == 1 and "DEBT FAIL rise goto src/walk.c: 2, its row is 1\n" in out
               and "debt --update`, then commit config/debt-baseline.txt" in out
@@ -2884,7 +3089,7 @@ def self_test_debt(check) -> None:
               and "2 goto src/walk.c\n" in base_file.read_text() and run()[0] == 0 and not judge("HEAD"), out)
         base_file.write_text(text)
         stub("Run", "Jump")
-        walk.write_text("void Pad(void) {\n}\n" + C_DEBT["goto"][0].replace("Walk", "Stroll").replace("goto loop;", "goto loop;\n    goto loop;"))
+        walk.write_text("void Pad(void) {\n}\n" + C_DEBT["goto"][0].replace("Walk", "Stroll").replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
         check("an empty body beside a renamed one buys nothing", [f[1] for f in judge("HEAD")] == [
             "rose in a body that is not new: goto src/walk.c Stroll, Pad (in the place of a body that left): 1 -> 2"], judge("HEAD"))
         walk.write_text(C_DEBT["goto"][0] + C_DEBT["struct"][0].split("s32 Walk")[0])
@@ -2906,10 +3111,10 @@ def self_test_debt(check) -> None:
         _git(repo, "rm", "-q", "-f", "--cached", "include/m.h")
         (repo / "include" / "m.h").unlink()
         # a renamed and a moved body are the body they were
-        walk.write_text(C_DEBT["goto"][0].replace("Walk", "Stroll").replace("goto loop;", "goto loop;\n    goto loop;"))
+        walk.write_text(C_DEBT["goto"][0].replace("Walk", "Stroll").replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
         check("a renamed body is no new body", [f[1] for f in judge("HEAD")] == [
             "rose in a body that is not new: goto src/walk.c Stroll (in the place of a body that left): 1 -> 2"], judge("HEAD"))
-        (repo / "src" / "far.c").write_text(C_DEBT["goto"][0].replace("Walk", "Stroll").replace("goto loop;", "goto loop;\n    goto loop;"))
+        (repo / "src" / "far.c").write_text(C_DEBT["goto"][0].replace("Walk", "Stroll").replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
         walk.write_text("s32 g_Walk;\n")
         _git(repo, "add", "src/far.c")
         check("a body renamed and moved at once is no new body", [f[1] for f in judge("HEAD")] == [
@@ -2918,7 +3123,7 @@ def self_test_debt(check) -> None:
         (repo / "src" / "far.c").write_text(C_DEBT["goto"][0].replace("s32 n", "s32 n, s32 pad").replace("Walk", "Stroll"))
         check("a body renamed with its text as it was is the body it was", not judge("HEAD"), judge("HEAD"))
         walk.write_text("s32 g_Walk;\n")
-        (repo / "src" / "far.c").write_text(C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
+        (repo / "src" / "far.c").write_text(C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
         _git(repo, "add", "src/far.c")
         check("a moved body is no new body", [f[1] for f in judge("HEAD")] == [
             "rose in a moved body: goto src/far.c Walk (from src/walk.c): 1 -> 2"], judge("HEAD"))
@@ -2979,10 +3184,10 @@ def self_test_debt(check) -> None:
         base_file.write_text(mine)
         # the budget: a new body is one that takes a stub away
         stubs = "".join('INCLUDE_ASM("asm/nonmatchings/a", func_8001%04X);\n' % i for i in range(10))
-        body = lambda i, n=1: "void func_8001%04X(void) {\nx:\n%s}\n" % (i, "    goto x;\n" * n)  # noqa: E731
+        body = lambda i, n=1: "void func_8001%04X(void) {\nx:\n%s}\n" % (i, "    goto x; // !FAKE: the loop\n" * n)  # noqa: E731
         (repo / "src" / "many.c").write_text(stubs)
         _git(repo, "add", "-A", "src")
-        walk.write_text(C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
+        walk.write_text(C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
         rc, out = run(recount=True)
         check("--recount admits nothing", rc == 1 and "a recount admits nothing" in out and base_file.read_text() == mine, out)
         walk.write_text(C_DEBT["goto"][0])
@@ -3015,7 +3220,7 @@ def self_test_debt(check) -> None:
         run(update=True)
         _git(repo, "add", "-A")
         _commit(repo, "the body leaves")
-        walk.write_text(C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
+        walk.write_text(C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
         rc, out = run(update=True)
         _git(repo, "add", "-A")
         _commit(repo, "the body is back, worse")
@@ -3194,23 +3399,23 @@ def self_test_debt(check) -> None:
 
 
 C_BODIES = {
-    "two plain bodies": ("s32 A(void *p) {\n    return *(s32 *)(p + 4);\n}\n\nvoid B(void) {\nx:\n    goto x;\n}\n",
+    "two plain bodies": ("s32 A(void *p) {\n    return *(s32 *)(p + 4);\n}\n\nvoid B(void) {\nx:\n    goto x; // !FAKE: the loop\n}\n",
                          {"A": {"offset": 1}, "B": {"goto": 1}}),
     "a K&R definition is file scope": ("s32 A(p)\nvoid *p;\n{\n    return *(s32 *)(p + 4);\n}\nvoid B(void) {\n}\n",
-                                        {SCOPE: {"offset": 1}, "B": {}}),
-    "a definition by a macro is file scope": ("HANDLER(A) {\nx:\n    goto x;\n}\nvoid B(void) {\n}\n",
-                                               {SCOPE: {"goto": 1}, "B": {}}),
+                                        {SCOPE: {"offset": 1, "obscured": 1}, "B": {}}),
+    "a definition by a macro is file scope": ("HANDLER(A) {\nx:\n    goto x; // !FAKE: the loop\n}\nvoid B(void) {\n}\n",
+                                               {SCOPE: {"goto": 1, "obscured": 1}, "B": {}}),
     "an #if with two heads is one body": ("#ifdef VERSION_JP\ns32 A(s32 a) {\n#else\ns32 A(void) {\n#endif\nx:\n"
-                                          "    goto x;\n}\nvoid B(void) {\ny:\n    goto y;\n}\n", {"A": {"goto": 1}, "B": {"goto": 1}}),
-    "an `else if` in column 0 opens no body": ("void A(s32 a) {\n    if (a) {\n    }\nelse if (a == 2) {\nx:\n    goto x;\n"
+                                          "    goto x; // !FAKE: the loop\n}\nvoid B(void) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 1}, "B": {"goto": 1}}),
+    "an `else if` in column 0 opens no body": ("void A(s32 a) {\n    if (a) {\n    }\nelse if (a == 2) {\nx:\n    goto x; // !FAKE: the loop\n"
                                                "    }\n}\n", {"A": {"goto": 1}}),
     "a body beside its stub": ("#ifndef NON_MATCHING\nINCLUDE_ASM(\"asm/nonmatchings/a\", func_80012344);\n#else\n"
-                               "s32 func_80012344(s32 a) {\nx:\n    goto x;\n}\n#endif\n", {"func_80012344": {"goto": 1, "placeholder": 1}}),
+                               "s32 func_80012344(s32 a) {\nx:\n    goto x; // !FAKE: the loop\n}\n#endif\n", {"func_80012344": {"goto": 1, "placeholder": 1}}),
     "braces that never close end at the next definition": (
-        "void A(s32 a) {\n#ifdef X\n    if (a) {\n#else\n    if (!a) {\n#endif\nx:\n        goto x;\n    }\n}\n"
-        "void B(void) {\ny:\n    goto y;\n}\n", {"A": {"goto": 1}, "B": {"goto": 1}}),
-    "two bodies of one name are one entry": ("void A(void) {\nx:\n    goto x;\n}\nstruct S {\n    s32 a;\n};\n"
-                                             "void A(s32 b) {\ny:\n    goto y;\n}\n", {"A": {"goto": 2}, SCOPE: {"struct": 1}}),
+        "void A(s32 a) {\n#ifdef X\n    if (a) {\n#else\n    if (!a) {\n#endif\nx:\n        goto x; // !FAKE: the loop\n    }\n}\n"
+        "void B(void) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 1}, "B": {"goto": 1}}),
+    "two bodies of one name are one entry": ("void A(void) {\nx:\n    goto x; // !FAKE: the loop\n}\nstruct S {\n    s32 a;\n};\n"
+                                             "void A(s32 b) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 2}, SCOPE: {"struct": 1}}),
     "data, a macro and a struct are file scope": ("#define SWAP(a, b) { a = b; }\ns32 D_800A1234 = 4;\nstruct S {\n    s32 a;\n};\n",
                                                   {SCOPE: {"macro": 1, "placeholder": 1, "struct": 1}}),
 }
@@ -3235,7 +3440,7 @@ def self_test_bodies(check) -> None:
         repo = _repo(td)
         (repo / "src").mkdir()
         for rel in ("src/one.c", "src/two.c"):         # one name in two files: two bodies
-            (repo / rel).write_text("static void Step(void) {\nx:\n    goto x;\n}\n")
+            (repo / rel).write_text("static void Step(void) {\nx:\n    goto x; // !FAKE: the loop\n}\n")
         (repo / "src" / "boot.s").write_text("nop\n")
         _git(repo, "add", "src")
         got = debt_bodies(repo)
@@ -3245,6 +3450,92 @@ def self_test_bodies(check) -> None:
         check("debt --bodies prints each bucket", rc == 0 and "DEBT BODY src/one.c Step: goto 1\n" in out
               and "DEBT BODY src/boot.s (file scope): asm 1\n" in out
               and "DEBT BODIES 3 file(s), 2 function bodies, 2 with debt, 1 count(s) at file scope; totals: goto 2, asm 1\n" in out, out)
+
+
+def self_test_files(check) -> None:
+    """Which files count, and the kinds that a file's text alone does not decide."""
+    for path, want in (("src/a.c", True), ("include/a.h", True), ("lib/libgte/a.c", True), ("Src/A.C", True), ("game/a.cpp", True),
+                       ("src/body.inc", True), ("src/boot.S", True), ("src/boot.asm", True), ("asm/main/a.s", False),
+                       ("tools/host.c", False), ("build/a.c", False), ("refs/x/a.c", False), (".run/a.c", False),
+                       ("src/.cache/a.c", False), ("docs/a.md", False), ("src/a.txt", False)):
+        check("a counted file: %s" % path, is_source(path) == want)
+    plumbing = '__asm__(".include \\"macro.inc\\"\\n");\n__asm__(".macro glabel label\\n.global \\\\label\\n\\\\label:\\n.endm\\n");\n'
+    check("a header's assembler directives are the stub's plumbing", file_debt("include/include_asm.h", plumbing) == {}, file_debt("include/include_asm.h", plumbing))
+    check("an instruction in a header's asm statement is assembly", file_debt("include/fast.h", '__asm__(".text\\nFast:\\n    jr $ra\\n nop\\n");\n') == {"asm": 1})
+    check("the same statements in a C file are assembly", file_debt("src/a.c", plumbing) == {"asm": 2})
+    with tempfile.TemporaryDirectory() as td:
+        repo = _repo(td)
+        put = lambda rel, text: ((repo / rel).parent.mkdir(parents=True, exist_ok=True), (repo / rel).write_text(text))  # noqa: E731
+        unmarked = C_DEBT["goto-unmarked"][0]
+        for rel in ("src/walk.c", "lib/walk.c", "asm/walk.c", "tools/walk.c", "src/func_80012344.c", "src/misc12.c"):
+            put(rel, unmarked.replace("Walk", "W_" + re.sub(r"\W", "_", rel)))
+        put("src/body.inc", "loop:\n    if (--n) goto loop;\n    return n;\n")
+        put("src/hand.asm", "nop\n")
+        os.symlink("walk.c", repo / "src" / "link.c")
+        _git(repo, "add", "-A")
+        got = debt_bodies(repo)
+        check("code in any folder counts; the splitter's and the tools' folders do not", sorted(got) == [
+            "lib/walk.c", "src/body.inc", "src/func_80012344.c", "src/hand.asm", "src/link.c", "src/misc12.c", "src/walk.c"], sorted(got))
+        check("the code of a fragment is counted in its own file", got["src/body.inc"] == {
+            SCOPE: {"goto": 1, "goto-unmarked": 1}}, got["src/body.inc"])
+        check("a file named by an address or a number", got["src/func_80012344.c"][SCOPE] == {"filename": 1}
+              and got["src/misc12.c"][SCOPE] == {"filename": 1} and SCOPE not in got["src/walk.c"], got["src/misc12.c"])
+        check("an assembly file by another suffix; a source behind a symbolic link", got["src/hand.asm"] == {SCOPE: {"asm": 1}}
+              and got["src/link.c"] == {SCOPE: {"obscured": 1}}, (got["src/hand.asm"], got["src/link.c"]))
+        put("drafts/walk.c", unmarked)
+        put("src/user.c", 'void User(s32 n) {\n#include "../drafts/walk.c"\n}\n')
+        _git(repo, "add", "-A")
+        got = debt_bodies(repo)
+        check("an include of code that the count does not read", "drafts/walk.c" not in got and got["src/user.c"] == {
+            "User": {}, SCOPE: {"obscured": 1}}, got["src/user.c"])
+        (repo / "src" / "user.c").unlink()
+        _git(repo, "add", "-A")
+        got = debt_bodies(repo)
+        _commit(repo, "the tree")
+        check("a revision holds the same files and the same link", debt_bodies(repo, tree=Tree(repo, "HEAD")) == got
+              and debt_bodies(repo, tree=Tree(repo, INDEX)) == got)
+        # the two kinds that the game counts: its lister for the work tree, its rows for a revision
+        put(RECORD, "[psxdecomp]\nversion = \"0.6.0\"\n\n[debt]\nflags = '%s tools/flags.py'\n" % sys.executable)
+        put("tools/flags.py", "print('2 reservation src/walk.c')\nprint('1 flag src/walk.c')\nprint('0 flag lib/walk.c')\nprint('a line that is no row')\n")
+        got = debt_bodies(repo)["src/walk.c"]
+        check("the game's lister gives the flags and the reservations", got[SCOPE] == {"reservation": 2, "flag": 1}, got)
+        put(BASELINE, first_baseline(repo))
+        _git(repo, "add", "-A")
+        _commit(repo, "the lister and its rows")
+        check("a revision's flags are the rows of its baseline", debt_bodies(repo, tree=Tree(repo, "HEAD"))["src/walk.c"][SCOPE]
+              == {"reservation": 2, "flag": 1} and admission(repo, Tree(repo, "HEAD"), Tree(repo))[0] == [])
+        put("tools/flags.py", "print('3 reservation src/walk.c')\n")
+        got = admission(repo, Tree(repo, "HEAD"), Tree(repo))[0]
+        check("a reservation never rises", got == [("debt", "rose outside a function with no new body: reservation src/walk.c (file "
+                                                     "scope): 2 -> 3")], got)
+        put("tools/flags.py", "import sys\nsys.exit(4)\n")
+        try:
+            debt_bodies(repo)
+            check("a lister that fails is a refusal", False)
+        except Fail as e:
+            check("a lister that fails is a refusal", "exited 4" in str(e), str(e))
+        # a fragment is the body of the functions that include it
+        put("tools/flags.py", "print('2 reservation src/walk.c')\nprint('1 flag src/walk.c')\n")
+        frag = "    s32 v = *(s32 *)(obj + 4);\n    if (v) {\n        return v;\n    }\n    return 0;\n"
+        put("src/shared/body.inc.c", frag)
+        put("src/unit.c", 'INCLUDE_ASM("asm/nonmatchings/unit", One);\nINCLUDE_ASM("asm/nonmatchings/unit", Two);\n')
+        _git(repo, "add", "-A")
+        _commit(repo, "two stubs")
+        judge = lambda: admission(repo, Tree(repo, "HEAD"), Tree(repo, None, untracked=True))[0]  # noqa: E731
+        put("src/unit.c", 's32 One(u8 *obj) {\n#include "shared/body.inc.c"\n}\nINCLUDE_ASM("asm/nonmatchings/unit", Two);\n')
+        put("src/shared/body.inc.c", frag)
+        check("a fragment's statements are no hidden code", "obscured" not in debt_bodies(repo, tree=Tree(repo, None, untracked=True))["src/shared/body.inc.c"][SCOPE])
+        check("a new body may bring its fragment", judge() == [], judge())
+        _git(repo, "add", "-A")
+        _commit(repo, "one body and its fragment")
+        put("src/shared/body.inc.c", frag.replace("return 0;", "return *(s32 *)(obj + 8);"))
+        got = judge()
+        check("a fragment of a body that exists never gets worse", got == [("debt", "rose in a fragment of a body that is not new: offset "
+              "src/shared/body.inc.c (a fragment that src/unit.c One includes): 1 -> 2")], got)
+        put("src/unit.c", 's32 One(u8 *obj) {\n#include "shared/body.inc.c"\n}\ns32 Two(u8 *obj) {\n#include "shared/body.inc.c"\n}\n')
+        check("also when a new body includes it too", len(judge()) == 1, judge())
+        put("src/shared/body.inc.c", frag)
+        check("a new body may include a fragment as it is", judge() == [], judge())
 
 
 def self_test_tree(check) -> None:
@@ -3446,7 +3737,7 @@ def self_test_gate(check) -> None:
             staged = lambda: (_git(repo, "add", "-A"), gate("staged"))[1]  # noqa: E731
             undo = lambda: (_git(repo, "reset", "-q", "--hard", "HEAD"), _git(repo, "clean", "-q", "-fd"))  # noqa: E731
             # the baseline: a row written by hand, a policy line taken out, a new skip line
-            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
+            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
             put(BASELINE, base_text.replace("1 goto src/walk.c", "2 goto src/walk.c"))
             rc, out = staged()
             check("gate: a row written by hand admits nothing", rc == 1 and "GATE FAIL debt: rose in an existing body: goto "
@@ -3536,7 +3827,7 @@ def self_test_gate(check) -> None:
             rc, out = staged()
             check("gate: a later tool is accepted, and it judges the tree", rc == 0 and "GATE INFO tools/psxd_floor.py: version "
                   "%s -> 99.0.0" % VERSION in out and out.endswith("GATE OK by the later tool (staged)\n"), out)
-            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
+            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
             rc, out = staged()
             check("gate: a later tool beside a refused change does not take over", rc == 1 and "by the later tool" not in out
                   and "rose in an existing body" in out, out)
@@ -3572,7 +3863,7 @@ def self_test_gate(check) -> None:
             _capture(cmd_debt, repo, update=True)
             _git(repo, "add", "-A")
             _commit(repo, "the body leaves")
-            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
+            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;"))
             _capture(cmd_debt, repo, update=True)
             _git(repo, "add", "-A")
             _commit(repo, "the body is back, worse")
@@ -3580,7 +3871,7 @@ def self_test_gate(check) -> None:
             check("gate --ci: a body that left and came back worse fails as the range", rc == 1 and out.count("GATE FAIL") == 2
                   and "GATE FAIL debt: %s..%s: rose in an existing body: goto src/walk.c Walk: 1 -> 2" % (
                       _rev(repo, "HEAD~2")[:10], _rev(repo, "HEAD")[:10]) in out, out)
-            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;\n    goto loop;"))
+            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;\n    // !FAKE: again\n    goto loop;"))
             put(BASELINE, (repo / BASELINE).read_text().replace("2 goto src/walk.c", "3 goto src/walk.c"))
             _git(repo, "add", "-A")
             _commit(repo, "a commit that no hook saw")
@@ -3601,7 +3892,7 @@ def self_test_gate(check) -> None:
             undo()
             good = _rev(repo, "HEAD~1")
             _git(repo, "checkout", "-q", "--orphan", "fresh", good)
-            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;\n    goto loop;\n    goto loop;"))
+            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;\n    // !FAKE: again\n    goto loop;\n    // !FAKE: again\n    goto loop;"))
             put(BASELINE, (repo / BASELINE).read_text().replace("2 goto src/walk.c", "4 goto src/walk.c").replace("mode asm down", "mode asm admit-new"))
             _git(repo, "add", "-A")
             _commit(repo, "a history of one commit")
@@ -3757,6 +4048,7 @@ def self_test() -> int:
         self_test_plan(check)
         self_test_debt(check)
         self_test_bodies(check)
+        self_test_files(check)
         self_test_tree(check)
         self_test_trials(check)
         self_test_gate(check)

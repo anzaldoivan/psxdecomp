@@ -27,7 +27,7 @@ OFFSET_CAST = re.compile(rf"\*\s*{PTR}\s*\(\s*{PTR}\s*{OPND}\s*\+\s*{OFFX}\s*\)|
 ABS_ADDRESS = re.compile(r"\(\s*[A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)*\s*(?:\*\s*)+\)\s*0[xX][0-9A-Fa-f]{5,}")
 DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(\w+)((?:\\\n|[^\n])*)", re.M)
 KINDS = {
-    "register-pin": (re.compile(r'\bregister\b[^;{}]*?\b(?:asm|__asm__)\s*\(\s*"'),
+    "register-pin": (re.compile(r'\bregister\b[^;{}]*?\b(?:asm|__asm__|__asm)\s*\(\s*"'),
                      "a pinned register: find the C that allocates it, or mark the line `// !FAKE:` with the reason"),
     "goto": (re.compile(r"\bgoto\s+\w+\s*;"), "a goto: write the loop or the branch it stands for"),
     "offset-cast": (OFFSET_CAST, "a field read by its offset: use the struct's field, or propose the field"),

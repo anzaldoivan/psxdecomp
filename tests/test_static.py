@@ -960,9 +960,10 @@ def test_debt_kinds(tmp_path):
     bl = floor.parse_baseline(floor.first_baseline(repo))
     want = {(k, "src/%s.c" % kind): n for kind, (_, got) in floor.C_DEBT.items() for k, n in got.items()}
     assert bl.rows == want and bl.skip == [] and len(bl.head) == len(floor.BASELINE_HEAD), bl.rows   # no stub header here: no skip line
-    assert {k for k, _ in bl.rows} == set(floor.KINDS) - {"unbased"} and not bl.lacks()
-    assert bl.summary() == "down: pin-unmarked, asm, unbased; budget: pin 30, goto 12; admit-new: offset, address, macro, " \
-                           "placeholder, struct"
+    assert {k for k, _ in bl.rows} == set(floor.KINDS) - {"unbased", "filename", "flag", "reservation"} and not bl.lacks()
+    assert bl.summary() == "down: pin-unmarked, goto-unmarked, barrier, barrier-unmarked, asm, obscured, unbased, reservation; " \
+                           "budget: pin 30, goto 12; admit-new: offset, address, cast, field, macro, placeholder, " \
+                           "placeholder-use, struct, extern, filename, flag"
     (repo / "config").mkdir()
     (repo / floor.BASELINE).write_text(floor.first_baseline(repo))
     r = _floor("debt", "--repo", repo)
@@ -1025,7 +1026,7 @@ def test_gate_modes(tmp_path):
     nothing to be judged against. `gate --ci` judges the same history afterwards."""
     repo = _gate_repo(tmp_path)
     git = lambda *a, cwd=repo, check=True: run(["git", "-C", cwd, "-c", "commit.gpgsign=false", *a], check=check)  # noqa: E731
-    worse = floor.C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;")
+    worse = floor.C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;")
     start = git("rev-parse", "HEAD").stdout.strip()
     (repo / "src/a.c").write_text(worse)                                        # never staged: `commit -a` stages it
     for form in (("commit", "-qam", "worse"), ("commit", "-qm", "worse", "--", "src/a.c")):
@@ -1174,7 +1175,7 @@ def test_debt_baseline_command(tmp_path):
     `--raise` is refused in an agent session. `--down` is one way."""
     repo = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], "src/stubs.c": _stubs("Run")})
     debt = lambda *a, **kw: _floor("debt", "--repo", repo, *a, **kw)  # noqa: E731
-    base, more = repo / floor.BASELINE, floor.C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;")
+    base, more = repo / floor.BASELINE, floor.C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    // !FAKE: again\n    goto loop;")
     r = debt()
     assert r.returncode == 1 and "DEBT FAIL no %s" % floor.BASELINE in r.stdout, r.stdout
     assert debt("--update").returncode == 1 and not base.exists()
