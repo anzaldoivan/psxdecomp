@@ -8,6 +8,9 @@
     floor.py debt [--staged | --rev REV] [--against BASE]
                                           count the index or the revision REV in the work tree's place (no checkout);
                                           --against: print each count that differs from the count at the revision BASE
+    floor.py debt --bodies [--staged | --rev REV]
+                                          the same counts by function body: one `DEBT BODY <path> <function>` line per
+                                          body with debt, `(file scope)` for what no body holds; no check
     floor.py debt --update [--admit]      rewrite the baseline to the counts of now; a rise needs `mode admit` and --admit
     floor.py debt --down                  switch the baseline to `mode down`, one way: from then on no rise is admitted
     floor.py names [--init] [--repo DIR]  check config/names.tsv and config/asm-evidence.tsv; --init writes their header lines
@@ -51,6 +54,7 @@ file-scope `__asm__` statement of a header are not debt either.
 from __future__ import annotations
 
 import argparse
+import bisect
 import fnmatch
 import hashlib
 import json
@@ -604,14 +608,15 @@ def strip(text: str) -> str:
     return _STRIP.sub(blank, text)
 
 
+def _address_at(text: str) -> list[int]:
+    """Where the address literals of a text start. `0x80000000` is the sign mask as well, so it counts only behind a
+    pointer cast."""
+    return [m.start() for m in ADDRESS.finditer(text)
+            if not (SIGN_BIT.fullmatch(m.group(0)) and not re.search(r"\*\s*\)\s*\(?\s*$", text[:m.start()]))]
+
+
 def _addresses(text: str) -> int:
-    """The address literals of a text. `0x80000000` is the sign mask as well, so it counts only behind a pointer cast."""
-    n = 0
-    for m in ADDRESS.finditer(text):
-        if SIGN_BIT.fullmatch(m.group(0)) and not re.search(r"\*\s*\)\s*\(?\s*$", text[:m.start()]):
-            continue
-        n += 1
-    return n
+    return len(_address_at(text))
 
 
 def _macros(body: str, known=None) -> dict[str, str]:
@@ -638,48 +643,130 @@ def _macros(body: str, known=None) -> dict[str, str]:
     return out
 
 
+def _use_rx(names) -> re.Pattern | None:
+    return re.compile(r"\b(?:%s)\b" % "|".join(map(re.escape, sorted(names)))) if names else None
+
+
 def _uses(names, text: str) -> int:
-    return len(re.findall(r"\b(?:%s)\b" % "|".join(map(re.escape, sorted(names))), text)) if names else 0
+    rx = _use_rx(names)
+    return len(rx.findall(text)) if rx else 0
 
 
-def file_debt(rel: str, text: str, shared=None, based=None, address_header=ADDRESS_HEADER) -> dict[str, int]:
-    """The counts of one C file or header, by kind (zero counts left out). `shared`: the offset and address macros of
-    the headers. `based`: the names with a ledger row, or None before the ledger exists."""
+BRACE = re.compile(r"[{}]")
+STUB_USE = re.compile(r"^[ \t]*INCLUDE_ASM\s*\(", re.M)
+SCOPE = ""                                             # the name of a file's bucket for what no function body holds
+
+
+def extents(code: str) -> list[tuple[str, int, int]]:
+    """[(name, start, end)] of the function bodies of a stripped text, in order. A body starts at a definition in
+    column 0 (DEF_FUNC) and ends behind its matching brace. A definition inside an open body is dropped. Two heads
+    with nothing between them but space are one body (an `#if` that chooses the head: the directives are blank
+    here). A body whose braces never close ends at the next definition in column 0. What no body holds is the
+    file's own scope: a K&R definition and a definition by a macro are read as that scope."""
+    heads = [m for m in DEF_FUNC.finditer(code) if m.group(1) not in NOT_A_NAME]
+    out, i = [], 0
+    while i < len(heads):
+        m, j = heads[i], i + 1
+        opened = m.end() - 1
+        while j < len(heads) and not code[opened + 1:heads[j].start()].strip():
+            opened = heads[j].end() - 1                # another head of the same body
+            j += 1
+        depth, end = 0, None
+        for brace in BRACE.finditer(code, opened):
+            depth += 1 if brace.group() == "{" else -1
+            if depth == 0:
+                end = brace.end()
+                break
+        if end is None:
+            end = heads[j].start() if j < len(heads) else len(code)
+        while j < len(heads) and heads[j].start() < end:
+            j += 1
+        out.append((m.group(1), m.start(), end))
+        i = j
+    return out
+
+
+_SCANS: dict[tuple, dict] = {}                         # one scan per text and context: a range of commits repeats most
+
+
+def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -> dict:
+    """One C file or header, read once. `hits`: [(kind, position)] of every kind but `unbased`. `extents`: its
+    function bodies. `funcs`: {name: position} of the functions it defines under a name that is no placeholder.
+    `stubs`: its INCLUDE_ASM lines. `shared`: the offset and address macros of the headers."""
+    key = (hashlib.sha1(text.encode("utf-8", "replace")).digest(), rel.startswith("include/"), rel.endswith(".c"),
+           rel == address_header, tuple(sorted((shared or {}).items())))
+    if key in _SCANS:
+        return _SCANS[key]
     body = strip(text)
     code = PREPROC.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), body)
     raw = text.split("\n")
     macros = dict(shared or {})
     macros.update(_macros(body, macros))
-    defines = [m.group(2) for m in DEFINE.finditer(body) if m.group(1) not in ("M2C_FIELD",) + STUB_MACROS]
-    got = dict.fromkeys(KINDS, 0)
+    defines = [m for m in DEFINE.finditer(body) if m.group(1) not in ("M2C_FIELD",) + STUB_MACROS]
+    hits: list[tuple[str, int]] = []
     pins = list(PIN.finditer(code))
-    got["pin"] = len(pins)
     for m in pins:
+        hits.append(("pin", m.start()))
         at = code.count("\n", 0, m.end())                              # the line of `asm("`, counted from 0
         if not any("!FAKE:" in raw[i] for i in (at - 1, at) if 0 <= i < len(raw)):
-            got["pin-unmarked"] += 1
-    got["goto"] = len(GOTO.findall(code))
+            hits.append(("pin-unmarked", m.start()))
+    hits += [("goto", m.start()) for m in GOTO.finditer(code)]
     # each read in the code, each read that a macro's own body holds, and each use of such a macro
-    got["offset"] = (len(OFFSET.findall(code)) + sum(len(OFFSET.findall(d)) for d in defines)
-                     + _uses([k for k, v in macros.items() if v == "offset"], code))
+    hits += [("offset", m.start()) for m in OFFSET.finditer(code)]
+    hits += [("offset", d.start()) for d in defines for _ in OFFSET.findall(d.group(2))]
+    rx = _use_rx([k for k, v in macros.items() if v == "offset"])
+    hits += [("offset", m.start()) for m in rx.finditer(code)] if rx else []
     if rel != address_header:
-        got["address"] = (_addresses(code) + sum(_addresses(d) for d in defines)
-                          + _uses([k for k, v in macros.items() if v == "address"], code))
-    got["macro"] = sum(1 for m in DEFINE.finditer(body) if m.group(1) not in STUB_MACROS
-                       and re.search(r"[{;]|\\\n", m.group(2)))
+        hits += [("address", at) for at in _address_at(code)]
+        hits += [("address", d.start()) for d in defines for _ in _address_at(d.group(2))]
+        rx = _use_rx([k for k, v in macros.items() if v == "address"])
+        hits += [("address", m.start()) for m in rx.finditer(code)] if rx else []
+    hits += [("macro", m.start()) for m in DEFINE.finditer(body) if m.group(1) not in STUB_MACROS
+             and re.search(r"[{;]|\\\n", m.group(2))]
     spans = [(m.start(), m.end()) for m in pins]
     header_scope = rel.startswith("include/")          # a header's file-scope asm statement is the stub's plumbing
-    got["asm"] = sum(1 for m in INLINE_ASM.finditer(code) if not any(a <= m.start() < b for a, b in spans)
-                     and not (header_scope and code.count("{", 0, m.start()) == code.count("}", 0, m.start())))
+    hits += [("asm", m.start()) for m in INLINE_ASM.finditer(code) if not any(a <= m.start() < b for a, b in spans)
+             and not (header_scope and code.count("{", 0, m.start()) == code.count("}", 0, m.start()))]
     if not rel.startswith("include/"):
-        got["struct"] = len(STRUCT.findall(code))
+        hits += [("struct", m.start()) for m in STRUCT.finditer(code)]
+    funcs: dict[str, int] = {}
     if rel.endswith(".c"):
-        funcs = {m.group(1) for m in DEF_FUNC.finditer(code)} - NOT_A_NAME
-        data = {m.group(1) for m in DEF_DATA.finditer(code)}
-        got["placeholder"] = sum(1 for n in funcs | data if PLACEHOLDER.match(n))
-        if based is not None:
-            got["unbased"] = sum(1 for n in funcs if not PLACEHOLDER.match(n) and n not in based)
-    return {k: v for k, v in got.items() if v}
+        named: dict[str, int] = {}
+        for m in list(DEF_FUNC.finditer(code)) + list(DEF_DATA.finditer(code)):
+            if m.group(1) not in NOT_A_NAME or m.re is DEF_DATA:
+                named.setdefault(m.group(1), m.start())
+                if m.re is DEF_FUNC and not PLACEHOLDER.match(m.group(1)):
+                    funcs.setdefault(m.group(1), m.start())
+        hits += [("placeholder", at) for n, at in named.items() if PLACEHOLDER.match(n)]
+    _SCANS[key] = {"hits": hits, "extents": extents(code), "funcs": funcs, "stubs": len(STUB_USE.findall(code))}
+    return _SCANS[key]
+
+
+def file_bodies(rel: str, text: str, shared=None, based=None, address_header=ADDRESS_HEADER) -> dict[str, dict[str, int]]:
+    """{function name: {kind: count}} of one C file or header: every function body it holds, also one with no debt,
+    and under SCOPE what no body holds (left out when it is empty). Two bodies of one name are one entry. `based`:
+    the names with a ledger row, or None before the ledger exists."""
+    scan = scan_file(rel, text, shared, address_header)
+    hits = list(scan["hits"])
+    if based is not None:
+        hits += [("unbased", at) for n, at in scan["funcs"].items() if n not in based]
+    out: dict[str, dict[str, int]] = {name: {} for name, _, _ in scan["extents"]}
+    starts = [a for _, a, _ in scan["extents"]]
+    for kind, at in hits:
+        i = bisect.bisect_right(starts, at) - 1
+        name = scan["extents"][i][0] if i >= 0 and at < scan["extents"][i][2] else SCOPE
+        got = out.setdefault(name, {})
+        got[kind] = got.get(kind, 0) + 1
+    return out
+
+
+def file_debt(rel: str, text: str, shared=None, based=None, address_header=ADDRESS_HEADER) -> dict[str, int]:
+    """The counts of one C file or header, by kind (zero counts left out): the sum of its bodies and its scope."""
+    got: dict[str, int] = {}
+    for counts in file_bodies(rel, text, shared, based, address_header).values():
+        for kind, n in counts.items():
+            got[kind] = got.get(kind, 0) + n
+    return {k: got[k] for k in KINDS if got.get(k)}
 
 
 def is_source(path: str) -> bool:
@@ -729,9 +816,10 @@ def read_tsv(path, columns, tree: Tree | None = None) -> tuple[list[dict] | None
     return rows, errs
 
 
-def debt_counts(repo, skip=(), tree: Tree | None = None) -> dict[tuple[str, str], int]:
-    """{(kind, path): count} over the tracked src/ and include/ files that no `skip` entry covers. `tree`: the source
-    to count (default: the work tree of `repo`). The ledgers and the record are read from the same source."""
+def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, dict[str, int]]]:
+    """{path: {function name: {kind: count}}} over the tracked src/ and include/ files that no `skip` entry covers:
+    every function body of every C file (also one with no debt), and under SCOPE what no body holds. `tree`: the
+    source to count (default: the work tree of `repo`). The ledgers and the record are read from the same source."""
     tree = tree or Tree(repo)
     files = [p for p in tree.paths if is_source(p) and not any(entry_match(e, p) for e in skip)]
     header = address_header(tree)
@@ -746,18 +834,27 @@ def debt_counts(repo, skip=(), tree: Tree | None = None) -> dict[tuple[str, str]
         size = len(shared)
         for body in heads:
             shared.update(_macros(body, shared))
-    out: dict[tuple[str, str], int] = {}
+    out: dict[str, dict[str, dict[str, int]]] = {}
     for p in files:
         if texts[p] is None:
             continue
         if p.endswith((".s", ".S")):
-            got = {} if p in evidence else {"asm": 1}
-        else:
-            got = file_debt(p, texts[p], shared, based, header)
-            if p in evidence:
+            out[p] = {} if p in evidence else {SCOPE: {"asm": 1}}
+            continue
+        out[p] = file_bodies(p, texts[p], shared, based, header)
+        if p in evidence:
+            for got in out[p].values():
                 got.pop("asm", None)
-        for kind, n in got.items():
-            out[(kind, p)] = n
+    return out
+
+
+def debt_counts(repo, skip=(), tree: Tree | None = None, bodies=None) -> dict[tuple[str, str], int]:
+    """{(kind, path): count}: the sum of each file's bodies and scope (`bodies`: a result of debt_bodies)."""
+    out: dict[tuple[str, str], int] = {}
+    for p, by in (debt_bodies(repo, skip, tree) if bodies is None else bodies).items():
+        for got in by.values():
+            for kind, n in got.items():
+                out[(kind, p)] = out.get((kind, p), 0) + n
     return out
 
 
@@ -832,6 +929,29 @@ def debt_against(repo, counts: dict, skip, base: str) -> list[str]:
     up = sum(counts.get(k, 0) > old.get(k, 0) for k in keys)
     return out + ["DEBT INFO against %s: totals there: %s (%d count(s) rose, %d fell)" % (
         base, _totals(old), up, len(out) - up)]
+
+
+def cmd_bodies(repo, source: str | None = None) -> int:
+    """`debt --bodies`: the counts of each function body and of each file's scope, one line per bucket with debt."""
+    try:
+        skip = parse_baseline(Tree(repo, source).read(BASELINE))[1]
+        bodies = debt_bodies(repo, skip, Tree(repo, source))
+    except Fail as e:
+        print("DEBT FAIL %s" % e)
+        return 1
+    n = with_debt = at_scope = 0
+    for p in sorted(bodies):
+        for name in sorted(bodies[p]):
+            got = bodies[p][name]
+            n += name != SCOPE
+            if got:
+                with_debt += name != SCOPE
+                at_scope += sum(got.values()) if name == SCOPE else 0
+                print("DEBT BODY %s %s: %s" % (p, name or "(file scope)", ", ".join(
+                    "%s %d" % (k, got[k]) for k in KINDS if got.get(k))))
+    print("DEBT BODIES %d file(s), %d function bodies, %d with debt, %d count(s) at file scope; totals: %s" % (
+        len(bodies), n, with_debt, at_scope, _totals(debt_counts(repo, bodies=bodies))))
+    return 0
 
 
 def cmd_debt(repo, update=False, admit=False, down=False, source: str | None = None, against: str | None = None) -> int:
@@ -1528,6 +1648,60 @@ def self_test_debt(check) -> None:
         check("names: a wrong header", _capture(cmd_names, repo)[0] == 1)
 
 
+C_BODIES = {
+    "two plain bodies": ("s32 A(void *p) {\n    return *(s32 *)(p + 4);\n}\n\nvoid B(void) {\nx:\n    goto x;\n}\n",
+                         {"A": {"offset": 1}, "B": {"goto": 1}}),
+    "a K&R definition is file scope": ("s32 A(p)\nvoid *p;\n{\n    return *(s32 *)(p + 4);\n}\nvoid B(void) {\n}\n",
+                                        {SCOPE: {"offset": 1}, "B": {}}),
+    "a definition by a macro is file scope": ("HANDLER(A) {\nx:\n    goto x;\n}\nvoid B(void) {\n}\n",
+                                               {SCOPE: {"goto": 1}, "B": {}}),
+    "an #if with two heads is one body": ("#ifdef VERSION_JP\ns32 A(s32 a) {\n#else\ns32 A(void) {\n#endif\nx:\n"
+                                          "    goto x;\n}\nvoid B(void) {\ny:\n    goto y;\n}\n", {"A": {"goto": 1}, "B": {"goto": 1}}),
+    "an `else if` in column 0 opens no body": ("void A(s32 a) {\n    if (a) {\n    }\nelse if (a == 2) {\nx:\n    goto x;\n"
+                                               "    }\n}\n", {"A": {"goto": 1}}),
+    "a body beside its stub": ("#ifndef NON_MATCHING\nINCLUDE_ASM(\"asm/nonmatchings/a\", func_80012344);\n#else\n"
+                               "s32 func_80012344(s32 a) {\nx:\n    goto x;\n}\n#endif\n", {"func_80012344": {"goto": 1, "placeholder": 1}}),
+    "braces that never close end at the next definition": (
+        "void A(s32 a) {\n#ifdef X\n    if (a) {\n#else\n    if (!a) {\n#endif\nx:\n        goto x;\n    }\n}\n"
+        "void B(void) {\ny:\n    goto y;\n}\n", {"A": {"goto": 1}, "B": {"goto": 1}}),
+    "two bodies of one name are one entry": ("void A(void) {\nx:\n    goto x;\n}\nstruct S {\n    s32 a;\n};\n"
+                                             "void A(s32 b) {\ny:\n    goto y;\n}\n", {"A": {"goto": 2}, SCOPE: {"struct": 1}}),
+    "data, a macro and a struct are file scope": ("#define SWAP(a, b) { a = b; }\ns32 D_800A1234 = 4;\nstruct S {\n    s32 a;\n};\n",
+                                                  {SCOPE: {"macro": 1, "placeholder": 1, "struct": 1}}),
+}
+
+
+def self_test_bodies(check) -> None:
+    for name, (text, want) in C_BODIES.items():
+        got = file_bodies("src/a.c", text)
+        check("bodies: " + name, got == want, got)
+    stubs = scan_file("src/a.c", C_BODIES["a body beside its stub"][0])["stubs"]
+    check("bodies: the stub lines of a file are counted", stubs == 1, stubs)
+    for name, text in [(k, t) for k, (t, _) in C_DEBT.items()] + [(k, t) for k, (t, _) in C_BODIES.items()] + [("clean", C_CLEAN)]:
+        for rel, based in (("src/a.c", None), ("src/a.c", set()), ("include/a.h", None)):
+            total: dict[str, int] = {}
+            for got in file_bodies(rel, text, based=based).values():
+                for kind, n in got.items():
+                    total[kind] = total.get(kind, 0) + n
+            check("bodies: the sum of a file's bodies is its count: %s (%s)" % (name, rel), total == file_debt(rel, text, based=based), total)
+    check("bodies: an unbased name counts in its own body", file_bodies("src/a.c", C_BODIES["two plain bodies"][0], based={"A"})
+          == {"A": {"offset": 1}, "B": {"goto": 1, "unbased": 1}})
+    with tempfile.TemporaryDirectory() as td:
+        repo = _repo(td)
+        (repo / "src").mkdir()
+        for rel in ("src/one.c", "src/two.c"):         # one name in two files: two bodies
+            (repo / rel).write_text("static void Step(void) {\nx:\n    goto x;\n}\n")
+        (repo / "src" / "boot.s").write_text("nop\n")
+        _git(repo, "add", "src")
+        got = debt_bodies(repo)
+        check("bodies: one name in two files is two bodies; an assembly file is file scope", got == {
+            "src/one.c": {"Step": {"goto": 1}}, "src/two.c": {"Step": {"goto": 1}}, "src/boot.s": {SCOPE: {"asm": 1}}}, got)
+        rc, out = _capture(cmd_bodies, repo)
+        check("debt --bodies prints each bucket", rc == 0 and "DEBT BODY src/one.c Step: goto 1\n" in out
+              and "DEBT BODY src/boot.s (file scope): asm 1\n" in out
+              and "DEBT BODIES 3 file(s), 2 function bodies, 2 with debt, 1 count(s) at file scope; totals: goto 2, asm 1\n" in out, out)
+
+
 def self_test_tree(check) -> None:
     with tempfile.TemporaryDirectory() as td:
         repo = _repo(td)
@@ -1705,6 +1879,7 @@ def self_test() -> int:
     try:
         self_test_plan(check)
         self_test_debt(check)
+        self_test_bodies(check)
         self_test_tree(check)
         self_test_toolchain(check)
         self_test_guard(check)
@@ -1728,6 +1903,7 @@ def main(argv=None) -> int:
     ap.add_argument("--staged", action="store_true", help="debt: count the index")
     ap.add_argument("--rev", help="debt: count this revision")
     ap.add_argument("--against", metavar="BASE", help="debt: report the counts that differ from this revision's")
+    ap.add_argument("--bodies", action="store_true", help="debt: the counts of each function body, no check")
     ap.add_argument("--self-test", action="store_true")
     args = sys.argv[1:] if argv is None else list(argv)
     if args[:1] == ["guard"]:                          # a hook: no flag, a wrong flag or a missing one never blocks a call
@@ -1745,6 +1921,8 @@ def main(argv=None) -> int:
     if a.cmd == "debt":
         if a.staged and a.rev:
             ap.error("debt: --staged or --rev, not both")
+        if a.bodies:
+            return cmd_bodies(a.repo, INDEX if a.staged else a.rev)
         return cmd_debt(a.repo, update=a.update, admit=a.admit, down=a.down,
                         source=INDEX if a.staged else a.rev, against=a.against)
     if a.cmd == "names":

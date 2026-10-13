@@ -711,7 +711,7 @@ def test_floor_is_vendorable():
     hook and the debt count give one result on a python3 that has none."""
     text = (ROOT / "scripts/floor.py").read_text()
     mods = set(re.findall(r"^\s*(?:import|from) ([\w.]+)", text, re.M))
-    assert mods == {"__future__", "argparse", "contextlib", "fnmatch", "hashlib", "io", "json", "os", "pathlib", "re", "signal",
+    assert mods == {"__future__", "argparse", "bisect", "contextlib", "fnmatch", "hashlib", "io", "json", "os", "pathlib", "re", "signal",
                     "subprocess", "sys", "tempfile", "time"}, mods
     assert floor.VENDORED == "tools/psxd_floor.py"
     assert len(floor.LADDER) == 11 and [r[0] for r in floor.LADDER] == list(range(11))
@@ -961,6 +961,30 @@ def test_debt_kinds(tmp_path):
     _floor("names", "--init", "--repo", repo)                           # the ledger exists: every other name is unbased
     r = _floor("debt", "--repo", repo)
     assert r.returncode == 1 and "DEBT FAIL rise unbased src/clean.c: 1, its row is 0\n" in r.stdout, r.stdout
+
+
+def test_debt_bodies(tmp_path):
+    """The counts by function body: on every C fixture of this repository the sum of a file's bodies is its count,
+    each file of the corpus is one body, and a pin, a goto and an offset read never fall outside a body.
+    `debt --bodies` prints the buckets of a revision as well."""
+    files = sorted((ROOT / "fixtures").glob("**/*.c")) + sorted((ROOT / "fixtures").glob("**/*.h"))
+    assert len(files) > 100
+    for f in files:
+        text, total = f.read_text(), {}
+        bodies = floor.file_bodies("src/t.c", text, based=set())
+        for got in bodies.values():
+            for kind, n in got.items():
+                total[kind] = total.get(kind, 0) + n
+        assert total == floor.file_debt("src/t.c", text, based=set()), f
+        assert not set(bodies.get(floor.SCOPE, {})) & {"pin", "pin-unmarked", "goto", "offset", "asm"}, (f, bodies)
+        if f.suffix == ".c":
+            assert len([n for n in bodies if n != floor.SCOPE]) == 1, (f, sorted(bodies))
+    repo = _style_repo(tmp_path, {"src/a.c": floor.C_BODIES["two plain bodies"][0]})
+    (repo / "src/a.c").write_text(floor.C_CLEAN)
+    r = _floor("debt", "--bodies", "--rev", "HEAD", "--repo", repo)
+    assert r.returncode == 0 and "DEBT BODY src/a.c A: offset 1\nDEBT BODY src/a.c B: goto 1\n" in r.stdout, r.stdout
+    assert "DEBT BODIES 1 file(s), 2 function bodies, 2 with debt, 0 count(s) at file scope" in r.stdout
+    assert "DEBT BODIES 1 file(s), 1 function bodies, 0 with debt" in _floor("debt", "--bodies", "--repo", repo).stdout
 
 
 def test_debt_against_rev(tmp_path):
