@@ -944,6 +944,9 @@ def raw_keywords(text: str) -> list[tuple[str, int]]:
 
 
 LINE_MARK = re.compile(r'^#(?:line)?[ \t]+(\d+)[ \t]+"((?:[^"\\\n]|\\.)*)"[ \t\d]*$', re.M)
+# A source may not write a line marker of its own (`#line 9 "other.c"`, `# 9 "other.c"`, also with a digraph or a
+# trigraph for the hash): the count gives each construct the file and the line that the preprocessor reports.
+LINE_DIRECTIVE = re.compile(r"^[ \t]*(?:#|%:|\?\?=)[ \t]*(?:line\b|\d)", re.M)
 CPP_SECONDS = 120                                    # one unit; a preprocessor that hangs is a failure
 CPP_CACHE = "psxd-cpp-cache.json"                    # in the repository's git folder: what each unit gave, by what it read
 _cpp_cache_on = True                                 # a push and CI trust no file of this machine: they run every unit
@@ -1062,7 +1065,7 @@ def compiler_view(repo, tree: "Tree", cmd: str) -> dict[str, list[tuple[str, int
     C file that no `#include "…"` names is run first, the files that the line markers name are collected, and each C
     file not seen yet is run on its own, so the preprocessor decides what was covered and no pattern does. Of one
     line of one file, the most that one unit holds counts. A unit that the command cannot preprocess raises Fail: a
-    judge that cannot read passes nothing. Each unit's result is kept beside the files it read (their blobs), so a
+    judge that cannot read passes nothing. So does a file with a line directive of its own. Each unit's result is kept beside the files it read (their blobs), so a
     change costs the units that it touches."""
     if ("view", cmd) in tree.memo:
         return tree.memo[("view", cmd)]
@@ -1155,6 +1158,11 @@ def compiler_view(repo, tree: "Tree", cmd: str) -> dict[str, list[tuple[str, int
     if failed:
         raise Fail("`[floor] cpp` (`%s`) cannot preprocess %d unit(s) of %s: %s%s" % (
             cmd, len(failed), source_name(tree.source), failed[0], " and %d more" % (len(failed) - 1) if len(failed) > 1 else ""))
+    forged = [f for f in sorted(seen | set(units)) if "line" in (whole.read(f) or "") or re.search(r"(?:#|%:|\?\?=)\s*\\?\s*\d", whole.read(f) or "")]
+    forged = [f for f in forged if LINE_DIRECTIVE.search(uncommented(whole.read(f)).replace("\\\n", "").replace("??/\n", ""))]
+    if forged:
+        raise Fail("%s%s holds a line directive (`#line`, or `#` and a number): a source that names its own file and line "
+                   "would decide where the count puts its constructs" % (forged[0], " (and %d more)" % (len(forged) - 1) if len(forged) > 1 else ""))
     if store is not None and fresh != held:
         try:                                           # the units of this run and of the one before: a base and a head
             keep = dict(list(held.items())[-20000:], **fresh)
@@ -3844,6 +3852,15 @@ def self_test_view(check) -> None:
                   "src/alone.c: src/alone.c:1: fatal error: gone.h" in str(e), str(e))
         rc, out = _capture(cmd_debt, repo)
         check("debt: and it says so", rc == 1 and "DEBT FAIL `[floor] cpp`" in out, out)
+        for name, text in (("#line", '#line 3 "src/shared/body.c"\n'), ("a number behind a digraph, a comment and a splice", "/* x */ %: \\\n 3 \"src/shared/body.c\"\n")):
+            put("src/alone.c", "s32 Alone(s32 n) {\nagain:\n%s    if (n--) goto again;\n    return n;\n}\n" % text)
+            try:
+                debt_counts(repo)
+                check("the view: a source with a line directive (%s) is a refusal" % name, False)
+            except Fail as e:
+                check("the view: a source with a line directive (%s) is a refusal" % name, "src/alone.c holds a line directive" in str(e), str(e))
+        put("src/alone.c", "s32 Alone(s32 n) {\n    return n; /* # 3 and #line in a comment, and a baseline of 3 */\n}\n")
+        check("the view: the words in a comment are no directive", debt_counts(repo) is not None)
         put("src/alone.c", "s32 Alone(s32 n) {\n    return n;\n}\n")
         put(RECORD, cpp.replace(sys.executable, "/nowhere/psxd-no-such-cpp"))
         try:

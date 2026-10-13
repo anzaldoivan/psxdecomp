@@ -180,6 +180,7 @@ The tool reads four kinds in the text that the compiler gets. These are the kind
 - A macro, a line splice or a digraph hides nothing there. An `#include` of any file hides nothing either.
 - The output holds `# <line> "<file>"` markers. Each construct counts at the file and the line that hold it.
 - Do not give `-P` to the command. That option removes the markers.
+- A source holds no line directive of its own, such as `#line`. The check fails on a file that holds one.
 - The host's `cc -E` with the same flags reads the same text. Name a command that each machine of the project has.
 - A unit that the command cannot preprocess fails the check. So does a command that the machine lacks.
 - The tool keeps the result of each unit in the git folder, so a change costs the units that read a changed file.
