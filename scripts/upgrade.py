@@ -469,8 +469,8 @@ def plan(repo: pathlib.Path) -> list[dict]:
         if old and not [h for h in hooks if common.hook_kind(h[1]) == key]:
             add("psxdecomp", "%s: write the current command of %d hook group(s) in %s hooks where the older one stands "
                 "(psxdecomp's profiles/psx/hooks.json)" % (key, len(old), common.SETTINGS),
-                "a hook command ends in `|| exit 0`, and the guard has a time limit: a hook that cannot start or "
-                "that hangs never stops a call", key)
+                "the style hook never stops a call, and the guard fails closed: a guard that cannot start, that fails "
+                "or that hangs refuses the call it guards", key)
     for key, reason in (("style-hook", "an agent session reads the writing findings of a public file right after it "
                          "writes one"),
                         ("guard-hook", "an agent session is refused an edit of a generated or frozen file before it "
@@ -1206,7 +1206,7 @@ def self_test_style(repo: pathlib.Path) -> bool:
     own = {"matcher": "Bash", "hooks": [{"type": "command", "command": "true"}]}
     want = json.loads(common.read(common.PROFILE_HOOKS))["hooks"]["PostToolUse"]
     pre = json.loads(common.read(common.PROFILE_HOOKS))["hooks"]["PreToolUse"]
-    ok = len(pre) == 1 and pre[0]["hooks"][0]["command"].endswith(" guard --hook || exit 0")
+    ok = len(pre) == 1 and pre[0]["hooks"][0]["command"].endswith(" guard --hook") and pre[0]["hooks"][0]["onFailure"] == "block"
     mine = dict(json.loads(settings.read_text()), hooks={"Stop": [own], "PostToolUse": [own]}, model="m")
     settings.write_text(json.dumps(mine, indent=2) + "\n")
     ok &= rat.is_file() and acts()["style-hook"]["owner"] == "psxdecomp" and acts()["guard-hook"]["owner"] == "psxdecomp"

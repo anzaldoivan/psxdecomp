@@ -72,12 +72,14 @@ edits a file. The hook reads `config/guard.tsv`. psxdecomp writes that file once
 | `pattern` | For `bash`, a regular expression that the hook searches in the command. For `path`, an entry in the syntax of `config/public-paths.txt`. |
 | `say` | The text that the session reads when the hook refuses the call. Name the command to run in its place. |
 
-- The hook never stops a call by accident. A missing file, a bad row or bad input lets the call run. A pattern that
-  runs for 5 seconds lets the call run too.
+- The hook fails closed. A hook that cannot start, that fails, or that runs out of time refuses the call.
+- A pattern that runs for 5 seconds refuses the call too. A checkout with no `config/guard.tsv` has no rule.
+- The settings give the hook `"onFailure": "block"` for that. It needs Claude Code 2.1.295 or later.
 - The hook reads the rules of the checkout that the call changes. A linked worktree is guarded by its own copy.
 - The `guard` row of the doctor fails on a `bash` pattern that matches the empty command. Such a pattern refuses
   every command.
 - The default rows refuse an edit of `asm/`, of the hash files and of the two baselines.
+- Two default rows refuse a commit that skips the commit hook (`-n`, `--no-verify`) and a change of `core.hooksPath`.
 - `.claude/settings.json` also holds an `Edit(...)` deny rule for each of those paths. It stops a shell redirection too.
 - Add a row when a session must not run a command raw, such as a new split. The file holds two examples.
 
@@ -89,6 +91,7 @@ edits a file. The hook reads `config/guard.tsv`. psxdecomp writes that file once
 |---|---|---|
 | `roadmap` | the plan exists | the roadmap checks above |
 | `guard` | always | the hook groups in `.claude/settings.json`, and a `config/guard.tsv` that parses |
+| `git-hooks` | the game holds the gate | the three git hooks of this clone, where git looks for hooks |
 | `gate` | phase 1.3 is closed | one gate command, and at least one `config/check.*.sha` |
 | `toolchain` | phase 1.4 is closed | `docs/ops/compiler-pin.md`, and a `config/toolchain.tsv` with every row at its pin |
 | `names` | phase 1.4 is closed | the two ledgers, each with its header line. A names row that points at nothing is a warning. |

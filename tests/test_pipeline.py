@@ -81,7 +81,7 @@ def test_s10_writes_the_deny_rules_and_doctor_checks_them(game, tmp_path):
     handoff commit (still 9 commits); doctor's `deny` row is OK, and FAILs on a copy that lacks one rule."""
     want = json.loads((ROOT / "profiles/psx/deny.json").read_text())["permissions"]["deny"]
     have = json.loads((game / ".claude/settings.json").read_text())["permissions"]["deny"]
-    assert set(want) <= set(have) and len(have) > len(want) and len(want) == 23, have
+    assert set(want) <= set(have) and len(have) > len(want) and len(want) == 29, have
     assert run(["git", "-C", game, "status", "--porcelain", ".claude/settings.json"]).stdout == ""
     assert run(["git", "-C", game, "ls-files", ".claude/settings.json"]).stdout.strip()
     assert len(run(["git", "-C", game, "log", "--oneline"]).stdout.splitlines()) == 9
@@ -97,7 +97,7 @@ def test_s10_writes_the_deny_rules_and_doctor_checks_them(game, tmp_path):
     conf["permissions"]["deny"].remove(want[0])
     (bad / ".claude/settings.json").write_text(json.dumps(conf))
     r = run([PY, ROOT / "scripts/doctor.py", "--repo", bad, "--offline"], check=False)
-    assert r.returncode == 1 and re.search(r"DOCTOR deny\s+FAIL\s+1 of 23", r.stdout), r.stdout
+    assert r.returncode == 1 and re.search(r"DOCTOR deny\s+FAIL\s+1 of 29", r.stdout), r.stdout
 
 
 def test_ladder_matches_kit(kit):
@@ -267,10 +267,10 @@ def test_s10_writes_the_guard_beside_the_style_hook(game, tmp_path):
     assert r.returncode == 0 and json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny", r.stdout
     r = hook(game, file_path=str(game / "src/a.c"))
     assert (r.returncode, r.stdout) == (0, ""), (r.stdout, r.stderr)
-    bare = tmp_path / "bare"                                    # no vendored tool: python3 fails, the command exits 0
+    bare = tmp_path / "bare"                                    # no vendored tool: python3 fails, and the guard fails closed
     bare.mkdir()
     r = hook(bare, file_path=str(bare / "asm/a.s"))
-    assert (r.returncode, r.stdout) == (0, ""), (r.returncode, r.stdout)
+    assert r.returncode != 0 and r.stdout == "" and pre[0]["hooks"][0]["onFailure"] == "block", (r.returncode, r.stdout)
     assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
 
 

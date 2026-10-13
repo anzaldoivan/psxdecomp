@@ -2173,8 +2173,8 @@ PATH_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path
 
 
 def parse_guard(text: str | None) -> list[tuple[str, str, str, str]]:
-    """The rules of a guard file, in order: (deny|allow, bash|path, pattern, say). A line that is no rule is skipped:
-    the guard never fails on its own file (`guard_errors` names such lines for the doctor)."""
+    """The rules of a guard file, in order: (deny|allow, bash|path, pattern, say). A line that is no rule is skipped
+    (`guard_errors` names such lines for the doctor)."""
     rules = []
     for line in lines(text):
         cells = [c.strip() for c in line.split("\t")]
@@ -2233,7 +2233,7 @@ GUARD_SECONDS = 5
 
 
 class _Slow(BaseException):
-    """The guard ran out of time (a pattern that backtracks): the call runs."""
+    """The guard ran out of time (a pattern that backtracks): the call is refused."""
 
 
 def guard_roots(event: dict) -> list[pathlib.Path]:
@@ -2258,11 +2258,15 @@ def guard_roots(event: dict) -> list[pathlib.Path]:
 
 
 def guard_hook(stdin=None) -> int:
-    """`guard --hook`: print the hook's JSON answer when a rule denies the call. It never fails: bad JSON, no
-    repository, no rules file, a pattern that runs for GUARD_SECONDS or any other failure prints nothing, and the
-    exit code is always 0 (the call runs)."""
+    """`guard --hook`: print the hook's JSON answer when a rule denies the call. It fails closed: an event it cannot
+    read, a rule that runs for GUARD_SECONDS or any other failure of its own denies the call and says why. A checkout
+    with no rules file has nothing to guard, and its calls run. The exit code is 0: the JSON decides."""
     def slow(*_):
         raise _Slow()
+
+    def deny(say: str) -> None:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                 "permissionDecisionReason": "psxd guard (%s): %s" % (GUARD, say)}}))
 
     alarm = hasattr(signal, "SIGALRM")
     try:
@@ -2270,18 +2274,20 @@ def guard_hook(stdin=None) -> int:
             signal.signal(signal.SIGALRM, slow)
             signal.alarm(GUARD_SECONDS)
         event = json.loads((stdin or sys.stdin).read())
+        if not isinstance(event, dict):
+            raise ValueError("the event is no JSON object")
         for root in guard_roots(event):
             text = _read(root / GUARD)
             if text is None:                           # a checkout with no rules file: the next one speaks
                 continue
             say = guard_decision(event, parse_guard(text), root)
             if say:
-                print(json.dumps({"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                    "permissionDecisionReason": "psxd guard (%s): %s" % (GUARD, say)}}))
+                deny(say)
             break
-    except (Exception, _Slow):                         # a hook that fails must not stop the session
-        pass
+    except _Slow:
+        deny("a rule ran for %d seconds, so the guard refuses the call: a pattern of %s backtracks without end" % (GUARD_SECONDS, GUARD))
+    except Exception as e:                             # a guard that cannot judge a call refuses it
+        deny("the guard failed on this call (%s: %s), so it refuses it" % (type(e).__name__, " ".join(str(e).split())[:120]))
     finally:
         if alarm:
             signal.alarm(0)
@@ -4547,12 +4553,16 @@ def self_test_guard(check) -> None:
         answer = json.loads(out)["hookSpecificOutput"] if out else {}
         check("guard --hook: a denial is one JSON object, exit 0", rc == 0 and answer.get("permissionDecision") == "deny"
               and answer.get("hookEventName") == "PreToolUse" and "asm/ is generated" in answer.get("permissionDecisionReason", ""), out)
-        for name, stdin in (("an allowed call", json.dumps(cases[3][1])), ("bad JSON", "{not json"), ("no event", ""),
-                            ("a list", "[1]"), ("null", "null"), ("an input that is no object", json.dumps({"tool_name": "Edit", "tool_input": "x"})),
-                            ("a path that is a number", json.dumps({"tool_name": "Edit", "tool_input": {"file_path": 7}, "cwd": str(root)})),
-                            ("a path with a NUL", json.dumps({"tool_name": "Edit", "tool_input": {"file_path": "asm/a\0.s"}, "cwd": str(root)})),
-                            ("an event with no cwd", json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}}))):
+        for name, stdin in (("an allowed call", json.dumps(cases[3][1])), ("an event with no cwd", json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}})),
+                            ("another tool", json.dumps({"tool_name": "Read", "tool_input": {"file_path": "asm/a.s"}, "cwd": str(root)}))):
             check("guard --hook: %s prints nothing, exit 0" % name, _capture(guard_hook, io.StringIO(stdin)) == (0, ""))
+        for name, stdin in (("bad JSON", "{not json"), ("no event", ""), ("a list", "[1]"), ("null", "null"),
+                            ("an input that is no object", json.dumps({"tool_name": "Edit", "tool_input": "x"})),
+                            ("a path that is a number", json.dumps({"tool_name": "Edit", "tool_input": {"file_path": 7}, "cwd": str(root)})),
+                            ("a path with a NUL", json.dumps({"tool_name": "Edit", "tool_input": {"file_path": "asm/a\0.s"}, "cwd": str(root)}))):
+            rc, out = _capture(guard_hook, io.StringIO(stdin))
+            check("guard --hook: %s is refused: the guard fails closed" % name, rc == 0 and '"permissionDecision": "deny"' in out
+                  and ("the guard failed on this call" in out or "asm/ is generated" in out), out)
         # a linked worktree is guarded by its own rules, also while the session's project is the main checkout
         (root / "README.md").write_text("x\n")
         _commit(root, "rules")
@@ -4568,7 +4578,7 @@ def self_test_guard(check) -> None:
             check("guard --hook: a call from outside a checkout falls back to the project", rc == 0 and '"deny"' in out, out)
             os.environ.pop("CLAUDE_PROJECT_DIR", None)
             _git(root, "worktree", "remove", "--force", str(tree))
-        # a pattern that backtracks without end: the hook gives up and the call runs
+        # a pattern that backtracks without end: the hook gives up and refuses the call
         global GUARD_SECONDS
         keep, GUARD_SECONDS = GUARD_SECONDS, 1
         (root / GUARD).write_text("deny\tbash\t(\\w+\\s*)+$\tNo.\n")
@@ -4577,7 +4587,8 @@ def self_test_guard(check) -> None:
         t0 = time.time()
         got = _capture(guard_hook, io.StringIO(json.dumps(slow)))
         GUARD_SECONDS = keep
-        check("guard --hook: a pattern that hangs is cut off, exit 0", got == (0, "") and time.time() - t0 < 4, (got, time.time() - t0))
+        check("guard --hook: a pattern that hangs is cut off, and the call is refused", got[0] == 0 and '"deny"' in got[1]
+              and "a rule ran for 1 seconds" in got[1] and time.time() - t0 < 4, (got, time.time() - t0))
         check("guard: a path through `..` is the file it reaches", guard_decision(
             ev("Edit", file_path=str(root / "src/../asm/main/a.s")), rules, root) is not None)
         check("guard: no flag, and a flag that is no flag, exit 0", _capture(main, ["guard"])[0] == 0

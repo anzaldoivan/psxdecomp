@@ -7,6 +7,8 @@ deny	path	config/check.*.sha	The build writes the hash files. A new baseline is 
 deny	path	config/medium.sha1	The hashes of the disc are fixed. Only another dump changes them, and the developer decides that.
 deny	path	config/debt-baseline.txt	Run `python3 tools/psxd_floor.py debt --update`. It writes this file.
 deny	path	config/style-ratchet.txt	Run `python3 tools/psxd_publish.py style --update`. It writes this file.
+deny	bash	\bgit\b[^;&|]*\bcommit\b[^;&|]*\s(?:--no-verify\b|-[a-mo-zA-Z]*n[a-zA-Z]*(?=\s|$))	The commit hook runs the gate of this repository. Commit with it.
+deny	bash	core\.hooks[Pp]ath	The git hooks of this repository run the gate. Do not point git at another folder.
 # Two examples. Each game has its own targets: remove the `#` and set the pattern. The hook searches the pattern in
 # the whole command, so it also refuses a command that only mentions the words.
 # deny	bash	\bmake\b[^;&|]*\bexpected\b	Ask the developer before you write a new baseline.

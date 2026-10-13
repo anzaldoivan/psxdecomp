@@ -670,9 +670,7 @@ def test_style_profile_files():
     assert set(group["matcher"].split("|")) == {"Write", "Edit", "Bash"}, group["matcher"]
     assert [h["type"] for h in group["hooks"]] == ["command"], group["hooks"]
     cmd = group["hooks"][0]["command"]
-    assert cmd.startswith("python3 ") and cmd.endswith(" style --hook || exit 0"), cmd
-    for groups in conf["hooks"].values():           # every hook of the profile: one that cannot start never disturbs a call
-        assert all(h["command"].endswith(" || exit 0") for g in groups for h in g["hooks"]), groups
+    assert cmd.startswith("python3 ") and cmd.endswith(" style --hook || exit 0"), cmd   # a report that cannot start disturbs no call
     assert '"$CLAUDE_PROJECT_DIR/%s"' % publish.VENDORED in cmd and publish.VENDORED == "tools/psxd_publish.py", cmd
     assert common.PROFILE_STE == ROOT / "profiles/psx/rules/STE1.md"
     rule = common.PROFILE_STE.read_text()
@@ -767,33 +765,37 @@ def test_vendored_tools_run_alone(tmp_path):
         assert r.returncode == 0 and r.stderr == "", (tool, r.stderr[-400:])
 
 
-def test_hook_commands_never_fail(tmp_path):
-    """Each hook command of the profile, run by a shell as Claude Code runs it, exits 0 when it cannot do its work:
-    with no tool in the repository yet, and with a tool that cannot start (a Python that lacks a module it needs)."""
+def test_hook_commands_when_they_cannot_work(tmp_path):
+    """The two hook commands of the profile, run by a shell as Claude Code runs them, when they cannot do their work:
+    with no tool in the repository yet, and with a tool that cannot start (a Python that lacks a module it needs).
+    The style hook reports, so it exits 0 and disturbs no call. The guard fails closed: it exits with an error, and
+    its `"onFailure": "block"` makes Claude Code refuse the call (observed headless on 2.1.296: exit 1, a command
+    that cannot start and a timeout all block with that field, and none does without it)."""
     conf = json.loads((ROOT / "profiles/psx/hooks.json").read_text())["hooks"]
-    cmds = [h["command"] for groups in conf.values() for g in groups for h in g["hooks"]]
+    style, guard = conf["PostToolUse"][0]["hooks"][0], conf["PreToolUse"][0]["hooks"][0]
+    assert guard["onFailure"] == "block" and "onFailure" not in style and "|| exit 0" not in guard["command"]
     env = dict(os.environ, CLAUDE_PROJECT_DIR=str(tmp_path), PATH=os.path.dirname(PY) + os.pathsep + os.environ["PATH"])
-    for cmd in cmds:
-        r = subprocess.run(cmd, shell=True, input="{}", capture_output=True, text=True, env=env)
-        assert r.returncode == 0, (cmd, r.stderr)                       # no tools/ folder: the tool is not there
+    ran = lambda hook: subprocess.run(hook["command"], shell=True, input="{}", capture_output=True, text=True, env=env)  # noqa: E731
+    assert ran(style).returncode == 0 and ran(guard).returncode != 0    # no tools/ folder: the tool is not there
     (tmp_path / "tools").mkdir()
     for name in (floor.VENDORED, publish.VENDORED):
         (tmp_path / name).write_text("import a_module_this_python_lacks\n")
-    for cmd in cmds:
-        r = subprocess.run(cmd, shell=True, input="{}", capture_output=True, text=True, env=env)
-        assert r.returncode == 0, (cmd, r.stderr)
+    assert ran(style).returncode == 0 and ran(guard).returncode != 0
+    (tmp_path / floor.VENDORED).write_bytes((ROOT / "scripts/floor.py").read_bytes())
+    r = ran(guard)                                                      # the tool is there, and the event names no call: it runs
+    assert (r.returncode, r.stdout) == (0, ""), (r.stdout, r.stderr)
 
 
 def test_hook_groups_by_kind(tmp_path):
     """.claude/settings.json and the profile's hooks: a group is present by its kind, so a game that set its own
     interpreter keeps its command and is asked for nothing. A group that holds what an earlier psxdecomp wrote (the
-    style command with no `|| exit 0`, the guard with no time limit and the earlier matcher) is stale: the settings
+    style command with no `|| exit 0`, the guard that ended in `|| exit 0`, the earlier matcher) is stale: the settings
     write replaces it where it stands and adds no second group."""
     prof = json.loads((ROOT / "profiles/psx/hooks.json").read_text())["hooks"]
     old = {"hooks": {
         "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "true"}]},
                         {"matcher": "Write|Edit|Bash", "hooks": [{"type": "command", "command": common.HOOK_BEFORE["style-hook"][0][0]}]}],
-        "PreToolUse": [{"matcher": "Bash|Edit|Write", "hooks": [{"type": "command", "command": prof["PreToolUse"][0]["hooks"][0]["command"]}]}]},
+        "PreToolUse": [{"matcher": "Bash|Edit|Write", "hooks": [{"type": "command", "command": common.HOOK_BEFORE["guard-hook"][0][0]}]}]},
         "permissions": {"deny": json.loads(common.read(common.PROFILE_DENY))["permissions"]["deny"]}}
     (tmp_path / ".claude").mkdir()
     settings = tmp_path / common.SETTINGS
@@ -1353,8 +1355,8 @@ def test_debt_agrees_with_the_corpus_lint():
 
 def test_guard_hook_output(tmp_path):
     """`floor.py guard --hook` as a PreToolUse hook: a denied call is one JSON object on stdout with the rule's text,
-    exit code 0. An allowed call, bad JSON, no event, and a repository with no rules file print nothing, exit code 0:
-    the guard never stops a session by failing."""
+    exit code 0. An allowed call and a repository with no rules file print nothing, exit code 0. An event that the
+    guard cannot read (bad JSON, no event) is refused: the guard fails closed."""
     rules = "action\ttool\tpattern\tsay\ndeny\tpath\tasm/\tasm/ is generated\ndeny\tbash\tmake +expected\task first\n"
     repo = _style_repo(tmp_path, {"config/guard.tsv": rules, "src/a.c": "x\n"})
     ev = lambda tool, **inp: json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": inp,  # noqa: E731
@@ -1366,11 +1368,13 @@ def test_guard_hook_output(tmp_path):
         out = json.loads(r.stdout)["hookSpecificOutput"]
         assert out["hookEventName"] == "PreToolUse" and out["permissionDecision"] == "deny", out
         assert want in out["permissionDecisionReason"] and "config/guard.tsv" in out["permissionDecisionReason"], out
-    silent = {"an allowed edit": ev("Edit", file_path=str(repo / "src/a.c")), "an allowed command": ev("Bash", command="ls"),
-              "bad JSON": "{not json", "no event": ""}
+    silent = {"an allowed edit": ev("Edit", file_path=str(repo / "src/a.c")), "an allowed command": ev("Bash", command="ls")}
     for name, stdin in silent.items():
         r = _floor("guard", "--hook", cwd=tmp_path, stdin=stdin)
         assert (r.returncode, r.stdout) == (0, ""), (name, r.stdout, r.stderr)
+    for name, stdin in {"bad JSON": "{not json", "no event": ""}.items():      # an event it cannot read: the guard fails closed
+        r = _floor("guard", "--hook", cwd=tmp_path, stdin=stdin)
+        assert r.returncode == 0 and '"permissionDecision": "deny"' in r.stdout and "the guard failed on this call" in r.stdout, (name, r.stdout)
     (repo / "config/guard.tsv").unlink()
     r = _floor("guard", "--hook", cwd=tmp_path, stdin=ev("Edit", file_path=str(repo / "asm/a.s")))
     assert (r.returncode, r.stdout) == (0, ""), r.stdout
@@ -1394,28 +1398,36 @@ def test_delivery_table():
 
 def test_guard_profile_files():
     """The guard as the profile ships it. hooks.json: one PreToolUse group for Bash, Edit and Write whose command runs
-    the vendored `guard --hook` and ends in `|| exit 0`, so a hook that cannot start never blocks a call. guard.tsv:
-    the header line, five default `path` rules that parse, two examples as comments. deny.json: one `Edit(/...)` rule
-    per default path, in Claude Code's rule syntax (a leading `/` is the project root)."""
+    the vendored `guard --hook` and fails closed (`"onFailure": "block"`, no `|| exit 0`). guard.tsv: the header line,
+    five default `path` rules and two `bash` rules for the commit hook that parse, two examples as comments.
+    deny.json: one `Edit(/...)` rule per default path, in Claude Code's rule syntax (a leading `/` is the project
+    root), and the rules that keep a session from a commit with no hook."""
     conf = json.loads((ROOT / "profiles/psx/hooks.json").read_text())["hooks"]["PreToolUse"]
     assert len(conf) == 1 and len(conf[0]["hooks"]) == 1, conf
     assert set(conf[0]["matcher"].split("|")) == {"Bash"} | set(floor.PATH_TOOLS), conf[0]["matcher"]   # every tool the guard reads
     assert 0 < conf[0]["hooks"][0]["timeout"] <= 30 and floor.GUARD_SECONDS < conf[0]["hooks"][0]["timeout"], conf
     cmd = conf[0]["hooks"][0]["command"]
-    assert cmd == 'python3 "$CLAUDE_PROJECT_DIR/%s" guard --hook || exit 0' % floor.VENDORED, cmd
+    assert cmd == 'python3 "$CLAUDE_PROJECT_DIR/%s" guard --hook' % floor.VENDORED and conf[0]["hooks"][0]["onFailure"] == "block", cmd
     assert common.hook_kind(conf[0]) == "guard-hook"
     post = json.loads((ROOT / "profiles/psx/hooks.json").read_text())["hooks"]["PostToolUse"][0]
     assert common.hook_kind(post) == "style-hook"
     text = common.PROFILE_GUARD.read_text()
     rules = floor.parse_guard(text)
     assert floor.guard_errors(text) == [] and "\t".join(floor.GUARD_COLUMNS) in text.splitlines()
-    assert [r[:2] for r in rules] == [("deny", "path")] * 5 and all(r[3] for r in rules), rules
+    assert [r[:2] for r in rules] == [("deny", "path")] * 5 + [("deny", "bash")] * 2 and all(r[3] for r in rules), rules
     assert len([l for l in text.splitlines() if l.startswith("# deny\tbash\t")]) == 2
-    paths = [r[2] for r in rules]
+    said = lambda cmd: floor.guard_decision({"tool_name": "Bash", "tool_input": {"command": cmd}}, rules, ROOT)  # noqa: E731
+    for cmd in ("git commit -n -m x", "git commit -anm x", "git -C . commit --no-verify -m x", "git commit -m x -n",
+                "git config core.hooksPath /tmp/h", "git -c core.hookspath=/dev/null commit -m x"):
+        assert said(cmd), cmd                                           # a commit that skips the hook, and a move of the hooks
+    for cmd in ("git commit -m 'the bank'", "git commit --amend --no-edit", "git commit -am x", "git log -n 3", "git commit -S -m x"):
+        assert said(cmd) is None, cmd
+    paths = [r[2] for r in rules if r[1] == "path"]
     assert paths == ["asm/", "config/check.*.sha", "config/medium.sha1", floor.BASELINE, publish.STYLE_RATCHET_REL]
     deny = json.loads((ROOT / "profiles/psx/deny.json").read_text())["permissions"]["deny"]
     edits = [r for r in deny if r.startswith("Edit(")]
     assert edits == ["Edit(/%s)" % (p + "**" if p.endswith("/") else p) for p in paths], edits
+    assert {"Bash(git commit -n *)", "Bash(git commit * -n)", "Bash(* --no-verify *)", "Bash(*core.hooksPath*)"} <= set(deny)
 
 
 def test_floor_doc_names_the_ladder():

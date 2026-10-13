@@ -62,7 +62,7 @@ import publish  # noqa: E402
 NETWORK_ROWS = ("progress", "github", "dev-ci", "private-repo", "public-standard")
 SPLIT_ROWS = ("private-repo", "public-standard")
 ROWS = ("record", "sdk", "pa3", "pa3-drift", "python", "kit", "roadmap", "gate", "toolchain", "names", "debt", "cpp",
-        "readme", "publish-tool", "deny", "guard", "split-guard",
+        "readme", "publish-tool", "deny", "guard", "git-hooks", "split-guard",
         "categories", "ignore", "audit", "fixture", "refs", "refs-ignored", "hygiene", "card") + NETWORK_ROWS
 WIDTH = max(map(len, ROWS))                     # the name column of every printed row (doctor, upgrade audit, S10)
 
@@ -152,6 +152,9 @@ def base_rows(repo: pathlib.Path, add):
     add("publish-tool", *publish_tool_row(repo))
     add("deny", *deny_row(repo))
     add("guard", *guard_row(repo))
+    hooks = git_hooks_row(repo)
+    if hooks:
+        add("git-hooks", *hooks)
     guard = split_guard_row(repo)
     if guard:
         add("split-guard", *guard)
@@ -515,13 +518,35 @@ def guard_row(repo: pathlib.Path) -> tuple[str, str]:
         return "FAIL", "%s: %s" % (floor.GUARD, "; ".join(errs[:3]))
     stale = common.hooks_stale(repo)
     if stale:
-        return "WARN", "%d hook group(s) of %s hold an older psxdecomp command (%s): a hook that cannot start, or a " \
-                       "pattern that hangs, can disturb a call — /psxdecomp:upgrade apply writes the current one" % (
+        return "WARN", "%d hook group(s) of %s hold an older psxdecomp command (%s): a guard that cannot start, or a " \
+                       "pattern that hangs, lets the call run — /psxdecomp:upgrade apply writes the current one" % (
                            len(stale), common.SETTINGS, ", ".join(sorted({common.hook_kind(g) for _, g in stale})))
     if text is None:
         return "WARN", "no %s: the guard hook allows every call — /psxdecomp:upgrade apply writes the default rules" % floor.GUARD
     return "OK", "all %d hook group(s) are in %s; %s holds %d rule(s)" % (
         want, common.SETTINGS, floor.GUARD, len(floor.parse_guard(text)))
+
+
+def git_hooks_row(repo: pathlib.Path) -> tuple[str, str] | None:
+    """The three git hooks that run the gate at a commit and at a push are psxdecomp's, where git looks for hooks. A
+    hook is no tracked file, so each clone needs them: WARN while one is missing or is another hook. FAIL when
+    `core.hooksPath` sends git to a folder whose hooks are not psxdecomp's: then no commit of this clone is judged.
+    None before the game holds a floor tool with a gate."""
+    if "\ndef cmd_gate" not in common.read(repo / floor.VENDORED) if (repo / floor.VENDORED).is_file() else True:
+        return None
+    try:
+        state = publish.hooks_state(repo)
+    except publish.Fail:
+        return None
+    bad = sorted(n for n, st in state.items() if st != "ok")
+    moved = common.git(repo, "config", "--get", "core.hooksPath", check=False).stdout.strip()
+    if not bad:
+        return "OK", "%s run the gate%s" % (", ".join(state), " (core.hooksPath = %s)" % moved if moved else "")
+    what = "; ".join("%s: %s" % (n, state[n]) for n in bad)
+    if moved:
+        return "FAIL", "core.hooksPath is %s, and the hooks there are not psxdecomp's (%s): no commit of this clone is " \
+                       "judged — `git config --unset core.hooksPath`, then `python3 %s hook --install`" % (moved, what, publish.VENDORED)
+    return "WARN", "%s — `python3 %s hook --install` writes a missing hook; another hook is merged by hand" % (what, publish.VENDORED)
 
 
 def split_guard_row(repo: pathlib.Path) -> tuple[str, str] | None:
@@ -1135,11 +1160,32 @@ def main(argv=None) -> int:
     return 1 if fails else 0
 
 
+def self_test_git_hooks() -> bool:
+    """The git-hooks row: none before the game holds the gate, WARN while a hook is missing, OK with the three, FAIL
+    when core.hooksPath sends git to a folder with other hooks."""
+    with tempfile.TemporaryDirectory() as td:
+        repo = pathlib.Path(td).resolve()
+        common.git(repo, "init", "--quiet")
+        ok = git_hooks_row(repo) is None
+        common.write(repo / floor.VENDORED, common.read(pathlib.Path(floor.__file__)))
+        first = git_hooks_row(repo)
+        ok &= first[0] == "WARN" and "pre-commit: missing" in first[1] and "hook --install" in first[1]
+        publish.install_hooks(repo)
+        ok &= git_hooks_row(repo)[0] == "OK"
+        (repo / "elsewhere").mkdir()
+        common.git(repo, "config", "core.hooksPath", str(repo / "elsewhere"))
+        moved = git_hooks_row(repo)
+        ok &= moved[0] == "FAIL" and "core.hooksPath is" in moved[1] and "no commit of this clone is judged" in moved[1]
+        print("  git-hooks: none before the gate; %s; %s; %s" % (first[0], "OK", moved[0]))
+    return ok
+
+
 def self_test() -> int:
     with tempfile.TemporaryDirectory() as td:
         common.git(td, "init", "--quiet")
         rows = dict((r[0], r[1]) for r in check(td))
     ok = rows.get("pa3") == "FAIL" and rows.get("record") == "WARN" and rows.get("audit") == "FAIL"
+    ok &= self_test_git_hooks()
     ok &= set(rows) <= set(ROWS)                                        # --only refuses a name that is not in ROWS
     ok &= rows.get("readme") == "WARN"
     with tempfile.TemporaryDirectory() as td:
@@ -1405,11 +1451,11 @@ def self_test_deny() -> bool:
     print("  deny: all %s; one removed %s; PA3-managed %s" % (full[0], short[0], managed[0]))
     print("  guard: no rules file %s; the default rules %s; a bad line %s; no guard group %s; PA3-managed %s" % (
         bare[0], good[0], bad[0], gone[0], theirs[0]))
-    ok = (bare[0] == "WARN" and good[0] == "OK" and "holds 5 rule(s)" in good[1] and bad[0] == "FAIL"
+    ok = (bare[0] == "WARN" and good[0] == "OK" and "holds 7 rule(s)" in good[1] and bad[0] == "FAIL"
           and "line 1" in bad[1] and gone[0] == "FAIL" and "1 of 2" in gone[1] and "guard-hook" in gone[1]
           and theirs[0] == "WARN")
     return (ok and full[0] == "OK" and short[0] == "FAIL" and "1 of %d" % n in short[1] and managed[0] == "WARN"
-            and allowed[0] == "FAIL" and "%d of %d" % (n, n) in allowed[1] and n == 23)
+            and allowed[0] == "FAIL" and "%d of %d" % (n, n) in allowed[1] and n == 29)
 
 
 GOOD_WORKFLOW = """name: progress

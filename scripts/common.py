@@ -312,15 +312,17 @@ def with_denies(repo: pathlib.Path, missing: list[str]) -> str:
 
 # ---- the profile's hooks (profiles/psx/hooks.json: `style --hook` after a write, `guard --hook` before a call): S10
 # writes them, upgrade adds any missing. A group is present when a group of the same event holds a hook of its kind:
-# a command with the kind's words (HOOK_KINDS), whatever interpreter the game set for it. Each command ends in
-# `|| exit 0`: a hook that cannot start (no tool yet, a Python with no tomllib) must never stop or disturb a call.
+# a command with the kind's words (HOOK_KINDS), whatever interpreter the game set for it. The style hook ends in
+# `|| exit 0`: it reports, and a report that cannot start must never disturb a call. The guard fails closed: no
+# `|| exit 0`, and `"onFailure": "block"` (Claude Code 2.1.295), so a guard that cannot start, that exits with an
+# error or that runs out of time refuses the call it guards (observed on 2.1.296, headless).
 # A group that holds a command psxdecomp wrote before (HOOK_BEFORE) is stale: upgrade writes the current one in place.
 PROFILE_HOOKS = PLUGIN_ROOT / "profiles" / "psx" / "hooks.json"
 PROFILE_GUARD = PLUGIN_ROOT / "profiles" / "psx" / "guard.tsv"
 HOOK_KINDS = (("style-hook", "style --hook"), ("guard-hook", "guard --hook"))   # (upgrade's action, the command's words)
 HOOK_BEFORE = {                                         # kind: (the commands, the matchers) of earlier versions
     "style-hook": (('python3 "$CLAUDE_PROJECT_DIR/tools/psxd_publish.py" style --hook',), ()),
-    "guard-hook": ((), ("Bash|Edit|Write",)),
+    "guard-hook": (('python3 "$CLAUDE_PROJECT_DIR/tools/psxd_floor.py" guard --hook || exit 0',), ("Bash|Edit|Write",)),
 }
 
 
