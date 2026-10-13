@@ -100,8 +100,14 @@ def copy_files(byo: pathlib.Path, probe) -> list[pathlib.Path]:
             tracks = [pathlib.Path(x["file"]) for x in probe.parse_cue(str(p)) if x.get("file")]
         except (ValueError, OSError, KeyError, TypeError):
             continue
-        files += [x for x in tracks if x.is_file() and x not in files]
-    return files
+        files += [x for x in tracks if x.is_file()]
+    seen, out = set(), []                         # a sheet may spell its track another way: one file, counted once
+    for f in files:
+        st = f.stat()
+        if (st.st_dev, st.st_ino) not in seen:
+            seen.add((st.st_dev, st.st_ino))
+            out.append(f)
+    return out
 
 
 def stated(byo: pathlib.Path, expect) -> int:
@@ -412,6 +418,14 @@ def self_test() -> int:
         finally:
             globals()["CAP"] = cap
         print("  --expect over the cap: %s" % ", ".join(sorted(names)))
+        # a folder whose sheet names its track by another spelling of the path: the track is one file, one match
+        disc = pathlib.Path(paths["cue"]).parent
+        sheet = common.read(paths["cue"])
+        common.write(paths["cue"], sheet.replace('FILE "HOMEBREW (Track 1).bin"', 'FILE "../%s/HOMEBREW (Track 1).bin"' % disc.name))
+        try:
+            ok &= stated(disc, [sha1_file(track)]) == 1 and len(copy_files(disc, identify.load_probe("psx")[1])) == 4
+        finally:
+            common.write(paths["cue"], sheet)
         # the identifiers of a report's table: the build rows only, with or without code marks
         report = ("# builds\n## Leads\n| a | b |\n## archive.org items\n"
                   "| identifier | kind (build or document) | confirmed by | file | SHA-1 |\n|---|---|---|---|---|\n"
