@@ -264,6 +264,21 @@ def upgrade_ask(c: Ctx) -> str:
     return "; pa.json upgrade: ask (commit %s)" % sha
 
 
+def settle_pa_json(c: Ctx) -> str:
+    """PA3's session-start hook writes keys of its own into .claude/pa.json (a `preset` line, PA3 3.14.2) after S6
+    committed that file, and the kit's installer refuses a tree that is not clean. When that file is the only change,
+    commit it. Any other change stays the developer's: the kit's dry run names it. Returns a note for the DONE line."""
+    if c.dry or c.git("status", "--porcelain", check=False).stdout.splitlines() != [" M .claude/pa.json"]:
+        return ""
+    try:
+        json.loads(common.read(c.p(".claude/pa.json")))
+    except ValueError:
+        return ""
+    sha = c.commit([".claude/pa.json"], "PA3's own change of .claude/pa.json (its session-start hook), committed before "
+                                        "the kit's installer")
+    return "; pa.json committed first (%s)" % sha
+
+
 PA3_GI_HEAD = "# Project Architect 3.0"
 
 
@@ -334,6 +349,7 @@ def s8_kit(c: Ctx) -> str:
     c.write(KIT_ANSWERS, answers_mod.render(kit_vals, note))
     if c.dry:
         return "would run the kit's dry run and install"
+    settled = settle_pa_json(c)
     py = c.python()
     base = [py, kit / "install.py", "--project", c.target, "--answers", c.p(KIT_ANSWERS)]
     r = common.run(base + ["--dry-run"], check=False, timeout=600)
@@ -350,8 +366,8 @@ def s8_kit(c: Ctx) -> str:
     if extra:
         c.deviation("the kit's dry run named paths its run did not write: %s" % ", ".join(extra[:6]))
     last = [l for l in r.stdout.splitlines() if l.startswith("summary:")]
-    return "%s; dry run listed %d of the %d written paths%s" % (last[0] if last else "kit installed",
-                                                               len(would & wrote), len(wrote), readme_standard(c, kit))
+    return "%s; dry run listed %d of the %d written paths%s%s" % (
+        last[0] if last else "kit installed", len(would & wrote), len(wrote), readme_standard(c, kit), settled)
 
 
 README_TEMPLATE = common.PLUGIN_ROOT / "profiles" / "psx" / "README.md.template"

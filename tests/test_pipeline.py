@@ -525,6 +525,28 @@ def test_resume_from_every_stage(toolchain, tmp_path, until):
     assert tree(target) == GOLDEN.read_text().splitlines()
 
 
+def test_s8_commits_pa3s_own_change_of_pa_json_first(toolchain, tmp_path):
+    """PA3's session-start hook writes a `preset` line into .claude/pa.json when the plain session of S7 opens. S8
+    commits that file when it is the only change, and the kit installs. Any other change still stops S8, by name."""
+    target = tmp_path / "pa-json"
+    bootstrap(toolchain, target, "--until", "S7")
+    pa = target / ".claude/pa.json"
+    text = pa.read_text()
+    assert '"upgrade": "ask",' in text
+    pa.write_text(text.replace('"upgrade": "ask",', '"upgrade": "ask",\n  "preset": "max5",', 1))
+    (target / "LICENSE").write_text((target / "LICENSE").read_text() + "\n")
+    r = bootstrap(toolchain, target, "--until", "S8", check=False)
+    assert r.returncode == 1 and "not clean" in r.stdout and "LICENSE" in r.stdout, r.stdout
+    run(["git", "-C", target, "checkout", "--", "LICENSE"])
+    r = bootstrap(toolchain, target)
+    assert "BOOTSTRAP OK through S10" in r.stdout and "pa.json committed first" in r.stdout, r.stdout
+    assert run(["git", "-C", target, "status", "--porcelain"]).stdout == ""
+    assert json.loads(run(["git", "-C", target, "show", "HEAD:.claude/pa.json"]).stdout)["preset"] == "max5"
+    log = run(["git", "-C", target, "log", "--format=%s"]).stdout.splitlines()
+    assert sum(l.startswith("PA3's own change of .claude/pa.json") for l in log) == 1, log
+    assert tree(target) == GOLDEN.read_text().splitlines()
+
+
 def test_resumed_s10_commits_the_card(toolchain, tmp_path):
     """An S10 that fails after its writes (here: doctor's fixture row) and is run again leaves nothing behind: the card
     with both of S10's lines is in the handoff commit, the tree is clean and equals the golden tree."""
