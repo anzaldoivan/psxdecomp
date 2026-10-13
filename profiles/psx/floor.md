@@ -263,10 +263,13 @@ The rule is `rules/NAME1.md`. `python3 tools/psxd_floor.py names` checks two tab
 
 - `kind` is `function`, `data`, `type`, `field`, `macro` or `file`.
 - `decision` is `accepted`, `provisional` or `rejected`. Only an accepted row clears `unbased`.
-- `names --init` writes the header line of each file. When `config/names.tsv` exists, each named function with no
-  accepted row is `unbased` debt, and `unbased` never rises. Add the rows before the ledger, or in the same commit.
+- A name is never required. A function that matches is banked and pushed under the name that it has.
+- `names --init` writes the header line of each file. When `config/names.tsv` exists, the tool counts each named
+  function with no accepted row as `unbased`. That kind is counted and shown. It refuses nothing.
 - `evidence` is `<class>:<path>:<line>`. `rules/NAME1.md` lists the classes.
-- The path is a file of the repository, and the file has that line. A row with other evidence fails.
+- The path is a file of the repository, and the file has that line.
+- A row of `config/names.tsv` with other evidence is a warning: `NAMES WARN`, and `GATE WARN names` in the gate.
+- A file that the tool cannot read as its table fails. A row of the assembly ledger that points at nothing also fails.
 - A `refs` row cites a line of a `[[ref]]` table in `config/refs.toml`, or a file under `refs/<name>/`.
 - An accepted name is a name that the source defines as the kind of the row.
 - The `class` of an assembly row is `sdk-object`, `hand-asm` or `data-in-text`.

@@ -1654,6 +1654,9 @@ def _cmd_raise(repo, bl: Baseline, raise_, reason) -> int:
 
 
 # ---- the two ledgers: names with their evidence, assembly with its reason ------------------------------------------
+# A name is never required: a function that matches is banked and pushed under the name it has, and names come later,
+# from people, tests, oracles and knowledge of the code. So a finding about a row of the names ledger is a warning.
+# Only a ledger that cannot be read fails, and so does a row of the assembly ledger, which clears a count that blocks.
 # A row is a claim, so it must point at something that a reader can open: its evidence names a file and a line that
 # the tree holds, an accepted name is one that the source defines as the row's kind, and a `refs` row cites an entry
 # of config/refs.toml. An assembly row names one function of a C file, or one assembly file. The rows that a change
@@ -1661,7 +1664,8 @@ def _cmd_raise(repo, bl: Baseline, raise_, reason) -> int:
 NAME_COLUMNS = ("kind", "image", "scope", "old_name", "new_name", "decision", "evidence", "reason")
 NAME_KINDS = ("function", "data", "type", "field", "macro", "file")
 DECISIONS = ("accepted", "provisional", "rejected")
-EVIDENCE = ("psyq-sig", "string", "xref", "loadmap", "exe-header", "prior-art", "debug-symbol", "refs")
+EVIDENCE = ("psyq-sig", "string", "xref", "loadmap", "exe-header", "prior-art", "debug-symbol", "refs",
+            "human", "test", "oracle", "debugger")   # a person's decision, a test, a second build of the game, a debugger session
 EVIDENCE_RE = re.compile(r"^(%s):([^:\s]+):(\d+)$" % "|".join(EVIDENCE))
 ASM_COLUMNS = ("image", "symbol", "path", "class", "evidence", "date", "verified_by")
 ASM_COLUMNS_OLD = ASM_COLUMNS[:6]                    # the header of psxdecomp 0.6.0 and earlier: read, and said
@@ -1746,10 +1750,12 @@ def evidence_problem(tree: Tree, path: str, line: int, refs_class: bool = False)
 
 
 def names_findings(repo, tree: Tree | None = None, base: Tree | None = None) -> list[tuple[str, str]]:
-    """[(FAIL|INFO, detail)] for the two ledgers of a tree (default: the work tree). A FAIL is a malformed file or
-    row, or a row that points at nothing: its evidence is no file and line of the tree, its accepted name is nothing
-    that the source defines as the row's kind, its assembly row names no function of its C file. `base`: the tree a
-    change starts from. The rows it holds already are not opened again, only their form is read."""
+    """[(FAIL|WARN|INFO, detail)] for the two ledgers of a tree (default: the work tree). A FAIL is a file that
+    cannot be read as its table, or a row of the assembly ledger that points at nothing (it names no function of its C
+    file, its evidence is no file and line of the tree). A WARN is a row of the names ledger that is malformed or
+    points at nothing: its evidence is no file and line of the tree, its accepted name is nothing that the source
+    defines as the row's kind. `base`: the tree a change starts from. The rows it holds already are not opened
+    again, only their form is read."""
     tree, out = tree or Tree(repo), []
     seen = {NAMES: set(), ASM_EVIDENCE: set()}
     for rel in seen if base is not None else ():
@@ -1760,7 +1766,7 @@ def names_findings(repo, tree: Tree | None = None, base: Tree | None = None) -> 
     if rows is None:
         out.append(("INFO", "no %s (`names --init` writes its header line)" % NAMES))
     else:
-        symbols = None
+        symbols, loose = None, []
         for r in rows:
             bad = []
             if r["kind"] not in NAME_KINDS:
@@ -1784,15 +1790,15 @@ def names_findings(repo, tree: Tree | None = None, base: Tree | None = None) -> 
                         other = [k for k in NAME_KINDS[:5] if name in symbols[k]]
                         bad.append("%s is %s" % (name, "a %s in the source, not a %s" % (other[0], kind) if other else
                                                  "accepted as a %s, and the source defines no such %s" % (kind, kind)))
-            errs += ["line %d: %s" % (r["_line"], b) for b in bad]
+            loose += ["line %d: %s" % (r["_line"], b) for b in bad]
         live: dict[tuple, int] = {}
         for r in rows:
             if r["decision"] != "rejected":
                 key = (r["new_name"], r["image"], r["scope"], r["kind"])
                 live[key] = live.get(key, 0) + 1
         twice = sorted({k[0] for k, n in live.items() if n > 1})
-        errs += ["%s has two rows that are not rejected" % n for n in twice]
-        out += [("FAIL", "%s: %s" % (NAMES, e)) for e in errs]
+        loose += ["%s has two rows that are not rejected" % n for n in twice]
+        out += [("FAIL", "%s: %s" % (NAMES, e)) for e in errs] + [("WARN", "%s: %s" % (NAMES, e)) for e in loose]
         by = {d: sum(r["decision"] == d for r in rows) for d in DECISIONS}
         out.append(("INFO", "%s: %d row(s): %s" % (NAMES, len(rows), ", ".join("%d %s" % (by[d], d) for d in DECISIONS))))
     rows, errs = read_tsv(ASM_EVIDENCE, ASM_COLUMNS, tree, also=(ASM_COLUMNS_OLD,))
@@ -1840,9 +1846,8 @@ def cmd_names(repo, init=False, source: str | None = None, against: str | None =
             (repo / rel).write_text("\t".join(cols) + "\n", encoding="utf-8")
             print("NAMES INIT written %s" % rel)
             if rel == NAMES:
-                print("NAMES INFO with %s in place, each named function with no accepted row is `unbased` debt, and "
-                      "`unbased` never rises: add the accepted rows of the names the source holds, then run "
-                      "`python3 %s debt --update`" % (NAMES, VENDORED))
+                print("NAMES INFO with %s in place, each named function with no accepted row is counted as `unbased`. "
+                      "A name is never required to bank or to push: run `python3 %s debt --update` for the rows" % (NAMES, VENDORED))
     try:
         tree = Tree(repo, source)
         found = names_findings(repo, tree, Tree(repo, against) if against else None)
@@ -1859,9 +1864,9 @@ def cmd_names(repo, init=False, source: str | None = None, against: str | None =
             skip = []
         unbased = sum(n for (kind, _), n in debt_counts(repo, skip, tree).items() if kind == "unbased")
         print("NAMES INFO %d function(s) defined in src/ with no accepted row" % unbased)
-    bad = sum(f[0] == "FAIL" for f in found)
-    print("NAMES %s (%d finding(s)%s)" % ("FAIL" if bad else "OK", bad, "; only the rows that are new since %s were "
-                                         "opened" % against if against else ""))
+    bad, warned = sum(f[0] == "FAIL" for f in found), sum(f[0] == "WARN" for f in found)
+    print("NAMES %s (%d finding(s), %d warning(s)%s)" % ("FAIL" if bad else "OK", bad, warned, "; only the rows that are new since "
+                                                        "%s were opened" % against if against else ""))
     return 1 if bad else 0
 
 
@@ -2595,14 +2600,16 @@ def transition(repo, base: Tree, head: Tree, online: bool = False) -> tuple[list
     return fails, infos, replaced
 
 
-def state(repo, tree: Tree, here: bool = True, base: Tree | None = None) -> list[tuple[str, str]]:
-    """[(check, detail)] for a tree as it stands: its baseline, its ledgers (`base`: the tree the change starts from,
-    whose ledger rows are not opened again), and (`here`: the work tree holds this tree) its plan, its toolchain
-    pins, its README and its category ids."""
+def state(repo, tree: Tree, here: bool = True, base: Tree | None = None) -> tuple[list[tuple[str, str]], list[str]]:
+    """([(check, detail)], the warnings) for a tree as it stands: its baseline, its ledgers (`base`: the tree the
+    change starts from, whose ledger rows are not opened again), and (`here`: the work tree holds this tree) its
+    plan, its toolchain pins, its README and its category ids. A finding about a name is a warning."""
     out = [("debt", f) for f in state_findings(repo, tree)[0]]
-    out += [("names", d) for lv, d in names_findings(repo, tree, base) if lv == "FAIL"]
+    found = names_findings(repo, tree, base)
+    out += [("names", d) for lv, d in found if lv == "FAIL"]
+    warns = ["names: %s" % d for lv, d in found if lv == "WARN"]
     if not here:
-        return out
+        return out, warns
     out += own_debt(repo, tree)
     out += [("plan", "%s: %s" % (ck, d)) for lv, ck, d in lint_plan(repo) if lv == "FAIL"]
     out += [("toolchain", "%s: %s" % (name, d)) for st, name, d in toolchain_rows(repo) or () if st == "FAIL"]
@@ -2612,7 +2619,7 @@ def state(repo, tree: Tree, here: bool = True, base: Tree | None = None) -> list
             rc, lines = _sibling_run(repo, *args, "--repo", str(repo))
             if rc:
                 out += [(check, l) for l in lines if " FAIL " in l or " ERROR " in l][:20] or [(check, "exit %d" % rc)]
-    return out
+    return out, warns
 
 
 def own_debt(repo, tree: Tree) -> list[tuple[str, str]]:
@@ -2718,7 +2725,8 @@ def cmd_gate(repo, mode: str, rng: str | None = None, part: str = "all") -> int:
             here = mode in ("staged", "bank") or _rev(repo, "HEAD") == head.source
             if not here:
                 infos.append("the work tree is not at %s: its plan, README and category ids are not read" % head.source[:10])
-            fails += state(repo, head, here, base)
+            found, more = state(repo, head, here, base)
+            fails, warns = fails + found, warns + more
             if mode in ("bank", "push") and not fails:
                 fails += game_check(repo, head)
     except Fail as e:
@@ -3254,8 +3262,8 @@ def self_test_debt(check) -> None:
         rc, out = _capture(cmd_names, repo, init=True)
         check("names --init writes the two header lines", rc == 0 and (repo / NAMES).read_text() == "\t".join(NAME_COLUMNS) + "\n"
               and (repo / ASM_EVIDENCE).read_text() == "\t".join(ASM_COLUMNS) + "\n", out)
-        check("names: every function is unbased at first", "NAMES INFO 2 function(s) defined" in out
-              and "`unbased` never rises" in out, out)
+        check("names: every function is unbased at first, and no name is required", "NAMES INFO 2 function(s) defined" in out
+              and "A name is never required to bank or to push" in out, out)
         row = "function\tmain\t\tfunc_80010000\tPlayer_Hp\taccepted\tstring:src/clean.c:4\tthe string it prints\n"
         (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + row)
         rc, out = _capture(cmd_names, repo)
@@ -3273,8 +3281,8 @@ def self_test_debt(check) -> None:
         t0 = time.time()
         found = names_findings(repo)
         check("names: two live rows of one name, and 20,000 rows in a second", time.time() - t0 < 2.0
-              and [f[1] for f in found if f[0] == "FAIL"] == ["config/names.tsv: Name0 has two rows that are not rejected"],
-              [f for f in found if f[0] == "FAIL"][:2])
+              and [f[1] for f in found if f[0] != "INFO"] == ["config/names.tsv: Name0 has two rows that are not rejected"]
+              and [f[0] for f in found if f[0] != "INFO"] == ["WARN"], [f for f in found if f[0] != "INFO"][:2])
         # a row points at something: a file and a line of the tree, a name that the source defines as the row's kind
         (repo / "include" / "types.h").write_text("#define HP_MAX 9\ntypedef struct Pair {\n    s32 first;\n} Pair;\nextern s32 g_Mode;\n")
         _git(repo, "add", "include/types.h")
@@ -3297,20 +3305,21 @@ def self_test_debt(check) -> None:
                 ("a file that the tree lacks", ("file", "src/gone.c", "string:src/clean.c:4"), "src/gone.c is accepted as a file")):
             (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + "%s\tmain\t\t\t%s\taccepted\t%s\tr\n" % cells)
             rc, out = _capture(cmd_names, repo)
-            check("names: " + name, rc == 1 and want in out and "NAMES FAIL (1 finding(s))" in out, out)
+            check("names: a warning, never a failure: " + name, rc == 0 and "NAMES WARN " in out and want in out
+                  and "NAMES OK (0 finding(s), 1 warning(s))" in out, out)
         _git(repo, "add", "config", "include")
         _git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet",
              "-m", "a row that points at nothing")
         rc, out = _capture(cmd_names, repo, against="HEAD")
         check("names --against: a row that the base holds is not opened again", rc == 0 and "only the rows that are new since HEAD" in out, out)
-        check("names --rev: the ledger of a revision", _capture(cmd_names, repo, source="HEAD")[0] == 1)
+        check("names --rev: the ledger of a revision", "NAMES WARN " in _capture(cmd_names, repo, source="HEAD")[1])
         (repo / "extracted").mkdir()                   # an ignored folder that this machine has: its files are opened
         (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + good)
         rc, out = _capture(cmd_names, repo)
-        check("names: evidence in a folder that git does not hold is opened where the folder is", rc == 1
-              and "extracted/map.txt is no file of this tree" in out, out)
+        check("names: evidence in a folder that git does not hold is opened where the folder is", rc == 0
+              and "NAMES WARN config/names.tsv: line 6: the evidence of g_Mode points at nothing: extracted/map.txt is no file of this tree" in out, out)
         (repo / "extracted" / "map.txt").write_text("x\n" * 7)
-        check("names: and it passes when the file is there", _capture(cmd_names, repo)[0] == 0)
+        check("names: and it is clean when the file is there", "NAMES WARN" not in _capture(cmd_names, repo)[1])
         # an assembly row names one function of a C file, never the file
         two = 'void A(void) {\n    __asm__("nop");\n}\nvoid B(void) {\n    __asm__("nop");\n}\n'
         (repo / "src" / "two.c").write_text(two)
@@ -3337,10 +3346,15 @@ def self_test_debt(check) -> None:
         row = "function\tmain\t\tfunc_80010000\tPlayer_Hp\taccepted\tstring:src/clean.c:4\tthe string it prints\n"
         (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + row.replace("accepted", "sure").replace("string:", "guess:"))
         rc, out = _capture(cmd_names, repo)
-        check("names: a bad decision and a bad evidence class", rc == 1 and "decision 'sure'" in out and "evidence 'guess:" in out, out)
+        check("names: a bad decision and a bad evidence class are warnings", rc == 0 and "decision 'sure'" in out and "evidence 'guess:" in out
+              and "2 warning(s)" in out, out)
+        for cls in ("human", "test", "oracle", "debugger"):
+            (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + row.replace("string:src/clean.c:4", cls + ":docs/boot.md:3"))
+            rc, out = _capture(cmd_names, repo)
+            check("names: the evidence class `%s`" % cls, rc == 0 and "NAMES WARN" not in out and "1 accepted" in out, out)
         (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + row.replace("string:src/clean.c:4", "string:"))
         rc, out = _capture(cmd_names, repo)
-        check("names: evidence with no path and no line", rc == 1 and "evidence 'string:'" in out, out)
+        check("names: evidence with no path and no line", rc == 0 and "NAMES WARN" in out and "evidence 'string:'" in out, out)
         (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + row.replace("accepted", "rejected"))
         rc, out = _capture(cmd_names, repo)
         check("names: a rejected row bases no name", rc == 0 and "NAMES INFO 2 function(s)" in out, out)
@@ -3799,6 +3813,19 @@ def self_test_gate(check) -> None:
             base_text = (repo / BASELINE).read_text()
             staged = lambda: (_git(repo, "add", "-A"), gate("staged"))[1]  # noqa: E731
             undo = lambda: (_git(repo, "reset", "-q", "--hard", "HEAD"), _git(repo, "clean", "-q", "-fd"))  # noqa: E731
+            # a name is never required: an address name, a guessed name and a provisional row with no evidence all pass
+            put("src/guess.c", "s32 func_80012344(s32 n) {\n    return n;\n}\ns32 Enemy_Think(s32 n) {\n    return n;\n}\n")
+            put(NAMES, "\t".join(NAME_COLUMNS) + "\nfunction\tmain\t\tfunc_80010000\tEnemy_Walk\tprovisional\tstring:src/gone.c:4\ta guess\n")
+            _git(repo, "add", "-A")
+            _capture(cmd_debt, repo, update=True)
+            rc, out = staged()
+            check("gate: an address name, a guessed name and a provisional row with no evidence pass, with a warning", rc == 0
+                  and "GATE WARN names: config/names.tsv: line 2: the evidence of Enemy_Walk points at nothing" in out
+                  and "1 unbased src/guess.c\n" in (repo / BASELINE).read_text() and out.endswith("GATE OK (staged)\n"), out)
+            put(NAMES, "kind\tname\n")
+            rc, out = staged()
+            check("gate: a names ledger that cannot be read fails", rc == 1 and "GATE FAIL names: config/names.tsv: line 1: the header is not" in out, out)
+            undo()
             # the baseline: a row written by hand, a policy line taken out, a new skip line
             put("src/walk.c", C_DEBT["goto"][0] + C_DEBT["pin-unmarked"][0].replace("Walk", "Run"))
             put(BASELINE, base_text.replace("1 goto src/walk.c", "1 pin src/walk.c\n1 pin-unmarked src/walk.c\n1 goto src/walk.c"))

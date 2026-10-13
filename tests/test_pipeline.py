@@ -330,21 +330,55 @@ def test_fresh_game_passes_its_gate(game):
         assert r.returncode == 1 and "GATE FAIL debt: pin-unmarked is `down` and its total rose: 0 -> 1" in r.stdout, r.stdout
     finally:
         src.unlink()
-    ledger = game / floor.NAMES                                  # a row that points at nothing fails `names` and the gate
+    ledger = game / floor.NAMES                                  # a names row that points at nothing is a warning, never a failure
     head = ledger.read_text()
     try:
         ledger.write_text(head + "function\tmain\t\t\tPlayer_Hp\taccepted\tstring:src/gone.c:4\tits string\n")
         r = run([PY, floor.VENDORED, "names"], cwd=game, check=False)
-        assert r.returncode == 1 and "NAMES FAIL %s: line 2: the evidence of Player_Hp points at nothing: src/gone.c is no " \
+        assert r.returncode == 0 and "NAMES WARN %s: line 2: the evidence of Player_Hp points at nothing: src/gone.c is no " \
             "file of this tree" % floor.NAMES in r.stdout, r.stdout
         assert "Player_Hp is accepted as a function, and the source defines no such function" in r.stdout
         run(["git", "-C", game, "add", floor.NAMES])
         r = gate("--staged")
-        assert r.returncode == 1 and "GATE FAIL names: %s: line 2: the evidence of Player_Hp points at nothing" % floor.NAMES in r.stdout
+        assert r.returncode == 0 and "GATE WARN names: %s: line 2: the evidence of Player_Hp points at nothing" % floor.NAMES in r.stdout, r.stdout
     finally:
         ledger.write_text(head)
         run(["git", "-C", game, "add", floor.NAMES])
     assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+
+
+def test_a_matched_function_is_committed_and_pushed_under_any_name(game, tmp_path):
+    """No check asks for a name. In a clone of the game with its git hooks, three functions are committed and pushed:
+    one under its address name, one under a guessed name with no row, one under a name with a `provisional` row. The
+    baseline's rows show them (`placeholder`, `unbased`), and neither the commit hook nor the push hook refuses."""
+    import floor
+    clone, remote = tmp_path / "clone", tmp_path / "remote.git"
+    git = lambda *a, check=True: run(["git", "-C", clone, "-c", "user.name=t", "-c", "user.email=t@example.invalid",  # noqa: E731
+                                      "-c", "commit.gpgsign=false", *a], check=check)
+    run(["git", "clone", "-q", game, clone])
+    run(["git", "init", "-q", "--bare", remote])
+    git("remote", "set-url", "origin", str(remote))
+    assert run([PY, "tools/psxd_publish.py", "hook", "--install"], cwd=clone, check=False).returncode == 0
+    assert all((clone / ".git/hooks" / name).is_file() for name in ("pre-commit", "pre-push"))
+    branch = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    r = git("push", "-q", "origin", branch, check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    (clone / "src").mkdir(exist_ok=True)
+    (clone / "src/names.c").write_text("s32 func_80012344(s32 n) {\n    return n + 1;\n}\n\ns32 Enemy_Think(s32 n) {\n    return n + 2;\n}\n\n"
+                                       "s32 Enemy_Walk(s32 n) {\n    return n + 3;\n}\n")
+    with open(clone / floor.NAMES, "a") as f:
+        f.write("function\tmain\t\tfunc_80012400\tEnemy_Walk\tprovisional\thuman:src/names.c:9\tit moves the enemy; one source\n")
+    git("add", "-f", "src/names.c", floor.NAMES)
+    r = run([PY, floor.VENDORED, "gate", "--bank"], cwd=clone, check=False)
+    assert r.returncode == 0 and "the rows of now written" in r.stdout, r.stdout + r.stderr
+    rows = (clone / floor.BASELINE).read_text()
+    assert "1 placeholder src/names.c\n" in rows and "2 unbased src/names.c\n" in rows, rows
+    git("add", "-A")
+    r = git("commit", "-qm", "three functions that match, named as far as anyone knows", check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = git("push", "-q", "origin", branch, check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert run(["git", "-C", remote, "rev-parse", branch]).stdout == git("rev-parse", "HEAD").stdout
 
 
 def test_trial_in_a_game(game):
