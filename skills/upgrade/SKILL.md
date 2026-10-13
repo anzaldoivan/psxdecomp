@@ -2,7 +2,7 @@
 name: upgrade
 description: Bring an existing PS1 decomp repository (one bootstrapped by hand, or one psxdecomp bootstrapped earlier) to the current psxdecomp pins — audit, plan, apply --dry-run, then apply on the developer's word. Invoked as /psxdecomp:upgrade.
 disable-model-invocation: true
-argument-hint: "[--dry-run] [--fetch] [--repo DIR]"
+argument-hint: "[--dry-run] [--fetch] [--take ACTION] [--repo DIR] | own KEY VALUE"
 ---
 
 # /psxdecomp:upgrade
@@ -38,7 +38,13 @@ PLAN 7 [manual] PA3: the repository is at 3.14.1, psxdecomp is tested on 3.14.2;
 
 Two kinds of action need a word to the developer:
 
-- An action that ends in `-edited` names a psxdecomp file that the game edited. The script never overwrites it unasked.
-  Show the difference. `apply --take <action>` overwrites the file on the developer's word.
+- An action that ends in `-edited` names a psxdecomp file or rule that the game edited. The script never overwrites
+  it unasked. Show the difference. On the developer's word run `"$PSXD" upgrade apply --take <action> --repo <repo>`,
+  where `<action>` is the name without `-edited`, as the plan line prints it. Another name is refused.
 - `own` records a tool of the game's own in `[own]` of `config/psxdecomp.toml`. psxdecomp then delivers nothing in
-  its place.
+  its place. The plan proposes a key for a path that it knows. For any other one, and for
+  `/psxdecomp:upgrade own <key> <value>`, run `"$PSXD" upgrade own <key> "<value>" --repo <repo>`. The key is one of
+  `debt`, `names`, `gate`, `toolchain`, `campaign`, `matcher`. The value is a path or a command of the repository.
+- `PLAN FAIL` or `APPLY FAIL` with "is not TOML" means that `config/psxdecomp.toml` has a typo. Nothing is written
+  until the developer repairs it. `APPLY FAIL <n> step(s)` means that a tool of the game refused one step: the other
+  writes are made, and a second apply finishes after the repair.

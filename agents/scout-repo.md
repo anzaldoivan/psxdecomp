@@ -36,12 +36,12 @@ A rule read as it runs, not as it is named. The repository is invented:
 # repo — example/sibling-decomp @ 0123abc (2026-01-15)
 Licence: MIT (LICENSE).
 ## Facts
-- Makefile:41 names the rule `cc1_263`. tools/toolchain.mk:12 downloads `gcc-2.7.2-psx.tar.gz`, and Makefile:44
-  runs that binary. The compiler that runs is gcc 2.7.2. The name of the rule says 2.6.3.
-- Makefile:52 passes `--aspsx-version=2.56` to maspsx.
+- Makefile:41 names the rule `cc1_258`. tools/toolchain.mk:12 downloads `gcc-2.7.1-psx.tar.gz`, and Makefile:44
+  runs that binary. The compiler that runs is gcc 2.7.1. The name of the rule says 2.5.8.
+- Makefile:52 passes `--aspsx-version=2.43` to maspsx.
 - symbols.us.txt: 1,204 lines (Grep count).
 ## What it changes
-- The compiler lead is gcc 2.7.2 with aspsx 2.56, not 2.6.3. It is the first rung of the 1.4 ladder, never the pin.
+- The compiler lead is gcc 2.7.1 with aspsx 2.43, not 2.5.8. It is the first rung of the 1.4 ladder, never the pin.
 ```
 
 </example>

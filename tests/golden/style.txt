@@ -9,7 +9,7 @@
 5 docs/PROFILES.md
 134 docs/PUBLISHING.md
 15 docs/REFS.md
-6 docs/RELEASING.md
+5 docs/RELEASING.md
 3 docs/assets/README.md
 10 profiles/SCHEMA.md
 1 skills/doctor/SKILL.md

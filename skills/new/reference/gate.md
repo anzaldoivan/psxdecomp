@@ -16,7 +16,7 @@ The whole view fits one screen. The game is invented:
 <example>
 
 ```
-Medium: SLUS_000.00 (SLUS-00000), PsyQ 4.3, 212 stamps, track 01 SHA-1 3f2a…c91e, Redump match: yes.
+Medium: SLUS_000.00 (SLUS-00000), PsyQ 4.0, 212 stamps, track 01 SHA-1 3f2a…c91e, Redump match: yes.
 Prior art: 3 leads, 1 dead end.
   L1 compiler triple of the sibling game (MIT, adapt, lead) — verify: the 1.4 ladder runs it first
   L2 symbol file for the USA disc (unstated, facts, lead) — verify: 12 addresses land on function starts

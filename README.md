@@ -214,7 +214,7 @@ psxdecomp builds on:
   and wrote each file fresh:
   - [parasite-eve-decomp](https://github.com/khasinski/parasite-eve-decomp) by khasinski. A debt baseline that must
     equal the tree, and one `verify` gate. An evidence record for each assembly function. A pinned toolchain that
-    refuses a patched checkout.
+    refuses a patched checkout. A definition of a finished file, apart from a matched one.
   - [kings-field-decomp](https://github.com/sushi-shi/kings-field-decomp) and its sibling projects by sushi-shi. The
     naming ledger with evidence and a decision. The bank ledger, the two budgets and the triage order.
   - [snowboardkids2-decomp](https://github.com/cdlewis/snowboardkids2-decomp) by cdlewis: hooks that refuse an edit

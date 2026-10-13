@@ -38,13 +38,13 @@ One lead and one dead end, as a report holds them. The game and the repository a
 <example>
 
 ```
-# siblings — Example Quest (SLUS-00000), 2026-01-15
+# siblings — Example Quest (2026-01-15)
 ## Leads
 | Lead | Source (owner/repo or URL) | Licence | What it gives | How to verify |
 |---|---|---|---|---|
-| The sibling game pins gcc 2.7.2 with aspsx 2.56 | example/sibling-decomp, Makefile (read 2026-01-15) | MIT (its LICENSE file) | the first rung of the compiler ladder | run this triple first in the 1.4 ladder on three leaf functions; one byte-identical probe confirms it, none refutes it |
+| The sibling game pins gcc 2.7.1 with aspsx 2.43 | example/sibling-decomp, Makefile (read 2026-01-15) | MIT (its LICENSE file) | the first rung of the compiler ladder | run this triple first in the 1.4 ladder on three leaf functions; one byte-identical probe confirms it, none refutes it |
 ## Dead ends
-- "Example Quest" symbols OR "ram map" — two forum threads, both for the Saturn release (2026-01-15)
+- "Example Studio" decompilation OR "same engine" — one fan page that lists the studio's games, with no repository (2026-01-15)
 ## Sources read
 - https://github.com/example/sibling-decomp/blob/main/Makefile (2026-01-15)
 ```

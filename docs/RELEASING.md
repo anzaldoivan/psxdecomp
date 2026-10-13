@@ -22,10 +22,16 @@
    - `config/psxdecomp.toml` holds the pins;
    - `docs/ops/refs.md` lists every fetched source with its class.
 5. GitHub settings: `python3 scripts/doctor.py --repo . --only github` must print no WARN and no SKIP. Each WARN
-   names the `gh api` command that fixes it. Run it yourself: doctor never does.
-6. Bump `.claude-plugin/plugin.json` `version`; tag `vX.Y.Z`. Never push from an agent session. Pushing the tag runs
-   `.github/workflows/release.yml`. It checks the tag against the manifest, reruns tiers 0 and 1, and drafts the
-   release. Paste the tier 2 and tier 3 results into its notes before you publish it.
+   names the `gh api` command that fixes it. Run it yourself: doctor never does. The status check that the ruleset
+   requires is the `firewall` job of `ci.yml`.
+6. Bump `.claude-plugin/plugin.json` `version` on the release branch. Never push from an agent session.
+   - Open the pull request, wait for CI, and squash-merge it.
+   - Pull `main` and tag the tip of `main` as `vX.Y.Z`. Pushing the tag runs `.github/workflows/release.yml`.
+   - That workflow refuses a tag whose commit is not on `main`. It checks the tag against the manifest, reruns tiers 0
+     and 1, and drafts the release.
+   - Paste the tier 2 and tier 3 results into the draft's notes before you publish it.
+   - Tier 1 fails when it cannot resolve a pin (no network, a digest that is not the tested one). It skips only with
+     `PSXDECOMP_ALLOW_SKIP=1`.
 
 ## Bumping a pin (PA3 or the kit)
 

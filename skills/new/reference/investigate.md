@@ -65,11 +65,11 @@ One search row sorted three ways. The game and the repositories are invented:
 <example>
 
 ```
-github.md row: example/quest-pc — "Example Quest decompilation", C, 412 stars
+github.md row: example/quest-pc | GPL-3.0 | 2026-01-10 | name | "Example Quest decompilation" | —
   README: "a native PC port built from recompiled MIPS". It is a port, so it goes to the ports agent, not to existing.
-github.md row: example/quest-symbols — symbols.us.txt, names the Redump id of the USA disc
+github.md row: example/quest-symbols | unstated | 2025-11-02 | serial | "symbol names for the USA disc" | symbols.us.txt
   It feeds a decision (a name for the evidence ladder, phase 1.2): a lead for the maps agent, class from its licence.
-github.md row: example/quest-fan-art — images only
+github.md row: example/quest-fan-art | CC-BY-4.0 | 2024-03-09 | name | "fan art" | —
   It feeds no decision: one line under Dead ends.
 ```
 

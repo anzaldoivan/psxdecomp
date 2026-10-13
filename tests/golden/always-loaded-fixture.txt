@@ -20,7 +20,7 @@
 472 .claude/commands/planphase.md
 892 .claude/commands/proceed.md
 1652 .claude/commands/thoughts.md
-2207 .claude/settings.json
+2267 .claude/settings.json
 13208 .claude/skills/project-architect/SKILL.md
 1193 CLAUDE.md
 5853 HOW_WE_WORK.md

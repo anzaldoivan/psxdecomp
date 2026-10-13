@@ -23,13 +23,13 @@ The list as of 2026-10-12. mmx5 was the first game to hold each path.
 
 | `[own]` key | Path | What psxdecomp would deliver in its place |
 |---|---|---|
-| `debt` | `tools/readability/scan.py` | the debt baseline |
-| `names` | `config/names.basis.tsv` | the names ledger |
+| `debt` | `tools/readability/scan.py` | the debt baseline, the assembly ledger and rule `FIN1` |
+| `names` | `config/names.basis.tsv` | the names ledger and rule `NAME1` |
 | `toolchain` | `tools/toolchain/fetch.sh` | the toolchain pin table |
 | `campaign` | `tools/wave/ledger.py` | the campaign templates |
 | `matcher` | `.claude/skills/wave-draft-coders` | the offered matcher skill |
 
-`gate` has no path: the developer records the gate command with `upgrade own gate "<command>"`.
+`gate` has no path: the developer records the gate command with `/psxdecomp:upgrade own gate "<command>"`.
 
 Not harvested: PA3's or the kit's own rules and cookbook entries (they go upstream to their own repositories), and
 anything derived from a game's bytes.

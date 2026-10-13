@@ -239,10 +239,10 @@ used_by  = "BFM docs/matching-cookbook.md 28a (GCC patterns, PS1-applicable subs
 name     = "parasite-eve-decomp"
 url      = "https://github.com/khasinski/parasite-eve-decomp"
 class    = "link"
-licence  = "none selected (its LICENSE.md, read 2026-10-12 at commit a357ac0c): ideas only, no text and no code"
-topics   = ["exemplar", "debt-baseline", "verify-gate", "asm-evidence", "pinned-toolchain"]
-covers   = "practice on a PS1 project (seen 2026-10-12): debt baselines that must equal the tree, one verify gate, an evidence record for each assembly function, a toolchain that refuses a patched checkout"
-used_by  = "psxdecomp 0.6.0 (2026-10-12): the equal-baseline rule of the debt check, the `make verify` convention, the dirty-checkout check of the toolchain pins"
+licence  = "none selected (its LICENSE.md, licence read 2026-10-12 at commit a357ac0c): ideas only, no text and no code"
+topics   = ["exemplar", "debt-baseline", "verify-gate", "asm-evidence", "pinned-toolchain", "finished-file"]
+covers   = "practice on a PS1 project (seen 2026-10-12): debt baselines that must equal the tree, one verify gate, an evidence record for each assembly function, a toolchain that refuses a patched checkout, a definition of a finished file apart from a matched one"
+used_by  = "psxdecomp 0.6.0 (2026-10-12): the equal-baseline rule of the debt check, the `make verify` convention, the dirty-checkout check of the toolchain pins, the idea of the finished-file rule (rules/FIN1.md, its text written fresh)"
 
 [[ref]]
 name     = "kings-field-decomp"
@@ -328,8 +328,8 @@ evidence = "BFM Phase 36 log"
 do       = "treat sotn's psxsdk headers as a project's, not Sony's; check the byo SDK"
 
 [[trap]]
-what     = "a byte-identical match proves what the code does, not what it is called: a model named a 5-to-1 autowin rule as the weaker side fleeing"
-evidence = "the author of homm2-decomp, in a public discussion (read 2026-10-12): the variables matched and their names contradicted a game rule"
+what     = "a byte-identical match proves what the code does, not what it is called: a matched function can carry a name that says another behaviour"
+evidence = "sushi-shi/homm2-decomp docs/semantic-naming-audit.md at commit 716e50b (read 2026-10-12): its audit of matched code found names that claimed a behaviour of another routine"
 do       = "record every name with its evidence in config/names.tsv; check a game term against a source in this file before it is accepted"
 
 [[trap]]

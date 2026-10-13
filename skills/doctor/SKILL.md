@@ -20,20 +20,20 @@ floor are explained in the game's `docs/ops/psxdecomp-floor.md`.
 
 | Row | Status | What it reads | Fix |
 |---|---|---|---|
-| `progress` | WARN, network | A workflow that builds a decomp.dev report: its safety lint, and whether decomp.dev lists the repository. In split mode: the public `[public].repo`. With no such workflow: WAIT before phase 1.9, FAIL once it is closed | the row names it |
+| `progress` | WAIT, WARN or FAIL (network when a report workflow exists) | A workflow that builds a decomp.dev report: its safety lint, and whether decomp.dev lists the repository. In split mode: the public `[public].repo`. With no workflow that uploads the report: WAIT before phase 1.9, WARN while it is open, FAIL once it is closed | the row names it |
 | `github` | WARN only, network | The repository's security settings through `gh api` | the `gh api` command in the row, for the developer to run |
 | `github` in split mode | FAIL | Origin, the `-dev`, is not private: dev's history is exposed | make it private |
 | `private-repo` | FAIL, network | `<game>-private` breaks a rule: public, forked, Actions on, a writable or second deploy key, another collaborator, a `private_rev` it lacks | the row names it |
 | `public-standard` | WARN, network | The public repository's drift from the standard | `settings --apply`, the developer's |
 | `dev-ci` | WARN or FAIL, network | The latest push run of each workflow on origin's default branch. WARN: one is red. FAIL: a red job is one of `[public].checks` | a green push on dev before the next release |
 | `refs` | WARN | Drift in the reference library | `"${CLAUDE_PLUGIN_ROOT}/scripts/psxd" fetch_refs --repo .` |
-| `record` | WARN | psxdecomp did not bootstrap the repository | `/psxdecomp:upgrade` |
+| `record` | WARN or FAIL | WARN: psxdecomp did not bootstrap the repository, or an `[own]` value names nothing. FAIL: `config/psxdecomp.toml` is not TOML | `/psxdecomp:upgrade`. For a FAIL the developer repairs the typo that the row names |
 | `roadmap` | FAIL, WARN or WAIT | `GENERATION_PLAN.md` against the ladder. FAIL: a broken phase line, or a ladder phase with no line. WAIT: no plan yet | `python3 tools/psxd_floor.py plan` lists the findings. The planner corrects the plan, never this skill |
 | `guard` | FAIL or WARN | A hook group of the profile is not in `.claude/settings.json`, or a line of `config/guard.tsv` is no rule | `/psxdecomp:upgrade` |
-| `gate` | WAIT, WARN or FAIL | After phase 1.3: one gate command and the hash files. FAIL once phase 1.9 is closed | a `verify` make target, or `upgrade own gate "<command>"` |
+| `gate` | WAIT, WARN or FAIL | After phase 1.3: one gate command and the hash files. FAIL once phase 1.9 is closed | a `verify` make target, or `/psxdecomp:upgrade own gate "<command>"` |
 | `toolchain` | WAIT or WARN | After phase 1.4: `docs/ops/compiler-pin.md`, and `config/toolchain.tsv` with every row at its pin | the row names it |
 | `names` | WAIT, WARN or FAIL | After phase 1.4: the two ledgers. FAIL: a malformed row | `python3 tools/psxd_floor.py names` |
-| `debt` | WAIT, WARN or FAIL | From the first C file: the debt baseline is equal to the tree. FAIL: a rise, or a stale row | `python3 tools/psxd_floor.py debt`, then `debt --update` |
+| `debt` | WAIT, WARN or FAIL | From the first C file: the debt baseline is equal to the tree. FAIL: a rise, or a stale row | `python3 tools/psxd_floor.py debt`, then `debt --update` (`--admit` for a rise) |
 | `readme` | FAIL | A README lint failure. The standard: `docs/PUBLISHING.md` in the plugin | the row names it; the generated blocks: `python3 tools/psxd_publish.py render README.md --write` |
 | `card` | WARN only | `HOW_WE_WORK.md` is over PA3's cap | move a section to `docs/ops/` and link it |
 

@@ -7,7 +7,7 @@ import shutil
 
 import pytest
 
-from conftest import PY, ROOT, bootstrap, check_golden, hook_stdout, run, tree
+from conftest import PY, PY_TOKEN, ROOT, bootstrap, check_golden, hook_stdout, run, tree
 
 import common
 
@@ -41,7 +41,7 @@ def test_always_loaded_bytes(game):
                                                     ".claude/skills/*/SKILL.md")
               for p in game.glob(g)]
     files += [p.relative_to(game).as_posix() for p in game.glob(".claude/rules/*.md") if "\npaths:" not in p.read_text()]
-    subs = ((r"/\S*?/python[\d.]*( \(\d+\.\d+\.\d+\))?", "<PY>"), (r"(?m)^- OS / shells: .*$", "- OS / shells: <HOST>"),
+    subs = ((PY_TOKEN, "<PY>"), (r"(?m)^- OS / shells: .*$", "- OS / shells: <HOST>"),
             (r"bootstrap, \d{4}-\d\d-\d\d", "bootstrap, <DATE>"))
     norm = lambda t: functools.reduce(lambda acc, s: re.sub(s[0], s[1], acc), subs, t)
     items = {f: norm((game / f).read_text()) for f in files}
@@ -141,7 +141,8 @@ def test_upgrade_has_nothing_to_do_after_the_bootstrap(game):
     r = run([PY, ROOT / "scripts/upgrade.py", "plan", "--repo", game])
     assert "[psxdecomp]" not in r.stdout and re.search(r"^PLAN \d+ action\(s\)", r.stdout, re.M), r.stdout
     rec = tomllib.loads((game / "config/psxdecomp.toml").read_text())
-    assert set(rec["delivered"]) == set(upgrade.OWNED) and "own" not in rec, rec.get("delivered")
+    rules = {common.rule_paths(rid)[0] for rid in common.PROFILE_RULES}      # a rule's body hash guards a later edit of it
+    assert set(rec["delivered"]) == set(upgrade.OWNED) | rules and "own" not in rec, rec.get("delivered")
     assert all(len(v) == 64 for v in rec["delivered"].values())
     assert run([PY, ROOT / "scripts/upgrade.py", "apply", "--dry-run", "--repo", game]).stdout.startswith("APPLY DRY RUN 0 ")
 
@@ -158,7 +159,7 @@ def _headlines(game):
 
 def _hook_group():
     groups = json.loads(common.read(common.PROFILE_HOOKS))["hooks"]["PostToolUse"]
-    assert len(groups) == 1 and groups[0]["hooks"][0]["command"].endswith("style --hook"), groups
+    assert len(groups) == 1 and groups[0]["hooks"][0]["command"].endswith("style --hook || exit 0"), groups
     return groups[0]
 
 
@@ -241,7 +242,7 @@ def test_s10_writes_the_guard_beside_the_style_hook(game, tmp_path):
     import upgrade
     conf = json.loads((game / common.SETTINGS).read_text())
     pre = json.loads(common.read(common.PROFILE_HOOKS))["hooks"]["PreToolUse"]
-    assert conf["hooks"]["PreToolUse"] == pre and pre[0]["matcher"] == "Bash|Edit|Write", conf["hooks"]
+    assert conf["hooks"]["PreToolUse"] == pre and pre[0]["matcher"].startswith("Bash|Edit|Write|"), conf["hooks"]
     assert (game / floor.VENDORED).read_bytes() == (ROOT / "scripts/floor.py").read_bytes()
     assert os.access(game / floor.VENDORED, os.X_OK)
     assert (game / upgrade.FLOOR_DOC).read_bytes() == (ROOT / "profiles/psx/floor.md").read_bytes()
@@ -280,7 +281,7 @@ def test_s10_writes_the_debt_baseline_and_debt_passes(game):
     a source file gains a `goto`."""
     import floor
     rows, skip, mode, head = floor.parse_baseline((game / floor.BASELINE).read_text())
-    assert (rows, skip, mode) == ({}, ["include/include_asm.h"], "admit") and len(head) == 5, (rows, skip, mode)
+    assert (rows, skip, mode) == ({}, [], "admit") and len(head) == 5, (rows, skip, mode)   # no stub header yet: no skip line
     assert (game / floor.NAMES).read_text() == "\t".join(floor.NAME_COLUMNS) + "\n"
     assert (game / floor.ASM_EVIDENCE).read_text() == "\t".join(floor.ASM_COLUMNS) + "\n"
     for rid in ("FIN1", "NAME1"):

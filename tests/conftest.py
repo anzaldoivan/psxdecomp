@@ -1,6 +1,7 @@
 """Shared fixtures. Tier 1 needs the pinned PA3 (cloned from GitHub, or $PSXDECOMP_PA3_SOURCE) and the kit:
-$PSXDECOMP_KIT, else compat.toml [kit].repo + sha cloned by common.resolve_kit (digest-checked). Without either, the
-pipeline tests skip with that reason."""
+$PSXDECOMP_KIT, else compat.toml [kit].repo + sha cloned by common.resolve_kit (digest-checked). A pin that cannot be
+resolved (no network, a digest that is not the tested one, a moved tag) FAILS tier 1: a green tier 1 means that tier 1
+ran. $PSXDECOMP_ALLOW_SKIP=1 turns that failure into a skip, for a machine that is offline on purpose."""
 import json
 import os
 import pathlib
@@ -13,6 +14,19 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PY = sys.executable
 sys.path.insert(0, str(ROOT / "scripts"))
+
+# The interpreter's path in a golden file: the whole token, whatever folder of it is named python (Homebrew's
+# opt/python@3.14, a runner's hostedtoolcache/Python/3.12.7, manylinux's /opt/python/cp312-cp312), then its version.
+PY_TOKEN = r"/\S*/python[\d.]*(?=[\s\"']|$)( \(\d+\.\d+\.\d+\))?"
+
+
+def unresolved(what: str, err) -> None:
+    """A pin that tier 1 could not resolve: a failure, unless the developer allowed a skip."""
+    msg = "pinned %s unavailable: %s" % (what, err)
+    if os.environ.get("PSXDECOMP_ALLOW_SKIP") == "1":
+        pytest.skip(msg + " (PSXDECOMP_ALLOW_SKIP=1)")
+    pytest.fail(msg + " — tier 1 did not run. Set PSXDECOMP_ALLOW_SKIP=1 to skip it on a machine that is offline")
+
 
 GIT_ENV = {"GIT_AUTHOR_NAME": "fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
            "GIT_COMMITTER_NAME": "fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
@@ -42,7 +56,7 @@ def kit():
     try:
         found, _ = common.resolve_kit()
     except common.Fail as e:
-        pytest.skip("pinned kit unavailable: %s" % e)
+        unresolved("kit", e)
     os.environ["PSXDECOMP_KIT"] = str(found)
     return str(found)
 
@@ -59,7 +73,7 @@ def toolchain(tmp_path_factory, kit):
     try:
         pkg, _ = common.resolve_pa3()
     except common.Fail as e:
-        pytest.skip("pinned PA3 unavailable: %s" % e)
+        unresolved("PA3", e)
     cfg = base / "cfg"
     run([PY, pkg / "pa_install.py", "--root", "--yes", "--no-clone", "--config-dir", cfg, "--pa3-dir", cfg / "pa3",
          "--no-statusline"])

@@ -18,34 +18,61 @@ graders:
   - name: constitution-written
     type: file_exists
     path: PROJECT_CONTEXT.md
-  - name: ladder-governance
+  - name: ladder-0-governance
     type: regex
     target: {source: file, path: PROJECT_CONTEXT.md}
-    pattern: "Governance and the firewall"
-  - name: ladder-baseline
-    type: regex
-    target: {source: file, path: PROJECT_CONTEXT.md}
-    pattern: "all-assembly|byte-identical baseline"
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)0\\b[^\\n]*Governance\\b[^\\n]{0,40}\\bfirewall"
     flags: "i"
-  - name: ladder-compiler
+  - name: ladder-1-extraction
     type: regex
     target: {source: file, path: PROJECT_CONTEXT.md}
-    pattern: "compiler pinned by evidence"
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)1\\b[^\\n]*extraction"
     flags: "i"
-  - name: ladder-census
+  - name: ladder-2-oracles
     type: regex
     target: {source: file, path: PROJECT_CONTEXT.md}
-    pattern: "honest census"
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)2\\b[^\\n]*oracles?\\b[^\\n]{0,40}\\bload map"
     flags: "i"
-  - name: ladder-codegen-map
+  - name: ladder-3-baseline
     type: regex
     target: {source: file, path: PROJECT_CONTEXT.md}
-    pattern: "codegen map and the permuter"
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)3\\b[^\\n]*(all-assembly|byte-identical baseline)"
     flags: "i"
-  - name: ladder-readability
+  - name: ladder-4-compiler
     type: regex
     target: {source: file, path: PROJECT_CONTEXT.md}
-    pattern: "(^|\\n)[^\\n]*\\b(1\\.)?10\\b[^\\n]*Readability"
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)4\\b[^\\n]*compiler\\b[^\\n]{0,30}\\bpinned"
+    flags: "i"
+  - name: ladder-5-census
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)5\\b[^\\n]*census"
+    flags: "i"
+  - name: ladder-6-multipliers
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)6\\b[^\\n]*multipliers"
+    flags: "i"
+  - name: ladder-7-codegen-map
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)7\\b[^\\n]*codegen map"
+    flags: "i"
+  - name: ladder-8-campaign
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)8\\b[^\\n]*(campaign|first cracks)"
+    flags: "i"
+  - name: ladder-9-publish
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)9\\b[^\\n]*publish"
+    flags: "i"
+  - name: ladder-10-readability
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)10\\b[^\\n]*readab"
+    flags: "i"
   - name: no-plan
     type: file_exists
     path: GENERATION_PLAN.md
@@ -62,6 +89,6 @@ graders:
   - name: names-the-next-stage
     type: regex
     target: last_message
-    pattern: "\\bS8\\b|the kit|--resume"
+    pattern: "\\bS8\\b|--resume"
     flags: "i"
 expected_outcome: The skill sees a plain session at NEXT S7, reads the kit's intake file that `install where` prints, writes PROJECT_CONTEXT.md with the eleven ladder phases, commits it, marks S7 and stops at --until S7. psxdecomp's `floor.py ladder PROJECT_CONTEXT.md` then exits 0.

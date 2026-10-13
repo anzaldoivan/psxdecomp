@@ -153,17 +153,30 @@ def test_eval_cases():
 
 
 def test_s7_ladder_eval_reads_the_ladder():
-    """The `s7-ladder` case grades the constitution a real S7 writes: its file graders pass on a text that names the
-    eleven ladder phases as floor.LADDER holds them, and at least one fails on the two-phase fixture constitution, so
-    the canned fixture can never stand in for the intake."""
+    """The `s7-ladder` case grades the constitution a real S7 writes. It has one file grader for each of the eleven
+    ladder phases. They pass on a text that names the phases as floor.LADDER holds them, in the list form and in the
+    kit's table form. A text that lacks any one phase fails the grader of that phase, and so do prose that only
+    holds the words and the two-phase fixture constitution: the canned fixture can never stand in for the intake."""
     yaml = pytest.importorskip("yaml")
     d = yaml.safe_load((ROOT / "evals/s7-ladder/case.yaml").read_text())
     gs = [g for g in d["graders"] if g["type"] == "regex" and isinstance(g.get("target"), dict)]
-    assert len(gs) == 6 and all(g["target"] == {"source": "file", "path": floor.CONTEXT} for g in gs), gs
-    full = "\n".join("- **Phase 1.%d %s** — milestone: m" % (n, name) for n, name, _, _ in floor.LADDER)
-    assert floor.ladder_missing(full) == [] and all(_passes(g, full) for g in gs), [g["name"] for g in gs if not _passes(g, full)]
+    assert len(gs) == len(floor.LADDER) and all(g["target"] == {"source": "file", "path": floor.CONTEXT} for g in gs), gs
+    lines = ["- **Phase 1.%d %s** — milestone: m" % (n, name) for n, name, _, _ in floor.LADDER]
+    rows = ["| %d | **%s** | m |" % (n, name) for n, name, _, _ in floor.LADDER]
+    for full in ("\n".join(lines), "\n".join(rows)):
+        assert floor.ladder_missing(full) == [] and all(_passes(g, full) for g in gs), [g["name"] for g in gs if not _passes(g, full)]
+    for n in range(len(lines)):
+        less = "\n".join(l for i, l in enumerate(lines) if i != n)
+        failed = [g["name"] for g in gs if not _passes(g, less)]
+        assert failed == [gs[n]["name"]] and floor.ladder_missing(less) == [n], (n, failed)
+    prose = "The kit's ladder: governance and the firewall, extraction, the oracles and the load map, the all-assembly " \
+            "baseline, the compiler pinned by evidence, the census, the multipliers, the codegen map, the campaign, " \
+            "publish, readability.\n10 things to do.\n"
+    assert not any(_passes(g, prose) for g in gs) and floor.ladder_missing(prose) == list(range(11))
     fixture = (ROOT / "fixtures/PROJECT_CONTEXT.fixture.md").read_text()
     assert not all(_passes(g, fixture) for g in gs)
+    last = {g["name"]: g for g in d["graders"] if g.get("target") == "last_message"}
+    assert not _passes(last["names-the-next-stage"], "PROJECT_CONTEXT.md is written. It carries the kit's ladder.")
     assert {"file_exists", "tool_used"} <= {g["type"] for g in d["graders"]}
     assert (ROOT / "evals/s7-ladder/scaffold.sh").read_text().count("--until S6") == 1
 
@@ -657,7 +670,9 @@ def test_style_profile_files():
     assert set(group["matcher"].split("|")) == {"Write", "Edit", "Bash"}, group["matcher"]
     assert [h["type"] for h in group["hooks"]] == ["command"], group["hooks"]
     cmd = group["hooks"][0]["command"]
-    assert cmd.startswith("python3 ") and cmd.endswith(" style --hook"), cmd
+    assert cmd.startswith("python3 ") and cmd.endswith(" style --hook || exit 0"), cmd
+    for groups in conf["hooks"].values():           # every hook of the profile: one that cannot start never disturbs a call
+        assert all(h["command"].endswith(" || exit 0") for g in groups for h in g["hooks"]), groups
     assert '"$CLAUDE_PROJECT_DIR/%s"' % publish.VENDORED in cmd and publish.VENDORED == "tools/psxd_publish.py", cmd
     assert common.PROFILE_STE == ROOT / "profiles/psx/rules/STE1.md"
     rule = common.PROFILE_STE.read_text()
@@ -691,14 +706,175 @@ def _floor(*args, cwd=None, stdin=None):
 
 
 def test_floor_is_vendorable():
-    """scripts/floor.py runs alone in a game repository: standard library only, nothing from the plugin. It imports
-    tomllib inside a function only, so `guard --hook` also runs on a python3 that has none."""
+    """scripts/floor.py runs alone in a game repository: standard library only, nothing from the plugin, at any depth
+    of its code (its copy passes its own self-test in a folder that holds nothing else). It imports no tomllib, so the
+    hook and the debt count give one result on a python3 that has none."""
     text = (ROOT / "scripts/floor.py").read_text()
-    mods = set(re.findall(r"^(?:import|from) ([\w.]+)", text, re.M))
-    assert mods == {"__future__", "argparse", "fnmatch", "hashlib", "json", "os", "pathlib", "re", "subprocess", "sys",
-                    "tempfile"}, mods
-    assert re.search(r"^ +import tomllib$", text, re.M) and floor.VENDORED == "tools/psxd_floor.py"
+    mods = set(re.findall(r"^\s*(?:import|from) ([\w.]+)", text, re.M))
+    assert mods == {"__future__", "argparse", "contextlib", "fnmatch", "hashlib", "io", "json", "os", "pathlib", "re", "signal",
+                    "subprocess", "sys", "tempfile", "time"}, mods
+    assert floor.VENDORED == "tools/psxd_floor.py"
     assert len(floor.LADDER) == 11 and [r[0] for r in floor.LADDER] == list(range(11))
+
+
+def test_vendored_tools_run_alone(tmp_path):
+    """Each vendored tool, copied alone into a game's tools/ and run there with `-I` (no plugin folder on the path):
+    the floor passes its whole self-test; the publish tool lints a README and answers the style hook. An import of the
+    plugin inside a function would fail here, where the import test of the file's top level cannot see it."""
+    game = _style_repo(tmp_path, {"README.md": "# G\n\nA game.\n", "src/a.c": floor.C_CLEAN})
+    (game / "tools").mkdir()
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", **GIT_ENV)
+    env.pop("CLAUDE_PROJECT_DIR", None)
+    for src, dst in (("scripts/floor.py", floor.VENDORED), ("scripts/publish.py", publish.VENDORED)):
+        (game / dst).write_bytes((ROOT / src).read_bytes())
+    alone = lambda *a, **kw: subprocess.run([PY, "-I", *a], cwd=game, capture_output=True, text=True, env=env, **kw)  # noqa: E731
+    r = alone(floor.VENDORED, "--self-test")
+    assert r.returncode == 0 and r.stdout.strip().endswith("SELF-TEST OK"), r.stdout[-600:] + r.stderr[-600:]
+    for args in ((publish.VENDORED, "lint", "README.md"), (publish.VENDORED, "style"), (floor.VENDORED, "debt"),
+                 (floor.VENDORED, "plan"), (floor.VENDORED, "names")):
+        r = alone(*args)
+        assert r.returncode in (0, 1) and "Traceback" not in r.stderr and "Error" not in r.stderr, (args, r.stderr[-400:])
+    event = json.dumps({"hook_event_name": "PostToolUse", "tool_name": "Write", "cwd": str(game),
+                        "tool_input": {"file_path": str(game / "README.md")}})
+    for tool, flag in ((publish.VENDORED, "style"), (floor.VENDORED, "guard")):
+        r = alone(tool, flag, "--hook", input=event)
+        assert r.returncode == 0 and r.stderr == "", (tool, r.stderr[-400:])
+
+
+def test_hook_commands_never_fail(tmp_path):
+    """Each hook command of the profile, run by a shell as Claude Code runs it, exits 0 when it cannot do its work:
+    with no tool in the repository yet, and with a tool that cannot start (a Python that lacks a module it needs)."""
+    conf = json.loads((ROOT / "profiles/psx/hooks.json").read_text())["hooks"]
+    cmds = [h["command"] for groups in conf.values() for g in groups for h in g["hooks"]]
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(tmp_path), PATH=os.path.dirname(PY) + os.pathsep + os.environ["PATH"])
+    for cmd in cmds:
+        r = subprocess.run(cmd, shell=True, input="{}", capture_output=True, text=True, env=env)
+        assert r.returncode == 0, (cmd, r.stderr)                       # no tools/ folder: the tool is not there
+    (tmp_path / "tools").mkdir()
+    for name in (floor.VENDORED, publish.VENDORED):
+        (tmp_path / name).write_text("import a_module_this_python_lacks\n")
+    for cmd in cmds:
+        r = subprocess.run(cmd, shell=True, input="{}", capture_output=True, text=True, env=env)
+        assert r.returncode == 0, (cmd, r.stderr)
+
+
+def test_hook_groups_by_kind(tmp_path):
+    """.claude/settings.json and the profile's hooks: a group is present by its kind, so a game that set its own
+    interpreter keeps its command and is asked for nothing. A group that holds what an earlier psxdecomp wrote (the
+    style command with no `|| exit 0`, the guard with no time limit and the earlier matcher) is stale: the settings
+    write replaces it where it stands and adds no second group."""
+    prof = json.loads((ROOT / "profiles/psx/hooks.json").read_text())["hooks"]
+    old = {"hooks": {
+        "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "true"}]},
+                        {"matcher": "Write|Edit|Bash", "hooks": [{"type": "command", "command": common.HOOK_BEFORE["style-hook"][0][0]}]}],
+        "PreToolUse": [{"matcher": "Bash|Edit|Write", "hooks": [{"type": "command", "command": prof["PreToolUse"][0]["hooks"][0]["command"]}]}]},
+        "permissions": {"deny": json.loads(common.read(common.PROFILE_DENY))["permissions"]["deny"]}}
+    (tmp_path / ".claude").mkdir()
+    settings = tmp_path / common.SETTINGS
+    settings.write_text(json.dumps(old, indent=4))
+    assert common.hooks_missing(tmp_path) == ([], None)
+    assert sorted(common.hook_kind(g) for _, g in common.hooks_stale(tmp_path)) == ["guard-hook", "style-hook"]
+    settings.write_text(common.settings_due(tmp_path))
+    now = json.loads(settings.read_text())["hooks"]
+    assert now["PostToolUse"] == [old["hooks"]["PostToolUse"][0], prof["PostToolUse"][0]] and now["PreToolUse"] == prof["PreToolUse"]
+    assert common.hooks_stale(tmp_path) == [] and common.settings_due(tmp_path) is None
+    mine = json.loads(settings.read_text())
+    for ev in ("PostToolUse", "PreToolUse"):                           # the game's own interpreter: its command, not ours
+        h = mine["hooks"][ev][-1]["hooks"][0]
+        h["command"] = h["command"].replace("python3 ", "/opt/py314/bin/python3 ")
+    settings.write_text(json.dumps(mine))
+    assert common.hooks_missing(tmp_path) == ([], None) and common.hooks_stale(tmp_path) == [] and common.settings_due(tmp_path) is None
+    (tmp_path / publish.PA3_REL).parent.mkdir(parents=True, exist_ok=True)   # PA3 manages the file: no hand asked when all is there
+    (tmp_path / publish.PA3_REL).write_text(json.dumps({"files": {common.SETTINGS: {}}}))
+    assert common.pa3_manages_settings(tmp_path) and common.hooks_stale(tmp_path) == []
+    assert common.hooks_missing(tmp_path) == ([], None) and common.deny_missing(tmp_path) == ([], None)
+    settings.write_text("{}")                                          # and a hand is asked only for what is missing
+    assert [x[1] for x in (common.hooks_missing(tmp_path), common.deny_missing(tmp_path))] == ["PA3 manages %s here" % common.SETTINGS] * 2
+
+
+def test_public_list_holds_the_tools_of_the_public_workflow(tmp_path):
+    """Split mode: the README workflow is public and runs the two vendored tools, so the doctor warns while
+    config/public-paths.txt lists the workflow and not a tool that it runs (the public CI would fail at the next
+    release)."""
+    import doctor
+    import upgrade
+    files = {d.path: (ROOT / d.src).read_text() for d in upgrade.DELIVERY if d.cls == "owned"}
+    files["config/public-paths.txt"] = ".github/\nREADME.md\n"
+    repo = _style_repo(tmp_path, files)
+    st, detail = doctor.publish_tool_row(repo)
+    assert st == "WARN" and "does not list" in detail and floor.VENDORED in detail and publish.VENDORED in detail, detail
+    (repo / "config/public-paths.txt").write_text(".github/\nREADME.md\ntools/psxd_*.py\n")
+    assert doctor.publish_tool_row(repo)[0] == "OK", doctor.publish_tool_row(repo)
+
+
+def test_delivered_texts_hold_no_exemplar_string():
+    """The two exemplar repositories with no licence give ideas only. This is a tripwire for the strings that the
+    0.6.0 audit found shared with their hooks: none is in a file that a game receives."""
+    recorded = ("(^|[;&|]\\s*)make", "python3?\\s+-m\\s+splat\\s+split")       # snowboardkids2-decomp .claude/hooks, 3b1bd5d
+    for rel in ("profiles/psx/guard.tsv", "profiles/psx/floor.md", "profiles/psx/campaign.md", "profiles/psx/hooks.json",
+                "profiles/psx/rules/FIN1.md", "profiles/psx/rules/NAME1.md", "scripts/floor.py"):
+        text = (ROOT / rel).read_text()
+        assert not [s for s in recorded if s in text], rel
+
+
+def test_floor_doc_commands_exist():
+    """The commands that the floor's reference gives a developer: the plan correction names the plan file (PA3's
+    plan_edit.py writes the phase plan without it), and each `/psxdecomp:upgrade <verb>` is a verb of upgrade.py that
+    the upgrade skill explains."""
+    import upgrade
+    doc = (ROOT / "profiles/psx/floor.md").read_text()
+    line = next(l for l in doc.splitlines() if "plan_edit.py" in l)
+    assert "--file GENERATION_PLAN.md append-change --by developer" in line, line
+    skill = (ROOT / "skills/upgrade/SKILL.md").read_text()
+    verbs = set(re.findall(r"/psxdecomp:upgrade (\w+)", doc + (ROOT / "docs/HARVEST.md").read_text()))
+    assert verbs and all('"$PSXD" upgrade %s ' % v in skill for v in verbs), verbs
+    choices = re.search(r'choices=\[([^\]]+)\]', (ROOT / "scripts/upgrade.py").read_text())[1]
+    assert all('"%s"' % v in choices for v in verbs), (verbs, choices)
+    assert upgrade.OWN_KEYS == tuple(re.findall(r"`(\w+)`", skill.split("The key is one of", 1)[1].split(".", 1)[0]))
+
+
+def test_tier1_fails_on_a_pin_it_cannot_resolve():
+    """tests/conftest.py: a pin that cannot be resolved fails tier 1 and never skips it, unless the developer allowed
+    the skip. A green tier 1 then means that tier 1 ran (release.yml drafts a release on it)."""
+    import conftest
+    saved = os.environ.pop("PSXDECOMP_ALLOW_SKIP", None)
+    try:
+        with pytest.raises(pytest.fail.Exception):
+            conftest.unresolved("kit", "digest sha256:000 is not the tested one")
+        os.environ["PSXDECOMP_ALLOW_SKIP"] = "1"
+        with pytest.raises(pytest.skip.Exception):
+            conftest.unresolved("kit", "no network")
+    finally:
+        os.environ.pop("PSXDECOMP_ALLOW_SKIP", None)
+        if saved is not None:
+            os.environ["PSXDECOMP_ALLOW_SKIP"] = saved
+    text = (ROOT / "tests/conftest.py").read_text()
+    assert text.count("unresolved(") == 3 and "pytest.skip(\"pinned" not in text
+
+
+def test_golden_interpreter_token():
+    """The interpreter path of a golden file is one token on every host: Homebrew, a GitHub runner, a virtualenv,
+    manylinux. A pattern that stops at the first folder named python would leave a tail in the golden text."""
+    import conftest
+    for path in ("/opt/hostedtoolcache/Python/3.12.7/x64/bin/python", "/home/u/venv/bin/python",
+                 "/opt/homebrew/opt/python@3.14/bin/python3.14", "/opt/python/cp312-cp312/bin/python",
+                 "/usr/bin/python3", "/Users/u/.pyenv/versions/3.14.1/bin/python3.14"):
+        for tail in (" (3.14.7)", "", '"'):
+            got = re.sub(conftest.PY_TOKEN, "<PY>", "- Python: %s%s" % (path, tail))
+            assert got == "- Python: <PY>" + ('"' if tail == '"' else ""), (path, tail, got)
+
+
+def test_release_workflow_refuses_a_tag_off_main():
+    """release.yml drafts a release only for a tag whose commit is on main: the squash merge comes first, then the tag
+    on main's tip (docs/RELEASING.md step 6). ci.yml has a job that the default-branch ruleset can require."""
+    rel = (ROOT / ".github/workflows/release.yml").read_text()
+    assert "fetch-depth: 0" in rel and 'git merge-base --is-ancestor "$GITHUB_SHA" origin/main' in rel
+    steps = (ROOT / "docs/RELEASING.md").read_text()
+    assert "squash-merge" in steps and "tag the tip of `main`" in steps
+    import doctor
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    names = re.findall(r"(?m)^  ([\w-]+):\n(?:    name: (.*)\n)?", ci.split("\njobs:\n", 1)[1])
+    assert any(doctor.NO_ROM_CHECK.search(job + " " + name) for job, name in names), names
 
 
 def test_plan_grammar_cases(tmp_path):
@@ -747,7 +923,7 @@ def test_debt_kinds(tmp_path):
     repo = _style_repo(tmp_path, files)
     rows, skip, mode, head = floor.parse_baseline(floor.first_baseline(repo))
     want = {(k, "src/%s.c" % kind): n for kind, (_, got) in floor.C_DEBT.items() for k, n in got.items()}
-    assert rows == want and mode == "admit" and skip == ["include/include_asm.h"] and len(head) == 5, rows
+    assert rows == want and mode == "admit" and skip == [] and len(head) == 5, rows      # no stub header here: no skip line
     assert {k for k, _ in rows} == set(floor.KINDS) - {"unbased"}
     (repo / "config").mkdir()
     (repo / floor.BASELINE).write_text(floor.first_baseline(repo))
@@ -835,7 +1011,7 @@ def test_delivery_table():
     harvest = (ROOT / "docs/HARVEST.md").read_text()
     for key, (path, _) in upgrade.OWN_DETECT.items():
         assert "| `%s` | `%s` |" % (key, path) in harvest, key
-    assert set(upgrade.OWN_KEYS) - set(upgrade.OWN_DETECT) == {"gate"} and '`upgrade own gate "<command>"`' in harvest
+    assert set(upgrade.OWN_KEYS) - set(upgrade.OWN_DETECT) == {"gate"} and '`/psxdecomp:upgrade own gate "<command>"`' in harvest
 
 
 def test_guard_profile_files():
@@ -844,7 +1020,9 @@ def test_guard_profile_files():
     the header line, five default `path` rules that parse, two examples as comments. deny.json: one `Edit(/...)` rule
     per default path, in Claude Code's rule syntax (a leading `/` is the project root)."""
     conf = json.loads((ROOT / "profiles/psx/hooks.json").read_text())["hooks"]["PreToolUse"]
-    assert len(conf) == 1 and conf[0]["matcher"] == "Bash|Edit|Write" and len(conf[0]["hooks"]) == 1, conf
+    assert len(conf) == 1 and len(conf[0]["hooks"]) == 1, conf
+    assert set(conf[0]["matcher"].split("|")) == {"Bash"} | set(floor.PATH_TOOLS), conf[0]["matcher"]   # every tool the guard reads
+    assert 0 < conf[0]["hooks"][0]["timeout"] <= 30 and floor.GUARD_SECONDS < conf[0]["hooks"][0]["timeout"], conf
     cmd = conf[0]["hooks"][0]["command"]
     assert cmd == 'python3 "$CLAUDE_PROJECT_DIR/%s" guard --hook || exit 0' % floor.VENDORED, cmd
     assert common.hook_kind(conf[0]) == "guard-hook"
@@ -892,7 +1070,9 @@ def test_readability_rule_files():
         assert not text.startswith("#") and text.splitlines()[0].strip() and "\n" not in row[2], rid
         assert "`%s`" % rel in row[2], rid                              # the headline names the file to read
     fin = (ROOT / "profiles/psx/rules/FIN1.md").read_text()
-    assert '"matched, not finished"' in fin and re.findall(r"(?m)^(\d)\. ", fin) == list("123456")
+    assert "call it matched and name its debt" in fin and re.findall(r"(?m)^(\d)\. ", fin) == list("123456")
+    for rid, row in common.PROFILE_RULES.items():   # the title line and the index row that the game's rules tool writes
+        assert publish.lint_style("# %s — %s\n" % (rid, row[2])) == [], (rid, publish.lint_style("# %s — %s\n" % (rid, row[2])))
     assert "`python3 %s debt`" % floor.VENDORED in fin and floor.BASELINE in fin
     name = (ROOT / "profiles/psx/rules/NAME1.md").read_text()
     assert all("| `%s` |" % c in name for c in floor.EVIDENCE) and floor.NAMES in name
