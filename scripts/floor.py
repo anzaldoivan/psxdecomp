@@ -868,14 +868,20 @@ def extents(code: str) -> list[tuple[str, int, int]]:
 # reads them: in the output of the game's own preprocessor, `[floor] cpp` of the record (the method of FF7's linter,
 # which runs the game's cpp before it scans). There a macro, a line splice, a digraph or an include of any file hides
 # nothing: the text is what the compiler gets. Each hit keeps its file and its line through the `# <line> "<file>"`
-# markers of the output. With no `[floor] cpp` the same scan reads the raw text of each file, where a construct
+# markers of the output. Every C file is preprocessed as a unit of its own. With no `[floor] cpp` the same scan reads the raw text of each file, where a construct
 # inside a macro is counted once, at the macro's definition.
 def asm_emits(text: str) -> bool:
     """The strings of an asm statement hold an instruction or emit data: a line that is no label, no comment and none
-    of the directives of ASM_QUIET, outside a `.macro` definition."""
+    of the directives of ASM_QUIET, outside a `.macro` definition. The text is read as the compiler hands it to the
+    assembler: with each escape of the C string decoded (`\\x3b` is a `;`, `\\012` a line end), so that no spelling of
+    a separator hides the statement behind it. A string that cannot be decoded is read as an instruction."""
+    try:
+        text = text.encode("latin-1", "backslashreplace").decode("unicode_escape")
+    except (UnicodeError, ValueError):
+        return True
     inside = False
-    for l in re.split(r"\\n|\n|;", text):
-        l = re.sub(r"^[\w.$]+:\s*", "", l.replace("\\t", " ").replace('\\"', '"').strip())
+    for l in re.split(r"[\n\r;]", text):
+        l = re.sub(r"^[\w.$]+:\s*", "", l.strip())
         if not l or l.startswith(("#", "/*", "//")):
             continue
         if l.startswith(".macro"):
@@ -1061,22 +1067,17 @@ def _cache_file(repo) -> pathlib.Path | None:
 
 def compiler_view(repo, tree: "Tree", cmd: str) -> dict[str, list[tuple[str, int]]]:
     """{path: [(kind, line from 0)]} of the keyword kinds as the game's preprocessor shows them: `cmd` run for each C
-    unit of the tree, in a folder that holds the tree's files. A unit is a C file that no unit before it read: every
-    C file that no `#include "…"` names is run first, the files that the line markers name are collected, and each C
-    file not seen yet is run on its own, so the preprocessor decides what was covered and no pattern does. Of one
-    line of one file, the most that one unit holds counts. A unit that the command cannot preprocess raises Fail: a
-    judge that cannot read passes nothing. So does a file with a line directive of its own. Each unit's result is kept beside the files it read (their blobs), so a
-    change costs the units that it touches."""
+    file of the tree as a unit of its own, in a folder that holds the tree's files. A file that another unit includes
+    is run as well: a build may compile it alone, and the text that it shows alone can differ from the text that it
+    shows behind the macros of the unit that includes it. Of one line of one file, the most that one unit holds
+    counts, so a file that many units read is counted once. A unit that the command cannot preprocess raises Fail: a
+    judge that cannot read passes nothing. So does a file with a line directive of its own. The one exception is a
+    file that fails alone and that another unit reads: no build compiles it alone either. Each unit's result is kept
+    beside the files it read (their blobs), so a change costs the units that it touches."""
     if ("view", cmd) in tree.memo:
         return tree.memo[("view", cmd)]
     whole = tree._whole or tree
     units = [p for p in whole.paths if is_source(p) and is_c(p)]
-    named = set()
-    for p in units:
-        text = whole.read(p) or ""
-        folder = p.rsplit("/", 1)[0] + "/" if "/" in p else ""
-        for inc in INCLUDE.findall(text) if "include" in text else ():
-            named.update((os.path.normpath(folder + inc), os.path.normpath(inc), os.path.normpath("include/" + inc)))
     by_name: dict[str, list[str]] = {}
     for p in whole.paths:
         by_name.setdefault(p.rsplit("/", 1)[-1], []).append(p)
@@ -1095,10 +1096,10 @@ def compiler_view(repo, tree: "Tree", cmd: str) -> dict[str, list[tuple[str, int
     held, fresh = cache["units"], {}
     total: dict[tuple[str, str, int], int] = {}
     seen: set[str] = set()
-    failed: list[str] = []
+    failed: list = []
 
     def take(unit, hits, files):
-        seen.update(files)
+        seen.update(f for f in files if f != unit)     # what another unit read
         for key, n in hits.items():
             total[key] = max(total.get(key, 0), n)
 
@@ -1131,30 +1132,27 @@ def compiler_view(repo, tree: "Tree", cmd: str) -> dict[str, list[tuple[str, int
     import concurrent.futures
     with contextlib.ExitStack() as stack:
         root = None
-        first = [p for p in units if p not in named]
-        for batch in (first, None):
-            batch = [p for p in units if p not in seen and p not in first] if batch is None else batch
-            todo = []
-            for unit in batch:
-                got = cached(unit)
-                if got is None:
-                    todo.append(unit)
-                else:
-                    take(unit, *got)
-                    fresh[slot(unit)] = held[slot(unit)]
-            if todo and root is None:
-                root = stack.enter_context(exported(whole))
+        todo = []
+        for unit in units:
+            got = cached(unit)
+            if got is None:
+                todo.append(unit)
+            else:
+                take(unit, *got)
+                fresh[slot(unit)] = held[slot(unit)]
+        if todo:
+            root = stack.enter_context(exported(whole))
             with concurrent.futures.ThreadPoolExecutor(min(8, os.cpu_count() or 2)) as pool:
                 for unit, out, err in pool.map(lambda u: run(root, u), todo):
                     if out is None:
-                        failed.append("%s: %s" % (unit, err))
+                        failed.append((unit, err))
                         continue
                     hits, files = unit_view(out, unit, root)
                     take(unit, hits, files)
                     deps = {f: whole.blob(f) for f in files}
                     if all(deps.values()):             # every file it read is a file of this tree: the result can be kept
-                        fresh[slot(unit)] = {
-                            "deps": deps, "names": names_of(deps), "hits": [[k, f, l, n] for (k, f, l), n in sorted(hits.items())]}
+                        fresh[slot(unit)] = {"deps": deps, "names": names_of(deps), "hits": [[k, f, l, n] for (k, f, l), n in sorted(hits.items())]}
+    failed = ["%s: %s" % f for f in failed if f[0] not in seen]    # a fragment that only stands inside another unit
     if failed:
         raise Fail("`[floor] cpp` (`%s`) cannot preprocess %d unit(s) of %s: %s%s" % (
             cmd, len(failed), source_name(tree.source), failed[0], " and %d more" % (len(failed) - 1) if len(failed) > 1 else ""))
@@ -2633,8 +2631,10 @@ def record_table(tree: Tree, table: str) -> dict[str, str]:
 
 
 def _settings(tree: Tree) -> dict:
+    def no_number(word):                               # `NaN`, `Infinity`: Python reads them, JSON has no such value
+        raise ValueError(word)
     try:
-        conf = json.loads(tree.read(SETTINGS) or "{}")
+        conf = json.loads(tree.read(SETTINGS) or "{}", parse_constant=no_number)
     except (ValueError, RecursionError):               # no JSON, or JSON nested deeper than the reader goes
         return {"_broken": True}
     return conf if isinstance(conf, dict) else {"_broken": True}
@@ -3722,6 +3722,8 @@ def self_test_files(check) -> None:
             ("an instruction in a file-scope asm statement is assembly", '__asm__(".text\\nFast:\\n    jr $ra\\n nop\\n");\n', {"asm": 1}),
             ("data in a file-scope asm statement is assembly", '__asm__(".section .text\\n.word 0x03E00008\\n");\n', {"asm": 1}),
             ("a file pulled in as bytes is assembly", '__asm__(".incbin \\"blob.bin\\"");\n', {"asm": 1}),
+            ("an instruction behind a separator spelled as an escape is assembly",
+             '__asm__(".set noat\\x3b j $ra\\x3b nop");\n__asm__(".section .text\\012\\t.word 0x3c1a8003");\n__asm__(".set reorder\\073 jr $ra");\n', {"asm": 3}),
             ("the use of an assembler macro is an instruction", '__asm__(".macro ret\\n jr $ra\\n.endm\\nret\\n");\n', {"asm": 1}),
             ("an asm statement that is no string is assembly", "__asm__(TEXT);\n", {"asm": 1}),
             ("assembler directives inside a function force the compiler: a barrier", 'void A(void) {\n    __asm__(".set noreorder");\n}\n',
@@ -3827,7 +3829,8 @@ def self_test_view(check) -> None:
         got = debt_counts(repo)
         check("[floor] cpp: a goto behind a macro counts where it is used, a pin in a file of any suffix where it stands, "
               "and a file that two units read once", got == want, got)
-        check("the view: the units are the C files that no other unit read", ran() == ["src/alone.c", "src/other.c", "src/unit.c"])
+        check("the view: every C file is a unit, also one that another unit includes", ran() == [
+            "src/alone.c", "src/other.c", "src/shared/body.c", "src/unit.c"])
         _commit(repo, "the tree")
         for name, src in (("the index", INDEX), ("a revision", "HEAD"), ("the work tree with the files git does not track", None)):
             tree = Tree(repo, src, untracked=src is None)
@@ -3837,7 +3840,7 @@ def self_test_view(check) -> None:
         got = debt_bodies(repo)
         check("the view: a marker in the file that holds the line covers the construct", got["src/shared/body.c"] == {"One": {"goto": 1}}
               and got["src/pins.def"] == {SCOPE: {"pin": 1, "pin-unmarked": 1}}, got)
-        check("the view: one changed file costs the units that read it", ran() == ["src/other.c", "src/unit.c"])
+        check("the view: one changed file costs the units that read it", ran() == ["src/other.c", "src/shared/body.c", "src/unit.c"])
         put("src/alone.c", 's32 Alone(s32 n) {\n    __asm__("nop");\n    return n;\n}\n')
         check("the view: an asm statement in a function", debt_counts(repo).get(("asm", "src/alone.c")) == 1 and ran() == ["src/alone.c"])
         put(ASM_EVIDENCE, "\t".join(ASM_COLUMNS) + "\nmain\tAlone\tsrc/alone.c\thand-asm\tsrc/alone.c:2\t2026-01-02\tdeveloper\n")
@@ -3846,7 +3849,7 @@ def self_test_view(check) -> None:
         global _cpp_cache_on
         _cpp_cache_on = False
         debt_counts(repo)
-        check("the view: a push and CI run every unit again", ran() == ["src/alone.c", "src/other.c", "src/unit.c"])
+        check("the view: a push and CI run every unit again", ran() == ["src/alone.c", "src/other.c", "src/shared/body.c", "src/unit.c"])
         _cpp_cache_on = True
         # a judge that cannot read passes nothing
         put("src/alone.c", '#include "gone.h"\ns32 Alone(s32 n) {\n    return n;\n}\n')
@@ -3913,6 +3916,22 @@ def self_test_view(check) -> None:
                 got = str(e)
             check("a real preprocessor: a paste, a splice, a digraph, a stub and a branch that is not compiled", got == {
                 ("pin", "src/a.c"): 1, ("pin-unmarked", "src/a.c"): 1, ("goto", "src/a.c"): 2, ("goto-unmarked", "src/a.c"): 2}, got)
+            put("src/b.c", '#include "common.h"\n#ifndef HIDE_B\nint Bfunc(int n) {\nagain:\n    if (--n) goto again;\n    return n;\n}\n#endif\n')
+            put("src/c.c", '#include "common.h"\n#define HIDE_B 1\n#define IN_UNIT 1\n#include "b.c"\nint Cfunc(void) {\n#include "tail.c"\n}\n')
+            put("src/tail.c", "#ifndef IN_UNIT\n#error this fragment stands inside a unit\n#endif\n    return 0;\n")
+            _git(repo, "add", "-A")
+            try:
+                got = debt_counts(repo).get(("goto-unmarked", "src/b.c"))
+            except Fail as e:
+                got = str(e)
+            check("a real preprocessor: a file is read alone as well, so the macros of a unit that includes it hide nothing", got == 1, got)
+            (repo / "src/c.c").unlink()
+            _git(repo, "add", "-A")
+            try:
+                debt_counts(repo)
+                check("a real preprocessor: a fragment that fails alone and that no unit reads is a refusal", False)
+            except Fail as e:
+                check("a real preprocessor: a fragment that fails alone and that no unit reads is a refusal", "src/tail.c" in str(e), str(e))
 
 
 def self_test_tree(check) -> None:

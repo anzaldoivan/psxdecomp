@@ -179,7 +179,8 @@ The tool reads four kinds in the text that the compiler gets. These are the kind
 
 - `[floor] cpp` in `config/psxdecomp.toml` names the preprocess command of the game, with `{file}` for the unit.
 - An example is `cpp = "mipsel-linux-gnu-cpp -nostdinc -undef -D__GNUC__=2 -Iinclude {file}"`.
-- The tool runs that command for each C unit and reads its output. It runs the command with no shell.
+- The tool runs that command for each C file and reads its output. It runs the command with no shell.
+- It also runs a C file that another file includes. A build can compile such a file alone.
 - A macro, a line splice or a digraph hides nothing there. An `#include` of any file hides nothing either.
 - The output holds `# <line> "<file>"` markers. Each construct counts at the file and the line that hold it.
 - Do not give `-P` to the command. That option removes the markers.
