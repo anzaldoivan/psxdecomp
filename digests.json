@@ -2,7 +2,7 @@
   "version": "0.6.0",
   "files": {
     ".github/workflows/psxdecomp-readme.yml": "29f39bd190afdd2211d83791ef0c40ed2bd4ce60cb1d39f93b6f76f7d5f5ad08",
-    "tools/psxd_floor.py": "ee43015e29b4dc01859f4129ebf568c935ba7ce68cb249cc860d5c5afd07297d",
-    "tools/psxd_publish.py": "2963aa8a99fdb20e0a828477171f6174e60bc7e8afc10a6c30b7d214b71dd87a"
+    "tools/psxd_floor.py": "7fd656a2dc5d7155f5a39a1896c94eccc9cf132b2196390a5645711228142f39",
+    "tools/psxd_publish.py": "5715481c254aebaceafdd1538c2264ac9484af9ab16381ff11b381c3fa2b666d"
   }
 }

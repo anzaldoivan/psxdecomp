@@ -348,11 +348,10 @@ def test_fresh_game_passes_its_gate(game):
 
 
 def test_trial_in_a_game(game):
-    """The trial tool in a bootstrapped game, with a probe that stands for the game's own. S10 wrote the header line
-    of config/trials.tsv. `trial` drops the pin that the match does not need, marks the other one and records it.
-    A row written by hand for a pin that the function matches without fails `trial --recheck`."""
+    """The trial tool in a bootstrapped game, with a probe that stands for the game's own. `trial` drops the pin
+    that the match does not need and marks the other one. It writes no ledger: the marker is the record."""
     import floor
-    assert (game / floor.TRIALS).read_text() == "\t".join(floor.TRIAL_COLUMNS) + "\n"
+    assert not (game / "config/trials.tsv").exists()
     record, src, probe = game / floor.RECORD, game / "src/sum.c", game / ".run/probe.py"
     kept = record.read_text()
     trial = lambda *a: run([PY, floor.VENDORED, "trial", *a], cwd=game, check=False)  # noqa: E731
@@ -366,19 +365,9 @@ def test_trial_in_a_game(game):
         assert r.returncode == 0 and "TRIAL OK (1 function(s), 3 tried, 2 removed, 1 kept; 6 probe(s))" in r.stdout, r.stdout
         text = src.read_text()
         assert "// !FAKE: pin:$16:i: " in text and "$17" not in text and "__asm__" not in text and "    register s32 t = 0;" in text, text
-        rows = (game / floor.TRIALS).read_text().splitlines()
-        assert len(rows) == 2 and rows[1].startswith("src/sum.c\tSum\tpin:$16:i\t"), rows
-        assert floor.trials_findings(game, floor.Tree(game, None, untracked=True)) == []
-        forged = text.replace("    register s32 t = 0;", "    // !FAKE: the sum must be in $17\n    register s32 t asm(\"$17\") = 0;")
-        src.write_text(forged)
-        (game / floor.TRIALS).write_text("\t".join(floor.TRIAL_COLUMNS) + "\n" + "".join(
-            "src/sum.c\tSum\t%s\t%s\tkept\n" % (c["id"], c["hash"]) for c in floor.crutches("src/sum.c", forged)))
-        assert floor.trials_findings(game, floor.Tree(game, None, untracked=True)) == []       # the record alone cannot tell
-        r = trial("--recheck", "--against", "HEAD")
-        assert r.returncode == 1 and "TRIAL FAIL removable: src/sum.c Sum pin:$17:t: the row says `kept`" in r.stdout, r.stdout
+        assert floor.file_debt("src/sum.c", text) == {"pin": 1} and not (game / "config/trials.tsv").exists()
     finally:
         record.write_text(kept)
-        (game / floor.TRIALS).write_text("\t".join(floor.TRIAL_COLUMNS) + "\n")
         for f in (src, probe):
             f.unlink(missing_ok=True)
     assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""

@@ -735,7 +735,7 @@ def test_floor_is_vendorable():
     hook and the debt count give one result on a python3 that has none."""
     text = (ROOT / "scripts/floor.py").read_text()
     mods = set(re.findall(r"^\s*(?:import|from) ([\w.]+)", text, re.M))
-    assert mods == {"__future__", "argparse", "bisect", "contextlib", "fnmatch", "hashlib", "io", "json", "os", "pathlib", "random",
+    assert mods == {"__future__", "argparse", "bisect", "contextlib", "fnmatch", "hashlib", "io", "json", "os", "pathlib",
                     "re", "signal", "subprocess", "sys", "tempfile", "time", "urllib.request"}, mods
     assert floor.VENDORED == "tools/psxd_floor.py"
     assert floor.VERSION == publish.VERSION == common.plugin_version()          # a game's tool changes only to a later one

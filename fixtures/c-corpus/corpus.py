@@ -15,8 +15,8 @@ truth/<id>/twin.<kind>.c   a fake twin: the same bytes through a lint kind (regi
                            `// compilers: gcc2.95.2` on its first lines limits it to that compiler.
 trial/<id>/pinned.c   one function that matches itself with two register pins. `// needs: <crutch>` names the pin
                       the match needs, `// spare: <crutch>` the pin it does not. The trial tool of the floor
-                      (scripts/floor.py `trial`, with probe.py as its probe) must drop the spare one, keep and record
-                      the needed one, and find a row that claims the spare one was needed.
+                      (scripts/floor.py `trial`, with probe.py as its probe) must drop the spare one, and keep and
+                      mark the needed one.
 Targets are built here from truth.c and pinned.c at test time; no target is stored. stdlib only; probe.py and lint.py
 beside it, and scripts/floor.py of this repository for the trial cases.
 """
@@ -164,8 +164,8 @@ def floor_module():
 
 
 def check_trial(t, errors):
-    """One trial case under each compiler: the floor's trial tool with probe.py as its probe. The spare pin goes, the
-    needed pin stays with a reason and a row, and a row written by hand for the spare pin is found by the recheck."""
+    """One trial case under each compiler: the floor's trial tool with probe.py as its probe. The spare pin goes and
+    the needed pin stays with a reason."""
     floor = floor_module()
     func, needs, spare = (t["meta"].get(k) for k in ("func", "needs", "spare"))
 
@@ -184,7 +184,7 @@ def check_trial(t, errors):
                 json.dump(probe.target_of(obj, func, comp), f)
             os.makedirs(os.path.join(repo, "src"))
             os.makedirs(os.path.join(repo, "config"))
-            src, rows = os.path.join(repo, "src", "pinned.c"), os.path.join(repo, floor.TRIALS)
+            src = os.path.join(repo, "src", "pinned.c")
             with open(src, "w") as f:
                 f.write(t["text"])
             with open(os.path.join(repo, floor.RECORD), "w") as f:
@@ -197,21 +197,8 @@ def check_trial(t, errors):
             if r.returncode != 0 or "2 tried, 1 removed, 1 kept" not in r.stdout or left != [needs]:
                 bad("%s: the trial left %s, not %s alone: %s" % (comp, left, needs, (r.stdout + r.stderr).strip().splitlines()[-2:]))
                 continue
-            with open(rows) as f:
-                got = [l.split("\t") for l in f.read().splitlines()[1:]]
-            if [g[1:3] + g[4:5] for g in got] != [[func, needs, "kept"]] or "// !FAKE: %s: " % needs not in text:
-                bad("%s: no reason above the kept pin, or no row for it: %s" % (comp, got))
-            if floor.trials_findings(repo):
-                bad("%s: the record check refuses the trial's own result: %s" % (comp, floor.trials_findings(repo)))
-            forged = t["text"].replace("    register", "    // !FAKE: the allocator needs it\n    register")
-            with open(src, "w") as f:
-                f.write(forged)
-            with open(rows, "w") as f:
-                f.write("\t".join(floor.TRIAL_COLUMNS) + "\n" + "".join("src/pinned.c\t%s\t%s\t%s\tkept\n" % (
-                    func, c["id"], c["hash"]) for c in floor.crutches("src/pinned.c", forged)))
-            r = run(repo, "--recheck")
-            if r.returncode != 1 or "TRIAL FAIL removable: src/pinned.c %s %s:" % (func, spare) not in r.stdout or r.stdout.count("TRIAL FAIL") != 1:
-                bad("%s: the recheck did not find the forged row of %s: %s" % (comp, spare, r.stdout.strip().splitlines()[-2:]))
+            if "// !FAKE: %s: " % needs not in text:
+                bad("%s: no reason above the kept pin" % comp)
     return 1
 
 

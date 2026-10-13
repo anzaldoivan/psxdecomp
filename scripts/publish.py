@@ -2679,7 +2679,6 @@ python3 -I "$t/psxd_floor.py" gate --staged
 """ % {"floor": FLOOR_TOOL, "publish": VENDORED}
 HOOKS = {"pre-push": PRE_PUSH, "pre-commit": PRE_COMMIT, "pre-merge-commit": PRE_COMMIT}
 OURS = "#!/bin/sh\n# psxdecomp"                      # how each text of psxdecomp starts: such a file is ours to write again
-TRIALS_REL = "config/trials.tsv"
 ZERO = "0" * 40
 
 
@@ -2776,8 +2775,8 @@ def floor_push(dev, remote: str, lines: list[str]) -> tuple[list[str], list[str]
     """(blocks, what the floor said) for a push, in split mode and outside it. Each branch that the push updates is
     judged by `gate --push <what the remote holds>..<what is pushed>`, run from the tools of the remote side in a
     temporary folder (a first push of the floor: from the tools of the pushed commit). Each `raise` line and assembly
-    row that the push adds is the developer's act: the hook asks for it at the terminal. Then the trial rows that the
-    push adds are run again, and ten older ones. A repository with no floor on either side has no such check."""
+    row that the push adds is the developer's act: the hook asks for it at the terminal. A repository with no floor
+    on either side has no such check."""
     blocks, said = [], []
     show = lambda rev, rel: _git(dev, "show", "%s:%s" % (rev, rel)).stdout if rev else ""  # noqa: E731
     for line in lines:
@@ -2806,22 +2805,7 @@ def floor_push(dev, remote: str, lines: list[str]) -> tuple[list[str], list[str]
                 continue
             acts = [l[len("GATE WARN "):] for l in out if l.startswith("GATE WARN ") and "the developer's act" in l]
             refused = [a for a in acts if not confirm("psxdecomp: %s\nIs this yours, and do you push it?" % a)]
-            if refused:
-                blocks += ["not confirmed at a terminal: %s" % a for a in refused]
-                continue
-            if len([l for l in show(local, TRIALS_REL).splitlines() if l.strip()]) < 2:
-                continue                               # no trial row: nothing to run again
-            if _git(dev, "rev-parse", "HEAD").stdout.strip() != local:
-                if not base or _git(dev, "diff", "--quiet", base, local, "--", TRIALS_REL).returncode:
-                    blocks.append("check out %s to push it: its trial rows are run again before a push, and a trial "
-                                  "compiles the work tree" % name)
-                continue
-            r = subprocess.run(tool + ["trial", "--recheck", "--rows", "10", "--repo", str(dev)] + (
-                ["--against", base] if base else []), capture_output=True, text=True)
-            out = r.stdout.strip().splitlines()
-            said += ["%s: %s" % (name, l) for l in out if l.startswith("TRIAL FAIL")]
-            if r.returncode:
-                blocks.append("the trial rows of %s do not hold: %s" % (name, out[-1] if out else _tail(r)))
+            blocks += ["not confirmed at a terminal: %s" % a for a in refused]
     return blocks, said
 
 
@@ -5248,22 +5232,6 @@ def _hooks_self_test(check, td: str) -> None:
         confirm = lambda q: True  # noqa: E731
         check("pre-push: a confirmed raise passes", floor_push(repo, "origin", pushed(raised, base))[0] == [],
               floor_push(repo, "origin", pushed(raised, base)))
-        pinned = 's32 Run(s32 n) {\n    // !FAKE: the sum must be in $17\n    register s32 t asm("$17") = n;\n    return t;\n}\n'
-        put("src/run.c", pinned)
-        put("src/stubs.c", "// every function is in C\n")
-        put(TRIALS_REL, "path\tfunction\tcrutch\thash\tresult\n" + "".join(
-            "src/run.c\tRun\t%s\t%s\tkept\n" % (c["id"], c["hash"]) for c in floor_mod.crutches("src/run.c", pinned)))
-        git("add", "-A")                               # the count reads what git tracks
-        floor("debt", "--update")
-        git("add", "-A")
-        r = git("commit", "-q", "-m", "a pin with a row that nobody ran")
-        check("pre-commit cannot tell a forged trial row", r.returncode == 0 and tip() != raised, r.stdout + r.stderr)
-        blocks, said = floor_push(repo, "origin", pushed(tip(), raised))
-        check("pre-push runs the new trial rows again", any("the trial rows of main do not hold" in b for b in blocks)
-              and any("TRIAL FAIL removable: src/run.c Run pin:$17:t" in l for l in said), (blocks, said))
-        git("checkout", "-q", "--detach", raised)
-        blocks, _ = floor_push(repo, "origin", pushed(git("rev-parse", "main").stdout.strip(), raised))
-        check("pre-push: new trial rows need the work tree", any("check out main to push it" in b for b in blocks), blocks)
     finally:
         confirm = saved
         os.environ.update(agent)
