@@ -735,8 +735,8 @@ def test_floor_is_vendorable():
     hook and the debt count give one result on a python3 that has none."""
     text = (ROOT / "scripts/floor.py").read_text()
     mods = set(re.findall(r"^\s*(?:import|from) ([\w.]+)", text, re.M))
-    assert mods == {"__future__", "argparse", "bisect", "contextlib", "fnmatch", "hashlib", "io", "json", "os", "pathlib",
-                    "re", "signal", "subprocess", "sys", "tempfile", "time", "urllib.request"}, mods
+    assert mods == {"__future__", "argparse", "bisect", "concurrent.futures", "contextlib", "fnmatch", "hashlib", "io", "json", "os",
+                    "pathlib", "re", "shlex", "shutil", "signal", "subprocess", "sys", "tempfile", "time", "urllib.request"}, mods
     assert floor.VENDORED == "tools/psxd_floor.py"
     assert floor.VERSION == publish.VERSION == common.plugin_version()          # a game's tool changes only to a later one
     assert _floor("--version").stdout.strip() == floor.VERSION
@@ -985,7 +985,7 @@ def test_debt_kinds(tmp_path):
     want = {(k, "src/%s.c" % kind): n for kind, (_, got) in floor.C_DEBT.items() for k, n in got.items()}
     assert bl.rows == want and bl.skip == [] and len(bl.head) == len(floor.BASELINE_HEAD), bl.rows   # no stub header here: no skip line
     assert {k for k, _ in bl.rows} == set(floor.KINDS) - {"unbased", "filename", "flag", "reservation"} and not bl.lacks()
-    assert bl.summary() == "down: pin-unmarked, goto-unmarked, barrier-unmarked, asm, obscured; count: pin, goto, barrier, " \
+    assert bl.summary() == "down: pin-unmarked, goto-unmarked, barrier-unmarked, asm; count: pin, goto, barrier, " \
                            "offset, address, cast, field, macro, placeholder, placeholder-use, unbased, struct, extern, " \
                            "filename, flag, reservation"
     (repo / "config").mkdir()
@@ -1378,7 +1378,7 @@ def test_readability_rule_files():
     assert all("| `%s` |" % k in doc for k in floor.KINDS)
     assert "`%s`" % " ".join(floor.NAME_COLUMNS) in doc and "`%s`" % " ".join(floor.ASM_COLUMNS) in doc
     assert "`%s`" % " ".join(floor.TOOL_COLUMNS) in doc and all("`%s`" % c in doc for c in floor.ASM_CLASSES)
-    for row in ("roadmap", "guard", "gate", "toolchain", "names", "debt", "progress"):
+    for row in ("roadmap", "guard", "gate", "toolchain", "names", "debt", "cpp", "progress"):
         assert "| `%s` | " % row in doc and row in doctor.ROWS, row
     assert "`VERIFY OK`" in doc and "`VERIFY FAIL: <the command to run>`" in doc and "`make verify`" in doc
 

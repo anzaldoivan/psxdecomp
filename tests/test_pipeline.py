@@ -408,17 +408,17 @@ def test_trial_in_a_game(game):
 
 
 def test_phase_rows_wait_at_bootstrap(game):
-    """The phase-conditional rows of the floor at the handoff: gate, toolchain, names, debt and progress say WAIT with
+    """The phase-conditional rows of the floor at the handoff: gate, toolchain, names, debt, cpp and progress say WAIT with
     the phase that makes each due, and the doctor still exits 0 (S10 aborts on a FAIL)."""
     r = run([PY, ROOT / "scripts/doctor.py", "--repo", game, "--offline"], check=False)
     assert r.returncode == 0, r.stdout
     rows = dict(re.findall(r"^DOCTOR (\S+) +(OK|WARN|FAIL|SKIP|WAIT) ", r.stdout, re.M))
     waits = {k for k, v in rows.items() if v == "WAIT"}
-    assert waits == {"roadmap", "gate", "toolchain", "names", "debt", "progress"}, rows
+    assert waits == {"roadmap", "gate", "toolchain", "names", "debt", "cpp", "progress"}, rows
     for name, due in (("gate", "phase 1.3 closes"), ("toolchain", "phase 1.4 closes"), ("names", "phase 1.4 closes"),
-                      ("debt", "the first C file under src/"), ("progress", "phase 1.9 opens")):
+                      ("debt", "the first C file under src/"), ("cpp", "phase 1.4 closes"), ("progress", "phase 1.9 opens")):
         assert re.search(r"^DOCTOR %s +WAIT due w\S+ %s" % (name, re.escape(due)), r.stdout, re.M), (name, r.stdout)
-    assert r.stdout.splitlines()[-1].startswith("DOCTOR OK (") and ", 6 not due" in r.stdout.splitlines()[-1]
+    assert r.stdout.splitlines()[-1].startswith("DOCTOR OK (") and ", 7 not due" in r.stdout.splitlines()[-1]
 
 
 def test_second_pa3_install_keeps_the_rule_the_ratchet_and_the_hook(toolchain, game, tmp_path):

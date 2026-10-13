@@ -91,8 +91,9 @@ edits a file. The hook reads `config/guard.tsv`. psxdecomp writes that file once
 | `guard` | always | the hook groups in `.claude/settings.json`, and a `config/guard.tsv` that parses |
 | `gate` | phase 1.3 is closed | one gate command, and at least one `config/check.*.sha` |
 | `toolchain` | phase 1.4 is closed | `docs/ops/compiler-pin.md`, and a `config/toolchain.tsv` with every row at its pin |
-| `names` | phase 1.4 is closed | the two ledgers, with no malformed row |
+| `names` | phase 1.4 is closed | the two ledgers, each with its header line. A names row that points at nothing is a warning. |
 | `debt` | the first C file is in `src/`, or the first count | a debt baseline that is equal to the tree |
+| `cpp` | phase 1.4 is closed | `[floor] cpp` in `config/psxdecomp.toml`, and a command that runs on this machine |
 | `progress` | phase 1.9 opens | a workflow that uploads the progress report of each executable |
 
 ## The acceptance gate
@@ -110,7 +111,7 @@ A game has one command that proves a change. The default is `make verify`.
 ## The gate of the floor
 
 `python3 tools/psxd_floor.py gate` runs the checks of this file in one command. Each finding is a line
-`GATE FAIL <check>: <detail>`. The last line is `GATE OK` or `GATE FAIL`.
+`GATE FAIL <check>: <detail>`. A `GATE WARN` line refuses nothing. The last line is `GATE OK` or `GATE FAIL`.
 
 | Mode | It judges | Against |
 |---|---|---|
@@ -119,19 +120,29 @@ A game has one command that proves a change. The default is `make verify`.
 | `--ci <base>..<head>` | the head of the range | the base of the range |
 | `--push` | the same as `--ci` | the same as `--ci` |
 
+The gate refuses these things, and no other. Established decompilation projects refuse the same things.
+
+| What the gate refuses | Check |
+|---|---|
+| a build that does not give the bytes of the game: `[floor] gate` or `[own] gate` fails, at the bank and at a push | `game` |
+| a change of a file that carries the floor, such as a tool, a hook, a deny rule, a workflow or a policy line | `protected`, `policy` |
+| assembly that stands for a function: an assembly statement with an instruction or data, or an assembly file, with no evidence row | `debt` |
+| a new pin, `goto` or barrier with no `// !FAKE: <reason>` comment | `debt` |
+| a rise of a kind that the developer set to `down` | `debt` |
+| a baseline, a ledger, a README, a plan or a tool pin that is not in order | `debt`, `names`, `readme`, `plan`, `toolchain`, `categories`, `style`, `own-debt` |
+
 - The gate judges a change against a tree that the change cannot rewrite. An edited baseline or tool decides nothing.
+- The two ends of a change decide. A merge in progress is judged against `HEAD`, as any other change.
+- A base that names no commit fails. A tool that cannot run passes nothing.
 - `--bank` writes the rows of the baseline when the change is admitted. A bank tool calls it before the commit.
 - `--bank` and `--push` also run the check of the game, `[floor] gate` or `[own] gate`.
-- The checks are `policy`, `debt`, `protected`, `style`, `names`, `own-debt`, `plan`, `toolchain`, `readme` and `categories`.
-- `protected` covers the files that carry the floor. The first are the two tools and the workflows.
-- It also covers the hooks and the deny rules of `.claude/settings.json`, and the `deny` rows of `config/guard.tsv`.
-- It also covers each check that the record names in `[own]`, `[trial]`, `[floor]` or `[debt]`.
+- The gate never refuses a function for its name. It never refuses a cast, an offset or a placeholder name.
+- `protected` covers the two tools, the workflows, and the hooks, deny rules and `env` of `.claude/settings.json`.
+- It also covers the `deny` rows of `config/guard.tsv`, and each value of `[own]`, `[trial]`, `[floor]` and `[debt]`.
 - A new key in one of those four tables is a protected change. A file that a `skip` line covers keeps its bytes.
-- The two ends of a range decide. A base that names no commit fails.
 - A tool changes only to a later version. The new tool then judges the tree.
 - The developer allows one protected change with `debt --raise protected <n> --reason <text>`.
 - That line also allows a change of the policy, such as a new `skip` line.
-- A merge in progress is judged against `HEAD`, as any other change.
 
 Three git hooks run the gate in each clone. `python3 tools/psxd_publish.py hook --install` writes them.
 
@@ -148,24 +159,50 @@ Three git hooks run the gate in each clone. `python3 tools/psxd_publish.py hook 
 
 ## Readability debt
 
-`python3 tools/psxd_floor.py debt` counts the debt of each tracked file with a C or an assembly suffix. The rule
-is `rules/FIN1.md`.
+`python3 tools/psxd_floor.py debt` counts the debt of the source. The rule is `rules/FIN1.md`.
+The cleanup of a matched function is separate work. It comes after the bank, and a later commit lowers the count.
+
+The tool reads four kinds in the text that the compiler gets. These are the kinds that the gate can refuse.
 
 | Kind | It counts |
 |---|---|
 | `pin` | a register that the source forces: `register ... asm("$n")`, also with `__asm__` or `__asm` |
+| `goto` | the word `goto` |
+| `barrier` | an empty assembly statement, `__asm__("")`, or one inside a function that holds assembler directives only |
 | `pin-unmarked` | a pin with no `// !FAKE: <reason>` comment of its own |
-| `goto` | the word `goto` wherever it stands, or a macro that hides one, at each use. Only `goto label;` can carry a marker. |
-| `goto-unmarked` | a `goto` with no `// !FAKE: <reason>` comment of its own |
-| `barrier` | an empty assembly statement, `__asm__("")` |
-| `barrier-unmarked` | a barrier with no `// !FAKE: <reason>` comment of its own |
+| `goto-unmarked` | a `goto` with no such comment |
+| `barrier-unmarked` | a barrier with no such comment |
+| `asm` | an assembly file, or an assembly statement that holds an instruction or emits data, with no row in `config/asm-evidence.tsv` |
+
+- `[floor] cpp` in `config/psxdecomp.toml` names the preprocess command of the game, with `{file}` for the unit.
+- An example is `cpp = "mipsel-linux-gnu-cpp -nostdinc -undef -D__GNUC__=2 -Iinclude {file}"`.
+- The tool runs that command for each C unit and reads its output. It runs the command with no shell.
+- A macro, a line splice or a digraph hides nothing there. An `#include` of any file hides nothing either.
+- The output holds `# <line> "<file>"` markers. Each construct counts at the file and the line that hold it.
+- Do not give `-P` to the command. That option removes the markers.
+- The host's `cc -E` with the same flags reads the same text. Name a command that each machine of the project has.
+- A unit that the command cannot preprocess fails the check. So does a command that the machine lacks.
+- The tool keeps the result of each unit in the git folder, so a change costs the units that read a changed file.
+  A push and CI run every unit again.
+- A change is counted with the command of the tree that it starts from. A new command decides from the next change on.
+- With no `[floor] cpp`, the tool reads the raw text of each file. `/psxdecomp:doctor` says so in its `cpp` row.
+- In the raw text, a construct inside a macro counts one time, at the definition of the macro.
+- One marker covers one construct. It stands on the line of the construct, or alone on the line above.
+- The marker stands in the file that holds the line. A marker with no reason covers nothing.
+- An `INCLUDE_ASM` stub is not debt. The progress report gives it no credit.
+- A file-scope assembly statement that holds assembler directives only (`.include`, `.section`, `.set`, `.macro`)
+  is the plumbing of a stub, and not debt. A line with `.word`, `.byte` or `.incbin` emits data.
+- In split mode, the public repository must hold each file that its C units include.
+
+The tool finds the other kinds with patterns over the raw text. They are counted and shown, and the gate refuses none.
+
+| Kind | It counts |
+|---|---|
 | `offset` | a field read by its offset: `*(T *)(p + N)`, `((T *)p)[N]`, `M2C_FIELD(`, or a byte pointer plus a number, each also with a minus. A macro that hides one counts at each use. |
 | `address` | a literal in the address ranges of the console with no symbol, or a macro that hides one, outside the address header |
 | `cast` | an integer made of a pointer, or a pointer made of an integer: `(s32)&x`, `(T *)(s32)x`, also with `u_long`, `u_int` and `u_short` |
 | `field` | a name such as `unk_10` or `field_0x10`: a field with an offset and no name |
 | `macro` | a `#define` whose body holds `{`, `;` or a line continuation |
-| `asm` | an assembly file, an inline assembly statement, the word `asm` in any other place, or a macro that holds one, with no row in `config/asm-evidence.tsv` |
-| `obscured` | text that hides code from the tool: a statement outside each function body that the tool sees, or a line continuation outside a directive. A digraph for a brace, a `##` paste and a source behind a symbolic link count too. |
 | `placeholder` | a `func_` or `D_` address name that a C file defines, also `FUN_`, `DAT_`, `sub_` and `loc_` |
 | `placeholder-use` | each other place where such a name stands |
 | `unbased` | any other function that a C file defines, with no accepted row in `config/names.tsv` |
@@ -175,34 +212,21 @@ is `rules/FIN1.md`.
 | `flag` | a compiler option of one file |
 | `reservation` | a register that a file takes from the compiler, `-ffixed-N` |
 
-- The tool does not read `asm/`, `build/`, `expected/`, `extracted/`, `refs/`, `tools/`, `docs/`, `config/`,
-  `tests/`, `fixtures/` and `cookbook/`.
+- A pattern is a count, not a proof. Code in another spelling is not counted.
+- For these kinds the tool reads each tracked file with a C suffix. It does not read `asm/`, `build/`, `expected/`,
+  `extracted/`, `refs/`, `tools/`, `docs/`, `config/`, `tests/`, `fixtures/` and `cookbook/`.
 - It does not read the work folders of a campaign: `drafts/`, `waves/`, `repro/`, `scratch/` and `sandbox/`.
 - It also does not read a folder whose name starts with a dot. It reads each other folder.
-- An `#include` of a file of the tree that the tool does not read counts as `obscured`.
-- That is a file with another suffix, or a file in a folder that is not read.
-- A path through a linked folder or a submodule counts the same way.
-- An `#include <...>` of a file of the tree counts as `obscured` too. Write the tree's own headers with quotes.
 - The tool knows the macros of each header in every file, and those of an included C file in the file that includes it.
-- The definition of `INCLUDE_ASM` and `INCLUDE_RODATA` is protected. A change of it needs a `raise protected` line.
-- A fragment is a file that a function includes inside its braces. Its name decides nothing.
-- A file of statements that no function includes counts as `obscured`.
-- A branch of an `#if` must pair its braces. A lone brace in a branch counts as `obscured`.
-- Where an `#if` chooses between two function heads, write the `{` behind the `#endif`.
-- Every `INCLUDE_ASM` counts as a stub, wherever it stands on its line.
-- The debt of a fragment rises only when each body that includes it is new.
-- The tool sees a function body when its head starts in column 0 as `type name(arguments) {`.
 - The game counts `flag` and `reservation`. `[debt] flags` in `config/psxdecomp.toml` names its command.
 - That command prints one `<count> <kind> <path>` line for each count.
-- An `INCLUDE_ASM` stub is not debt. The progress report gives it no credit. The definition of the stub macro is
-  not debt either.
-- A file-scope assembly statement of a header is not debt when it holds assembler directives only.
 - A pointer sum with a variable is not an `offset`. The address ranges are main RAM, the scratchpad, the I/O
   ports and the BIOS. The value `0x80000000` counts only behind a pointer cast, because it is also the sign mask.
 - `config/debt-baseline.txt` holds one `<count> <kind> <path>` row for each count above zero.
+- The diff of that file shows the debt that a commit brings.
 - The check fails when a count is over its row. It also fails when a row is over its count.
 - The check also fails with no baseline, and with no policy line for a kind.
-- Run `debt --update` in the commit that changes a count. The tool refuses a rise of a kind in mode `down`.
+- Run `debt --update` in the commit that changes a count, or bank with `gate --bank`.
 - A `skip <entry>` line takes files out of the count. A change cannot add one.
 - `[debt] address_header` in `config/psxdecomp.toml` names the address header. The default is `include/addr.h`.
 - `[own] debt` names a scanner of the game. The gate runs it beside this count. It replaces no check.
@@ -217,7 +241,7 @@ The baseline holds one policy line for each kind. `debt --recount` writes the st
 | `mode <kind> down` | The total of the kind in the tree never rises. |
 | `raise <kind> <n> <date> <reason>` | The developer lets one change go over by `n`. |
 
-- The starting mode is `down` for `asm`, `pin-unmarked`, `goto-unmarked`, `barrier-unmarked` and `obscured`.
+- The starting mode is `down` for `asm`, `pin-unmarked`, `goto-unmarked` and `barrier-unmarked`.
 - Each other kind starts in `count`. Its rows show the debt that each commit brings.
 - No kind about names starts in `down`. A function that matches is never refused for its name.
 - The tool compares the total of the tree that a change starts from with the total of the tree that it makes.

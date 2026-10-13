@@ -61,7 +61,7 @@ import publish  # noqa: E402
 
 NETWORK_ROWS = ("progress", "github", "dev-ci", "private-repo", "public-standard")
 SPLIT_ROWS = ("private-repo", "public-standard")
-ROWS = ("record", "sdk", "pa3", "pa3-drift", "python", "kit", "roadmap", "gate", "toolchain", "names", "debt",
+ROWS = ("record", "sdk", "pa3", "pa3-drift", "python", "kit", "roadmap", "gate", "toolchain", "names", "debt", "cpp",
         "readme", "publish-tool", "deny", "guard", "split-guard",
         "categories", "ignore", "audit", "fixture", "refs", "refs-ignored", "hygiene", "card") + NETWORK_ROWS
 WIDTH = max(map(len, ROWS))                     # the name column of every printed row (doctor, upgrade audit, S10)
@@ -273,7 +273,7 @@ def _record(repo: pathlib.Path) -> dict:
 
 
 def floor_rows(repo: pathlib.Path) -> list[tuple[str, tuple[str, str]]]:
-    """The four phase-conditional rows of the tooling and readability floor: gate, toolchain, names, debt. A row that
+    """The five phase-conditional rows of the tooling and readability floor: gate, toolchain, names, debt, cpp. A row that
     is not due says WAIT with the phase that makes it due; an [own] key answers its row (the record row checks that
     its path exists)."""
     rec, state = _record(repo), floor.phase_state(repo)
@@ -284,7 +284,20 @@ def floor_rows(repo: pathlib.Path) -> list[tuple[str, tuple[str, str]]]:
     except floor.Fail as e:
         debt = e
     return [("gate", gate_row(repo, state, rec)), ("toolchain", toolchain_row(repo, state, own)),
-            ("names", names_row(repo, state, own, debt)), ("debt", debt_row(repo, state, own, debt))]
+            ("names", names_row(repo, state, own, debt)), ("debt", debt_row(repo, state, own, debt)),
+            ("cpp", cpp_row(repo, state))]
+
+
+def cpp_row(repo: pathlib.Path, state: dict) -> tuple[str, str]:
+    """Due when phase 1.4 is closed (the compiler is pinned): `[floor] cpp` of the record names the game's preprocess
+    command, and it runs on this machine. FAIL when it is set and does not run: every gate would fail here."""
+    st, detail = floor.cpp_probe(repo)
+    if st == "NONE":
+        if state[4] != "closed":
+            return "WAIT", "due when phase 1.4 closes: `[floor] cpp` in %s, the preprocess command of the build" % floor.RECORD
+        return "WARN", "%s — add `cpp = \"<the build's preprocess command> {file}\"` under `[floor]` (no `-P`; a new key of " \
+                       "that table is a protected change: `debt --raise protected 1`)" % detail
+    return st, detail
 
 
 def gate_row(repo: pathlib.Path, state: dict, rec: dict) -> tuple[str, str]:
@@ -1246,7 +1259,7 @@ def self_test_roadmap() -> bool:
 
 
 def self_test_floor() -> bool:
-    """The four floor rows by phase: all WAIT before their phase, then WARN or FAIL for what is missing, then OK; an
+    """The five floor rows by phase: all WAIT before their phase, then WARN or FAIL for what is missing, then OK; an
     [own] key answers its row; a malformed ledger fails at any time."""
     with tempfile.TemporaryDirectory() as td:
         repo = pathlib.Path(td).resolve()
@@ -1270,6 +1283,14 @@ def self_test_floor() -> bool:
         ok &= [mid[k][0] for k in ("gate", "toolchain", "names", "debt")] == ["OK", "OK", "OK", "WARN"]
         ok &= "gate `make verify`; 1 hash file(s)" == mid["gate"][1] and "1 function(s) in src/" in mid["names"][1]
         ok &= "the tree holds: goto 1, unbased 1" in mid["debt"][1]
+        ok &= first["cpp"][0] == "WAIT" and "phase 1.4 closes" in first["cpp"][1]
+        ok &= mid["cpp"][0] == "WARN" and "no `[floor] cpp`" in mid["cpp"][1] and "under `[floor]`" in mid["cpp"][1]
+        common.write(repo / "tools/cpp.py", floor.CPP_SELF)
+        common.write(repo / floor.RECORD, "[floor]\ncpp = '%s tools/cpp.py {file}'\n" % sys.executable)
+        ok &= rows()["cpp"][0] == "OK" and "runs here (tried on src/a.c)" in rows()["cpp"][1]
+        common.write(repo / floor.RECORD, "[floor]\ncpp = '/nowhere/psxd-no-such-cpp {file}'\n")
+        ok &= rows()["cpp"][0] == "FAIL" and "a program that this machine lacks" in rows()["cpp"][1]
+        (repo / floor.RECORD).unlink()
         (repo / floor.BASELINE).write_text(floor.first_baseline(repo))
         equal = rows()["debt"]
         (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0] + floor.C_DEBT["goto"][0].replace("Walk", "Run"))

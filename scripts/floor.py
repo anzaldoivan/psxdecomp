@@ -63,14 +63,24 @@ The plan checks. `grammar` and `ladder` are a FAIL, the others a WARN.
 
 The debt kinds (one `<count> <kind> <path>` row each in the baseline). Every tracked file with a C or an assembly
 suffix is read, in any folder but the splitter's output, the build's, the reference library, the folders of tools,
-documents, records and tests, and the work folders of a campaign (drafts/, waves/, repro/, scratch/, sandbox/):
+documents, records and tests, and the work folders of a campaign (drafts/, waves/, repro/, scratch/, sandbox/).
+The first four kinds are read in the output of the game's preprocessor, `[floor] cpp` of the record (for example
+`mipsel-linux-gnu-cpp -nostdinc -undef -D__GNUC__=2 -Iinclude {file}`): what the compiler sees, whatever a macro, a
+line splice or an include does to the text, and in whatever file a unit reads. With no `[floor] cpp` they are read in
+the raw text of each file, where a construct inside a macro is counted once, at the macro's definition:
   pin              `register T x asm("$n")` (also `__asm__`, `__asm`): a register forced by hand
-  goto             the word `goto` wherever it stands (a computed goto and a macro's argument too), or a macro that
-                   hides one (each use). Only `goto label;` can carry a marker
-  barrier          an empty asm statement, `__asm__("")`: it forces the compiler and holds no instruction
+  goto             the word `goto`
+  barrier          an empty asm statement, `__asm__("")`, or one inside a function that holds assembler directives
+                   only: it forces the compiler and holds no instruction
   <those three>-unmarked
                    one of them with no `// !FAKE: <reason>` comment of its own: on its line, or alone on the line
-                   above. One marker covers one construct, and a marker with no reason covers none
+                   above, in the file that holds the line. One marker covers one construct, and a marker with no
+                   reason covers none
+  asm              an assembly file, or an asm statement that holds an instruction or emits data (`.word`, `.byte`,
+                   `.incbin`), with no row in config/asm-evidence.tsv. A file-scope asm statement that holds
+                   assembler directives only (`.include`, `.section`, `.set`, `.macro`) is a stub or its plumbing, and
+                   no debt: the progress report gives a stub no credit
+The other kinds are patterns over the raw text. They are counted and shown, and a pattern can be respelled:
   offset           a field read by its offset: `*(T *)(p + N)`, `((T *)p)[N]`, `M2C_FIELD(`, a byte pointer plus a
                    number, each also with a minus, or a macro that hides one (each use). A sum with a variable
                    is not counted
@@ -80,18 +90,6 @@ documents, records and tests, and the work folders of a campaign (drafts/, waves
                    with the SDK's names (`u_long`, `u_int`, `u_short`)
   field            a member or a name `unk_10`, `field_0x10`: a field that has an offset and no name
   macro            a `#define` whose body holds `{`, `;` or a line continuation
-  asm              an assembly file, an inline asm statement, the word `asm` in any other place (a macro's
-                   argument), or a macro that holds one (the macro and each use), with no row in
-                   config/asm-evidence.tsv
-  obscured         text that hides code from this tool: a statement outside every function body it sees (a head in
-                   K&R form, by a macro, or not in column 0), a line continuation outside a directive, a digraph or
-                   a trigraph for a brace, a `##` paste, a source behind a symbolic link, an `#include` of a file
-                   of the tree that the count does not read (another suffix, a folder that is not read, the `<>`
-                   form, a path through a linked folder or a submodule), a branch of a preprocessor conditional
-                   whose braces do not pair. The macros of a header are known in every file, those of an
-                   included C file in the file that includes it. A file that
-                   a function includes inside its braces is a fragment: its statements are counted in its own
-                   file, and they rise only when each body that includes it is new
   placeholder      a `func_XXXXXXXX` or `D_XXXXXXXX` name defined in a C file (also `FUN_`, `DAT_`, `sub_`, `loc_`)
   placeholder-use  each other place where such a name stands: a call, a read, a declaration
   unbased          any other function defined in a C file with no accepted row in config/names.tsv (once that file
@@ -102,8 +100,6 @@ documents, records and tests, and the work folders of a campaign (drafts/, waves
   flag, reservation
                    a compiler option of one file, and a register taken from the compiler (`-ffixed-N`). The game
                    counts them: `[debt] flags` of the record names a command that prints `<count> <kind> <path>` lines
-An `INCLUDE_ASM` stub is not debt: the progress report gives it no credit. The stub macro's own definition is not debt
-either, nor is a file-scope asm statement of a header that holds assembler directives only.
 
 The baseline's policy lines (one per kind; `debt --recount` writes the starting ones):
   mode <kind> count                             the kind is counted and shown: each commit's diff of the baseline shows
@@ -203,8 +199,7 @@ class Tree:
         self._cat = None
         self.memo: dict = {}                           # what a check derived from this tree, by its own key
         self._set: set | None = None
-        self.links: list[str] = []                     # the tracked symbolic links: no file of the tree, and said so
-        self.modules: list[str] = []                   # the submodules: folders whose files this tree does not hold
+        self._ids: dict[str, str | None] = {}          # the blob of each path that `blob` was asked for
         self._keep = None                              # a view (`only`): the test of the paths it holds
         self._whole: Tree | None = None                # and the tree it is a view of, which owns the git process
         if source is None:
@@ -215,8 +210,6 @@ class Tree:
                 found = {f.relative_to(self.repo).as_posix() for f in self.repo.rglob("*")
                          if f.is_file() and ".git" not in f.relative_to(self.repo).parts}
             self.paths = sorted(found)
-            self.links = [p for p in self.paths if (self.repo / p).is_symlink()]
-            self.modules = [p for p in self.paths if p not in self.links and (self.repo / p).is_dir()]
             return
         r = _git(repo, "ls-files", "-z", "-s") if source == INDEX else _git(repo, "ls-tree", "-r", "-z", source)
         if r.returncode != 0:
@@ -227,10 +220,6 @@ class Tree:
             cells = meta.split()
             if tab and len(cells) == 3 and cells[0] not in LINKS:
                 self._blob.setdefault(path, cells[1] if source == INDEX else cells[2])
-            elif tab and cells[:1] == ["120000"]:
-                self.links.append(path)
-            elif tab and cells[:1] == ["160000"]:
-                self.modules.append(path)
         self.paths = sorted(self._blob)
 
     def only(self, keep) -> "Tree":
@@ -239,8 +228,6 @@ class Tree:
         view = Tree.__new__(Tree)
         view.__dict__.update(self.__dict__)
         view.paths = [p for p in self.paths if keep(p)]
-        view.links = [p for p in self.links if keep(p)]
-        view.modules = [p for p in self.modules if keep(p)]
         view._text, view.memo, view._set, view._keep, view._whole = {}, {}, None, keep, self
         return view
 
@@ -276,6 +263,18 @@ class Tree:
             return None if f.is_symlink() else f.read_bytes()
         except OSError:
             return None
+
+    def blob(self, path: str) -> str | None:
+        """The id of a file's bytes, as git names a blob; None for a path that the source holds no file for. The work
+        tree gives the id of the bytes on its disk, tracked or not."""
+        if self._whole is not None:
+            return self._whole.blob(path)
+        if self.source is not None:
+            return self._blob.get(path)
+        if path not in self._ids:
+            data = self.raw(path)
+            self._ids[path] = None if data is None else hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+        return self._ids[path]
 
     def _object(self, sha: str) -> bytes | None:
         if self._cat is None:
@@ -683,13 +682,14 @@ def cmd_plan(repo) -> int:
 
 # ---- the readability debt -----------------------------------------------------------------------------------------
 KINDS = ("pin", "pin-unmarked", "goto", "goto-unmarked", "barrier", "barrier-unmarked", "offset", "address", "cast",
-         "field", "macro", "asm", "obscured", "placeholder", "placeholder-use", "unbased", "struct", "extern", "filename",
+         "field", "macro", "asm", "placeholder", "placeholder-use", "unbased", "struct", "extern", "filename",
          "flag", "reservation")
+RETIRED = ("obscured",)                              # a kind of an unreleased build of this tool: its lines are dropped
 NUM = r"(?:0[xX][0-9A-Fa-f]+|\d+)"
 OFFX = rf"(?:\([^()]*\)|{NUM}|[A-Za-z_]\w*)(?:\s*[-+*]\s*(?:\([^()]*\)|{NUM}|[A-Za-z_]\w*))*"
 OPND = r"\(?\s*&?\s*\w+(?:\s*(?:->|\.)\s*\w+|\s*\[[^\[\]\n]*\])*\s*\)?"
-PTR = r"\(\s*[\w ]+?\s*\*+\s*\)"
-CAST = r"\(\s*[\w ]+?\s*\**\s*\)"
+PTR = r"\(\s*\w[\w ]{0,60}?\s*\*+\s*\)"              # a type name has an end: a run of words with no star costs no more
+CAST = r"\(\s*\w[\w ]{0,60}?\s*\**\s*\)"
 CHR = r"(?:const\s+)?(?:(?:(?:unsigned|signed)\s+)?(?:char|[su]8)|u_?char)"
 # A field read by its offset, in four forms, and a byte pointer plus a number. A sum with a variable (`(u8 *)dst + n`)
 # is pointer arithmetic.
@@ -713,12 +713,13 @@ ASM_WORD = r"(?:asm|__asm__|__asm)"
 PIN = re.compile(r'\bregister\b[^;{}]*?\b%s\s*\(\s*"' % ASM_WORD)
 GOTO = re.compile(r"\bgoto\s+\w+\s*;")
 STRUCT = re.compile(r"\b(?:struct|union|enum)\b(?:\s*__attribute__\s*\(\(.*?\)\))?\s*\w*\s*\{")
-INLINE_ASM = re.compile(r"\b%s\b\s*(?:(?:volatile|__volatile__)\b\s*)?\(" % ASM_WORD)
+INLINE_ASM = re.compile(r"\b%s\b\s*(?:(?:volatile|__volatile__|__volatile)\b\s*)?\(" % ASM_WORD)
 ASM_TEXT = re.compile(r'\s*((?:"(?:\\.|[^"\\\n])*"\s*)+)\)')              # the strings of an asm statement, behind its `(`
-# Text that hides code from this tool: a statement outside every function body that the tool sees (a head in K&R
-# form, by a macro, or not in column 0), a line continuation outside a directive, a digraph or a trigraph for a brace.
-STATEMENT = re.compile(r"\breturn\b|\bgoto\s+\w+\s*;|\b(?:if|for|while|switch)\s*\(")
-SPLICE = re.compile(r"\\\n|<%|%>|\?\?[<>/]")
+# What an assembler line may be and still emit nothing: a section, an include, a setting, a symbol's attributes, a
+# macro's definition. Any other line of an asm statement is an instruction or data.
+ASM_QUIET = re.compile(r"\.(?:include|section|pushsection|popsection|previous|text|data|rodata|bss|sdata|sbss|set|equ|equiv|align|balign|p2align"
+                       r"|macro|endm|purgem|altmacro|noaltmacro|globl|global|type|size|ent|end|frame|mask|fmask|file|loc|ident"
+                       r"|weak|local|extern|if\w*|else|elseif|endif)\b")
 EXTERN = re.compile(r"\bextern\b|^(?!static\b|typedef\b)(?:[A-Za-z_]\w*[\s*]+)+?[A-Za-z_]\w*\s*\([^;{}]*\)\s*;", re.M)
 FILENAME = re.compile(r"(?:(?:func|code|text|seg|file|unk|misc|task|gap|data|rodata|bss)_?[0-9A-Fa-f]{2,}|[0-9A-Fa-f]{5,8})", re.I)
 DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(\w+)((?:\\\n|[^\n])*)", re.M)
@@ -727,7 +728,7 @@ DEF_FUNC = re.compile(r"^(?:[A-Za-z_]\w*[\s*]+)+?([A-Za-z_]\w*)\s*\([^;{}]*\)\s*
 DEF_DATA = re.compile(r"^(?!extern\b)(?:[A-Za-z_]\w*[\s*]+)+?((?:D|DAT)_[0-9A-Fa-f]{8}\w*)\s*(?:\[[^\]\n]*\]\s*)*[=;]", re.M)
 PLACEHOLDER = re.compile(r"^(?:func|D|FUN|DAT|sub|loc)_[0-9A-Fa-f]{8}")      # a splitter's name, or a disassembler's
 PLACEHOLDER_USE = re.compile(r"\b(?:func|D|FUN|DAT|sub|loc)_[0-9A-Fa-f]{8}\w*")
-NOT_A_NAME = {"if", "for", "while", "switch", "return", "sizeof", "do", "else", "main"}
+NOT_A_NAME = {"if", "for", "while", "switch", "return", "sizeof", "do", "else"}
 _STRIP = re.compile(r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.S)
 C_SUFFIXES = (".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".inc")              # read as C; the suffix is read in lower case
 ASM_SUFFIXES = (".s", ".asm", ".sx")                                          # an assembly file: one count, unless a row
@@ -736,10 +737,7 @@ ASM_SUFFIXES = (".s", ".asm", ".sx")                                          # 
 NOT_SOURCE = ("asm/", "build/", "expected/", "extracted/", "refs/", "tools/", "docs/", "config/", "tests/", "fixtures/",
               "cookbook/", "drafts/", "waves/", "repro/", "scratch/", "sandbox/")     # the last five: where a campaign works
 INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*"([^"\n]+)"', re.M)
-ANGLE = re.compile(r"^[ \t]*#[ \t]*include[ \t]*<([^>\n]+)>", re.M)
-STUB_DEF = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(%s)\b((?:\\\n|[^\n])*)" % "|".join(STUB_MACROS), re.M)
 ADDRESS_HEADER = "include/addr.h"
-FIRST_SKIP = ("include/include_asm.h",)             # the stub macro's header, where a game keeps one
 BASELINE_HEAD = (
     "%s: the count of readability debt in each tracked source file (`python3 %s --help` lists the kinds)." % (
         BASELINE, VENDORED),
@@ -764,6 +762,11 @@ def strip(text: str) -> str:
     return _STRIP.sub(blank, text)
 
 
+def uncommented(text: str) -> str:
+    """Comments become spaces, strings stay: the text in which an asm statement's own strings are read."""
+    return _STRIP.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)) if m.group(0)[0] == "/" else m.group(0), text)
+
+
 def _address_at(text: str) -> list[int]:
     """Where the address literals of a text start. `0x80000000` is the sign mask as well, so it counts only behind a
     pointer cast."""
@@ -775,28 +778,24 @@ def _addresses(text: str) -> int:
     return len(_address_at(text))
 
 
-MACRO_KINDS = ("asm", "goto", "offset", "address")   # what a macro can hide; the first that its body holds is its kind
+MACRO_KINDS = ("offset", "address")                  # what a macro can hide from a pattern; the first that its body holds
+MACRO_ROUNDS = 8                                     # a macro over a macro over a macro: so deep, and no deeper
 
 
 def _macros(body: str, known=None) -> dict[str, str]:
-    """{macro name: its kind of MACRO_KINDS} for each `#define` whose body holds an asm word, a `goto`, an offset
-    read or an address, or uses a macro that does (`known` and the file's own, to a fixed point). M2C_FIELD is
-    counted by its name, and the stub macros are not debt."""
+    """{macro name: its kind of MACRO_KINDS} for each `#define` whose body holds an offset read or an address, or
+    uses a macro that does (`known` and the file's own, MACRO_ROUNDS deep). M2C_FIELD is counted by its name, and the
+    stub macros are not debt."""
     defs = [(m.group(1), m.group(2)) for m in DEFINE.finditer(body) if m.group(1) not in ("M2C_FIELD",) + STUB_MACROS]
     out = {}
     if not defs:                                       # most files define nothing
         return out
     for name, text in defs:
-        if re.search(r"\b%s\b" % ASM_WORD, text):
-            out[name] = "asm"
-        elif re.search(r"\bgoto\b", text):
-            out[name] = "goto"
-        elif OFFSET.search(text):
+        if OFFSET.search(text):
             out[name] = "offset"
         elif _addresses(text):
             out[name] = "address"
-    grew = True
-    while grew:
+    for _ in range(MACRO_ROUNDS):
         grew = False
         seen = dict(known or {}, **out)
         for name, text in defs:
@@ -806,6 +805,8 @@ def _macros(body: str, known=None) -> dict[str, str]:
                 if _uses([k for k, v in seen.items() if v == kind and k != name], text):
                     out[name], grew = kind, True
                     break
+        if not grew:
+            break
     return out
 
 
@@ -829,16 +830,16 @@ def _uses(names, text: str) -> int:
 BRACE = re.compile(r"[{}]")
 STUB_USE = re.compile(r"\bINCLUDE_ASM\s*\(")          # every use counts, wherever it stands on its line
 STUB_NAME = re.compile(r"\bINCLUDE_ASM\s*\([^;]*?\b([A-Za-z_]\w*)\s*\)")
-CONDITIONAL = re.compile(r"^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|else|endif)\b", re.M)
 SCOPE = ""                                             # the name of a file's bucket for what no function body holds
 
 
 def extents(code: str) -> list[tuple[str, int, int]]:
-    """[(name, start, end)] of the function bodies of a stripped text, in order. A body starts at a definition in
-    column 0 (DEF_FUNC) and ends behind its matching brace. A definition inside an open body is dropped. Two heads
-    with nothing between them but space are one body (an `#if` that chooses the head: the directives are blank
-    here). A body whose braces never close ends at the next definition in column 0. What no body holds is the
-    file's own scope: a K&R definition and a definition by a macro are read as that scope."""
+    """[(name, start, end)] of the function bodies of a stripped text, in order: where the count of a file is shown
+    by function (`debt --bodies`), where an assembly row finds its function, and where a trial finds the crutches of
+    one. A body starts at a definition in column 0 (DEF_FUNC) and ends behind its matching brace. A definition
+    inside an open body is dropped. Two heads with nothing between them but space are one body (an `#if` that
+    chooses the head: the directives are blank here). A body whose braces never close ends at the next definition in
+    column 0. What no body holds is the file's own scope. No check depends on this reading."""
     heads = [m for m in DEF_FUNC.finditer(code) if m.group(1) not in NOT_A_NAME]
     out, i = [], 0
     while i < len(heads):
@@ -862,105 +863,346 @@ def extents(code: str) -> list[tuple[str, int, int]]:
     return out
 
 
-def unpaired(body: str, code: str) -> list[int]:
-    """Where a branch of a preprocessor conditional ends with braces that do not pair (`body`: the text with no
-    comment, `code`: the same with its directives blank, so a brace of a `#define` is none). This tool reads every
-    branch as text, the compiler reads one: a lone brace in a branch moves the end of a function body for one of the
-    two, so a body could swallow the next one or end before its own tail. A conditional that chooses between two
-    heads keeps the brace behind its `#endif`."""
-    out, stack, at = [], [], 0
-    for m in CONDITIONAL.finditer(body):
-        if stack:
-            stack[-1] += code.count("{", at, m.start()) - code.count("}", at, m.start())
-        at = m.end()
-        if m[1] in ("if", "ifdef", "ifndef"):
-            stack.append(0)
-        elif stack:
-            if stack[-1]:
-                out.append(m.start())
-            if m[1] == "endif":
-                stack.pop()
-            else:
-                stack[-1] = 0
+# ---- the keyword kinds: pin, goto, barrier, asm -----------------------------------------------------------------------
+# These four are what a gate can refuse (their unmarked forms, and assembly), so they are read where the compiler
+# reads them: in the output of the game's own preprocessor, `[floor] cpp` of the record (the method of FF7's linter,
+# which runs the game's cpp before it scans). There a macro, a line splice, a digraph or an include of any file hides
+# nothing: the text is what the compiler gets. Each hit keeps its file and its line through the `# <line> "<file>"`
+# markers of the output. With no `[floor] cpp` the same scan reads the raw text of each file, where a construct
+# inside a macro is counted once, at the macro's definition.
+def asm_emits(text: str) -> bool:
+    """The strings of an asm statement hold an instruction or emit data: a line that is no label, no comment and none
+    of the directives of ASM_QUIET, outside a `.macro` definition."""
+    inside = False
+    for l in re.split(r"\\n|\n|;", text):
+        l = re.sub(r"^[\w.$]+:\s*", "", l.replace("\\t", " ").replace('\\"', '"').strip())
+        if not l or l.startswith(("#", "/*", "//")):
+            continue
+        if l.startswith(".macro"):
+            inside = True
+        elif l.startswith(".endm"):
+            inside = False
+        elif not inside and not ASM_QUIET.match(l):
+            return True
+    return False
+
+
+def keywords(text: str, code: str) -> tuple[list[dict], list[tuple[str, int]]]:
+    """(the crutches of a text as `_crutches` finds them, [(kind, position)] for what is no crutch): the word `goto`
+    in any other form than `goto label;`, an asm statement that holds an instruction, emits data or cannot be read
+    (`asm`), and an asm statement inside a function whose strings are assembler plumbing only (a `barrier`: it
+    emits nothing and forces the compiler as an empty one does). The same statement at file scope is the plumbing of
+    a stub or of its header, and no debt. `code`: the text with its comments and strings blank."""
+    found = _crutches(text, code)
+    plain = uncommented(text)
+    spans = [(c["a"], c["b"]) for c in found if c["kind"] != "goto"]
+    known = {c["a"] for c in found if c["kind"] == "goto"}
+    more = [("goto", m.start()) for m in re.finditer(r"\bgoto\b", code) if m.start() not in known]
+    for m in re.finditer(r"\b%s\b" % ASM_WORD, code):
+        if any(a <= m.start() < b for a, b in spans):
+            continue
+        head = INLINE_ASM.match(code, m.start())
+        strings = ASM_TEXT.match(plain, head.end()) if head else None
+        if strings is None or asm_emits("".join(re.findall(r'"((?:\\.|[^"\\\n])*)"', strings[1]))):
+            more.append(("asm", m.start()))
+        elif code.count("{", 0, m.start()) + code.count("<%", 0, m.start()) > code.count("}", 0, m.start()) + code.count("%>", 0, m.start()):
+            more.append(("barrier", m.start()))
+    return found, more
+
+
+def marked(hits: list[tuple[str, int]], marks: dict) -> list[tuple[str, int]]:
+    """[(kind, line)] with a `<kind>-unmarked` beside each pin, goto and barrier that no marker covers. `hits`:
+    [(kind, line from 0)]; `marks`: `markers` of the file. One marker covers one construct: the one on its line, or
+    the one on the line below when the marker stands alone. A marker with no reason covers none."""
+    out, used = [], set()
+    for kind, line in sorted(hits, key=lambda h: h[1]):
+        out.append((kind, line))
+        if kind == "asm":
+            continue
+        mark = next((at for at in (line, line - 1) if at in marks and at not in used and (at == line or marks[at][1])), None)
+        used.add(mark)
+        if mark is None or not reason_ok(marks[mark][0]):
+            out.append((kind + "-unmarked", line))
+    return out
+
+
+_RAW: dict[bytes, list] = {}
+
+
+def raw_keywords(text: str) -> list[tuple[str, int]]:
+    """[(kind, line from 0)] of the keyword kinds as the raw text of one file shows them: the view with no
+    `[floor] cpp`. The body of a `#define` is read where it stands. The definition of a stub macro is assembly by
+    design and is not read, and no other directive is."""
+    key = hashlib.sha1(text.encode("utf-8", "replace")).digest()
+    if key not in _RAW:
+        def directive(m):
+            define = DEFINE.match(m.group(0))
+            return m.group(0) if define and define.group(1) not in STUB_MACROS else re.sub(r"[^\n]", " ", m.group(0))
+        found, more = keywords(text, PREPROC.sub(directive, strip(text)))
+        _RAW[key] = [(c["kind"], c["line"]) for c in found] + [(kind, text.count("\n", 0, at)) for kind, at in more]
+    return _RAW[key]
+
+
+LINE_MARK = re.compile(r'^#(?:line)?[ \t]+(\d+)[ \t]+"((?:[^"\\\n]|\\.)*)"[ \t\d]*$', re.M)
+CPP_SECONDS = 120                                    # one unit; a preprocessor that hangs is a failure
+CPP_CACHE = "psxd-cpp-cache.json"                    # in the repository's git folder: what each unit gave, by what it read
+_cpp_cache_on = True                                 # a push and CI trust no file of this machine: they run every unit
+
+
+def floor_cpp(tree: "Tree") -> str | None:
+    """`[floor] cpp` of the record: the command that preprocesses one C unit of the game, with `{file}` for the unit
+    (added as the last argument when the command names none). The game's own: `mipsel-linux-gnu-cpp -nostdinc -undef
+    -D__GNUC__=2 -Iinclude {file}`, or the host's `cc -E` with the same flags. It prints line markers (no `-P`)."""
+    return record_table(tree, "floor").get("cpp") or None
+
+
+def _cpp_argv(cmd: str, unit: str) -> list[str]:
+    import shlex
+    try:
+        argv = shlex.split(cmd)
+    except ValueError as e:
+        raise Fail("`[floor] cpp` (`%s`) is no command line: %s" % (cmd, e))
+    if not argv:
+        raise Fail("`[floor] cpp` is empty")
+    return [a.replace("{file}", unit) for a in argv] if "{file}" in cmd else argv + [unit]
+
+
+def unit_view(out: str, unit: str, root: str) -> tuple[dict[tuple[str, str, int], int], set[str]]:
+    """({(kind, file, line from 0): count}, the files it read) for the preprocessor output of one unit. The output
+    is cut at its line markers into runs. A construct is found in the whole text, so a run may end inside one, and it
+    gets the file and the line of the run that holds its first character. A file that the unit includes twice is
+    read once: of each line, the most that one run holds."""
+    runs, texts, at, pos = [], [], 0, 0                # a run: (its start in the joined text, its file, its first line)
+    file, n = unit, 1
+    for m in LINE_MARK.finditer(out):
+        chunk = out[pos:m.start()]
+        runs.append((at, file, n))
+        texts.append(chunk)
+        at += len(chunk)
+        p = m[2].replace("\\\\", "\\").replace('\\"', '"')
+        if os.path.isabs(p):
+            rel = os.path.relpath(p, root)
+            p = p if rel.startswith("..") else rel
+        file, n = (unit if p.startswith("<") else os.path.normpath(p).replace(os.sep, "/")), int(m[1])
+        pos = min(m.end() + 1, len(out))
+    runs.append((at, file, n))
+    texts.append(out[pos:])
+    files = {f for _, f, _ in runs}
+    text = "".join(texts)
+    if "asm" not in text and "goto" not in text:
+        return {}, files
+    starts = [r[0] for r in runs]
+    found, more = keywords(text, strip(text))
+    hits: dict[tuple, int] = {}
+    for kind, at in [(c["kind"], c["a"]) for c in found] + more:
+        i = bisect.bisect_right(starts, at) - 1
+        key = (kind, runs[i][1], runs[i][2] + text.count("\n", runs[i][0], at) - 1, i)
+        hits[key] = hits.get(key, 0) + 1
+    once: dict[tuple[str, str, int], int] = {}
+    for (kind, f, line, _), c in hits.items():
+        once[(kind, f, line)] = max(once.get((kind, f, line), 0), c)
+    return once, files
+
+
+@contextlib.contextmanager
+def exported(tree: "Tree"):
+    """The folder that holds a tree's files, for a command that reads files: the work tree itself, or a temporary
+    checkout of the index or of a revision, made by git with no change to the repository's own index."""
+    if tree.source is None:
+        yield str(tree.repo)
+        return
+    with tempfile.TemporaryDirectory() as td:
+        env = dict(os.environ)
+        steps = [["checkout-index", "-a", "-f", "--prefix=%s/tree/" % td]]
+        if tree.source != INDEX:
+            env["GIT_INDEX_FILE"] = os.path.join(td, "index")
+            steps.insert(0, ["read-tree", tree.source])
+        for step in steps:
+            r = subprocess.run(["git", "-C", str(tree.repo)] + step, env=env, capture_output=True, text=True, errors="replace")
+            if r.returncode != 0:
+                raise Fail("git cannot write the files of %s for the preprocessor: %s" % (source_name(tree.source), r.stderr.strip()[-200:]))
+        os.makedirs(os.path.join(td, "tree"), exist_ok=True)
+        yield os.path.join(td, "tree")
+
+
+def cpp_probe(repo, tree: "Tree | None" = None) -> tuple[str, str]:
+    """(NONE|OK|FAIL, detail): whether `[floor] cpp` is set and runs on this machine. One C unit of the tree is
+    preprocessed in the work tree, and its output must hold a line marker."""
+    tree = tree or Tree(repo)
+    cmd = floor_cpp(tree)
+    if not cmd:
+        return "NONE", ("no `[floor] cpp` in %s: pin, goto, barrier and asm are read in the raw text of each file, where a "
+                        "construct inside a macro counts once, at the macro's definition" % RECORD)
+    unit = next((p for p in tree.paths if is_source(p) and is_c(p)), None)
+    if unit is None:
+        return "OK", "`%s` (no C unit to run it on yet)" % cmd
+    try:
+        r = subprocess.run(_cpp_argv(cmd, unit), cwd=str(tree.repo), capture_output=True, timeout=CPP_SECONDS)
+    except Fail as e:
+        return "FAIL", str(e)
+    except FileNotFoundError:
+        return "FAIL", "`[floor] cpp` names a program that this machine lacks (`%s`): every gate fails here" % _cpp_argv(cmd, unit)[0]
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return "FAIL", "`%s` on %s: %s" % (cmd, unit, type(e).__name__)
+    if r.returncode != 0:
+        return "FAIL", "`%s` exited %d on %s: %s" % (cmd, r.returncode, unit, (as_read(r.stderr).strip().splitlines() or [""])[-1][:160])
+    if not LINE_MARK.search(as_read(r.stdout)):
+        return "FAIL", "`%s` prints no `# <line> \"<file>\"` marker for %s (drop `-P`)" % (cmd, unit)
+    return "OK", "`%s` runs here (tried on %s)" % (cmd, unit)
+
+
+def _cache_file(repo) -> pathlib.Path | None:
+    r = _git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return pathlib.Path(r.stdout.strip()) / CPP_CACHE if r.returncode == 0 and r.stdout.strip() else None
+
+
+def compiler_view(repo, tree: "Tree", cmd: str) -> dict[str, list[tuple[str, int]]]:
+    """{path: [(kind, line from 0)]} of the keyword kinds as the game's preprocessor shows them: `cmd` run for each C
+    unit of the tree, in a folder that holds the tree's files. A unit is a C file that no unit before it read: every
+    C file that no `#include "…"` names is run first, the files that the line markers name are collected, and each C
+    file not seen yet is run on its own, so the preprocessor decides what was covered and no pattern does. Of one
+    line of one file, the most that one unit holds counts. A unit that the command cannot preprocess raises Fail: a
+    judge that cannot read passes nothing. Each unit's result is kept beside the files it read (their blobs), so a
+    change costs the units that it touches."""
+    if ("view", cmd) in tree.memo:
+        return tree.memo[("view", cmd)]
+    whole = tree._whole or tree
+    units = [p for p in whole.paths if is_source(p) and is_c(p)]
+    named = set()
+    for p in units:
+        text = whole.read(p) or ""
+        folder = p.rsplit("/", 1)[0] + "/" if "/" in p else ""
+        for inc in INCLUDE.findall(text) if "include" in text else ():
+            named.update((os.path.normpath(folder + inc), os.path.normpath(inc), os.path.normpath("include/" + inc)))
+    by_name: dict[str, list[str]] = {}
+    for p in whole.paths:
+        by_name.setdefault(p.rsplit("/", 1)[-1], []).append(p)
+
+    def names_of(deps) -> str:                         # a new file of the same name could be found first by an include
+        same = sorted(q for name in {d.rsplit("/", 1)[-1] for d in deps} for q in by_name.get(name, ()))
+        return hashlib.sha1("\n".join(same).encode("utf-8", "replace")).hexdigest()
+
+    store = _cache_file(repo) if _cpp_cache_on else None
+    try:
+        cache = json.loads(store.read_text(encoding="utf-8")) if store is not None and store.is_file() else {}
+    except (OSError, ValueError):
+        cache = {}
+    cache = cache if isinstance(cache, dict) and cache.get("version") == VERSION and isinstance(cache.get("units"), dict) else {
+        "version": VERSION, "units": {}}
+    held, fresh = cache["units"], {}
+    total: dict[tuple[str, str, int], int] = {}
+    seen: set[str] = set()
+    failed: list[str] = []
+
+    def take(unit, hits, files):
+        seen.update(files)
+        for key, n in hits.items():
+            total[key] = max(total.get(key, 0), n)
+
+    slot = lambda unit: hashlib.sha1(("%s\0%s" % (cmd, unit)).encode()).hexdigest()  # noqa: E731
+
+    def cached(unit):
+        e = held.get(slot(unit))
+        try:
+            if e and all(whole.blob(p) == b for p, b in e["deps"].items()) and e["names"] == names_of(e["deps"]):
+                return {(k, f, int(l)): int(n) for k, f, l, n in e["hits"]}, set(e["deps"])
+        except (KeyError, TypeError, ValueError, AttributeError):
+            pass
+        return None
+
+    def run(root, unit):
+        try:
+            r = subprocess.run(_cpp_argv(cmd, unit), cwd=root, capture_output=True, timeout=CPP_SECONDS)
+        except FileNotFoundError:
+            raise Fail("`[floor] cpp` names a program that this machine lacks (`%s`): the gate reads what the game's "
+                       "preprocessor prints. Install it, or name one that every machine of the project has (the host's "
+                       "`cc -E` with the same flags reads the same text)" % _cpp_argv(cmd, unit)[0])
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return unit, None, "%s: %s" % (type(e).__name__, str(e)[:120])
+        if r.returncode != 0:
+            return unit, None, (as_read(r.stderr).strip().splitlines() or ["exit %d" % r.returncode])[-1][:200]
+        out = as_read(r.stdout)
+        return (unit, out, "") if LINE_MARK.search(out) else (unit, None, "the output holds no `# <line> \"<file>\"` marker (a "
+                                                              "preprocessor prints them unless `-P` is given): a hit would have no file")
+
+    import concurrent.futures
+    with contextlib.ExitStack() as stack:
+        root = None
+        first = [p for p in units if p not in named]
+        for batch in (first, None):
+            batch = [p for p in units if p not in seen and p not in first] if batch is None else batch
+            todo = []
+            for unit in batch:
+                got = cached(unit)
+                if got is None:
+                    todo.append(unit)
+                else:
+                    take(unit, *got)
+                    fresh[slot(unit)] = held[slot(unit)]
+            if todo and root is None:
+                root = stack.enter_context(exported(whole))
+            with concurrent.futures.ThreadPoolExecutor(min(8, os.cpu_count() or 2)) as pool:
+                for unit, out, err in pool.map(lambda u: run(root, u), todo):
+                    if out is None:
+                        failed.append("%s: %s" % (unit, err))
+                        continue
+                    hits, files = unit_view(out, unit, root)
+                    take(unit, hits, files)
+                    deps = {f: whole.blob(f) for f in files}
+                    if all(deps.values()):             # every file it read is a file of this tree: the result can be kept
+                        fresh[slot(unit)] = {
+                            "deps": deps, "names": names_of(deps), "hits": [[k, f, l, n] for (k, f, l), n in sorted(hits.items())]}
+    if failed:
+        raise Fail("`[floor] cpp` (`%s`) cannot preprocess %d unit(s) of %s: %s%s" % (
+            cmd, len(failed), source_name(tree.source), failed[0], " and %d more" % (len(failed) - 1) if len(failed) > 1 else ""))
+    if store is not None and fresh != held:
+        try:                                           # the units of this run and of the one before: a base and a head
+            keep = dict(list(held.items())[-20000:], **fresh)
+            tmp = store.with_name(store.name + ".%d" % os.getpid())
+            tmp.write_text(json.dumps({"version": VERSION, "units": keep}), encoding="utf-8")
+            os.replace(tmp, store)
+        except OSError:
+            pass
+    out: dict[str, list[tuple[str, int]]] = {}
+    for (kind, f, line), n in sorted(total.items()):
+        out.setdefault(f, []).extend([(kind, line)] * n)
+    tree.memo[("view", cmd)] = out
     return out
 
 
 _SCANS: dict[tuple, dict] = {}                         # one scan per text and context: a range of commits repeats most
 
 
-def _plumbing(plain: str, at: int) -> bool:
-    """The asm statement whose `(` ends at `at` holds assembler directives only (`.include`, `.macro` and its lines):
-    the plumbing of the stub macro, not an instruction."""
-    m = ASM_TEXT.match(plain, at)
-    if not m:
-        return False
-    text = "".join(re.findall(r'"((?:\\.|[^"\\\n])*)"', m[1]))
-    return all(not l.strip() or l.strip().startswith((".", "\\", "#")) or l.strip().endswith(":")
-               for l in re.split(r"\\n|;", text))
-
-
 def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -> dict:
-    """One C file or header, read once. `hits`: [(kind, position)] of every kind that the text alone decides (not
-    `unbased`, `filename`, `flag`, `reservation`). `extents`: its function bodies. `funcs`: {name: position} of the
-    functions it defines under a name that is no placeholder. `stubs`: its INCLUDE_ASM lines. `shared`: the macros of
-    the headers that hide a construct."""
+    """One C file or header, read once. `hits`: [(kind, position)] of every kind that a pattern over the raw text
+    decides (not the keyword kinds, and not `unbased`, `filename`, `flag`, `reservation`). `extents`: its function
+    bodies. `funcs`: {name: position} of the functions it defines under a name that is no placeholder. `stubs`: its
+    INCLUDE_ASM lines. `shared`: the macros of the headers that hide an offset or an address."""
     key = (hashlib.sha1(text.encode("utf-8", "replace")).digest(), in_include(rel), is_c(rel), is_header(rel),
            rel == address_header, tuple(sorted((shared or {}).items())))
     if key in _SCANS:
         return _SCANS[key]
     body = strip(text)
     code = PREPROC.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), body)
-    plain = _STRIP.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)) if m.group(0)[0] == "/" else m.group(0), text)
     macros = dict(shared or {})
     macros.update(_macros(body, macros))
     defines = [m for m in DEFINE.finditer(body) if m.group(1) not in ("M2C_FIELD",) + STUB_MACROS]
     ext = extents(code)
     hits: list[tuple[str, int]] = []
-    found = _crutches(text, code)
-    for c in found:                                    # a pin, a goto, an empty asm statement: each with its own marker
-        hits.append((c["kind"], c["a"]))
-        if not reason_ok(c["reason"]):                 # no marker of its own, or a marker with no reason
-            hits.append((c["kind"] + "-unmarked", c["a"]))
     # each construct in the code, each one that a macro's own body holds, and each use of such a macro
     hits += [("offset", m.start()) for m in OFFSET.finditer(code)]
     hits += [("offset", d.start()) for d in defines for _ in OFFSET.findall(d.group(2))]
     if rel != address_header:
         hits += [("address", at) for at in _address_at(code)]
         hits += [("address", d.start()) for d in defines for _ in _address_at(d.group(2))]
-    hits += [("asm", d.start()) for d in defines if re.search(r"\b%s\b" % ASM_WORD, d.group(2))]
     for kind in MACRO_KINDS:
         rx = _use_rx([k for k, v in macros.items() if v == kind])
         if rx and not (kind == "address" and rel == address_header):   # (its own address macros are not in `shared`)
             hits += [(kind, m.start()) for m in rx.finditer(code)]
-            hits += [("goto-unmarked", m.start()) for m in rx.finditer(code)] if kind == "goto" else []
     hits += [("cast", m.start()) for m in CASTS.finditer(code)]
     hits += [("field", m.start()) for m in FIELD.finditer(code)]
     hits += [("macro", m.start()) for m in DEFINE.finditer(body) if m.group(1) not in STUB_MACROS
              and re.search(r"[{;]|\\\n", m.group(2))]
-    spans = [(c["a"], c["b"]) for c in found if c["kind"] != "goto"]
-    starts = [a for _, a, _ in ext]
-
-    def outside(at: int) -> bool:                      # in no function body
-        i = bisect.bisect_right(starts, at) - 1
-        return not (i >= 0 and at < ext[i][2])
-
-    read = set()                                       # where an asm word stands that a pattern above or below reads
-    for m in INLINE_ASM.finditer(code):                # a header's own plumbing at file scope is the stub's, not debt
-        read.add(m.start())
-        if not any(a <= m.start() < b for a, b in spans) and not (is_header(rel) and outside(m.start()) and _plumbing(plain, m.end())):
-            hits.append(("asm", m.start()))
-    # The two words count wherever they stand: as a macro's argument, behind a macro, in a form no pattern knows.
-    hits += [("asm", m.start()) for m in re.finditer(r"\b%s\b" % ASM_WORD, code)
-             if m.start() not in read and not any(a <= m.start() < b for a, b in spans)]
-    known = {c["a"] for c in found if c["kind"] == "goto"}
-    for m in re.finditer(r"\bgoto\b", code):
-        if m.start() not in known:                     # no `goto label;`: nothing a marker could cover
-            hits += [("goto", m.start()), ("goto-unmarked", m.start())]
-    hits += [("obscured", m.start()) for m in re.finditer(r"##", body)]   # a paste can spell any word
-    loose = [m.start() for m in STATEMENT.finditer(code) if outside(m.start())]
-    hits += [("obscured", at) for at in loose]         # `debt_bodies` takes them back for a file that a body includes
-    hits += [("obscured", m.start()) for m in SPLICE.finditer(code)]
-    hits += [("obscured", at) for at in unpaired(body, code)]
     if not in_include(rel):
         hits += [("struct", m.start()) for m in STRUCT.finditer(code)]
     funcs: dict[str, int] = {}
@@ -980,21 +1222,21 @@ def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -
             if own is not None:
                 uses.remove(own)
     hits += [("placeholder-use", m.start()) for m in uses]
-    includes = []                                      # [(the body that holds the directive, the path it names)]
-    for m in INCLUDE.finditer(plain):
-        i = bisect.bisect_right(starts, m.start()) - 1
-        includes.append((ext[i][0] if i >= 0 and m.start() < ext[i][2] else SCOPE, m.group(1)))
-    _SCANS[key] = {"hits": hits, "extents": ext, "funcs": funcs, "stubs": len(STUB_USE.findall(code)), "includes": includes,
-                   "crutches": found, "loose": len(loose), "angles": ANGLE.findall(plain)}
+    _SCANS[key] = {"hits": hits, "extents": ext, "funcs": funcs, "stubs": len(STUB_USE.findall(code))}
     return _SCANS[key]
 
 
-def file_bodies(rel: str, text: str, shared=None, based=None, address_header=ADDRESS_HEADER) -> dict[str, dict[str, int]]:
+def file_bodies(rel: str, text: str, shared=None, based=None, address_header=ADDRESS_HEADER, view=None) -> dict[str, dict[str, int]]:
     """{function name: {kind: count}} of one C file or header: every function body it holds, also one with no debt,
     and under SCOPE what no body holds (left out when it is empty). Two bodies of one name are one entry. `based`:
-    the names with a ledger row, or None before the ledger exists."""
+    the names with a ledger row, or None before the ledger exists. `view`: [(kind, line from 0)] of the keyword kinds
+    as the game's preprocessor shows them for this file (`compiler_view`); None: as the raw text shows them."""
     scan = scan_file(rel, text, shared, address_header)
     hits = list(scan["hits"])
+    view = raw_keywords(text) if view is None else view
+    if view:                                           # a hit stands in the body that holds the start of its line
+        starts = [0] + [m.end() for m in re.finditer("\n", text)]
+        hits += [(kind, starts[min(line, len(starts) - 1)]) for kind, line in marked(view, markers(text) if "!FAKE:" in text else {})]
     if based is not None:
         hits += [("unbased", at) for n, at in scan["funcs"].items() if n not in based]
     out: dict[str, dict[str, int]] = {name: {} for name, _, _ in scan["extents"]}
@@ -1007,10 +1249,10 @@ def file_bodies(rel: str, text: str, shared=None, based=None, address_header=ADD
     return out
 
 
-def file_debt(rel: str, text: str, shared=None, based=None, address_header=ADDRESS_HEADER) -> dict[str, int]:
+def file_debt(rel: str, text: str, shared=None, based=None, address_header=ADDRESS_HEADER, view=None) -> dict[str, int]:
     """The counts of one C file or header, by kind (zero counts left out): the sum of its bodies and its scope."""
     got: dict[str, int] = {}
-    for counts in file_bodies(rel, text, shared, based, address_header).values():
+    for counts in file_bodies(rel, text, shared, based, address_header, view).values():
         for kind, n in counts.items():
             got[kind] = got.get(kind, 0) + n
     return {k: got[k] for k in KINDS if got.get(k)}
@@ -1117,13 +1359,17 @@ def flag_counts(repo, tree: Tree) -> dict[tuple[str, str], int]:
     return out
 
 
-def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, dict[str, int]]]:
+def debt_bodies(repo, skip=(), tree: Tree | None = None, cpp=False) -> dict[str, dict[str, dict[str, int]]]:
     """{path: {function name: {kind: count}}} over the tracked source files (is_source) that no `skip` entry covers:
     every function body of every C file (also one with no debt), and under SCOPE what no body holds. `tree`: the
-    source to count (default: the work tree of `repo`). The ledgers and the record are read from the same source."""
+    source to count (default: the work tree of `repo`). The ledgers and the record are read from the same source.
+    `cpp`: the preprocess command that shows the keyword kinds (False: the tree's own `[floor] cpp`; None: no
+    command, the raw text). With a command, a keyword that the preprocessor finds in any file that a unit reads is
+    counted at that file, whatever its suffix and its folder."""
     tree = tree or Tree(repo)
-    if ("bodies", tuple(skip)) in tree.memo:
-        return tree.memo[("bodies", tuple(skip))]
+    cmd = floor_cpp(tree) if cpp is False else cpp
+    if ("bodies", tuple(skip), cmd) in tree.memo:
+        return tree.memo[("bodies", tuple(skip), cmd)]
     covered = lambda p: any(entry_match(e, p) for e in skip)  # noqa: E731
     files = [p for p in tree.paths if is_source(p) and not covered(p)]
     header = address_header(tree)
@@ -1132,29 +1378,26 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, 
     evidence: dict[str, set] = {}                      # {path: the symbols with a row}: a row clears one function, or one file
     for r in read_tsv(ASM_EVIDENCE, ASM_COLUMNS, tree, also=(ASM_COLUMNS_OLD,))[0] or []:
         evidence.setdefault(r["path"], set()).add(r["symbol"])
+    view = compiler_view(repo, tree, cmd) if cmd else None
     texts = {p: tree.read(p) for p in files}
-    behind = tuple(l + "/" for l in tree.links + tree.modules)   # folders whose files this tree does not hold
-
-    def places(p: str, inc: str) -> tuple[str, str, str]:
-        folder = p.rsplit("/", 1)[0] + "/" if "/" in p else ""
-        return os.path.normpath(folder + inc), os.path.normpath(inc), "include/" + inc
-
     shared: dict[str, str] = {}
     # The macros of every header and `.inc` are known in every file. The address header shares what it hides too, but
     # not its addresses: that is the place for them.
     heads = [(p, strip(texts[p])) for p in files if texts[p] is not None and (is_header(p) or p.lower().endswith(".inc"))]
-    size = -1
-    while len(shared) != size:                         # a macro of one header may use a macro of another
+    for _ in range(MACRO_ROUNDS):                      # a macro of one header may use a macro of another
         size = len(shared)
         for p, body in heads:
             shared.update({k: v for k, v in _macros(body, shared).items() if not (p == header and v == "address")})
+        if len(shared) == size:
+            break
     own: dict[str, dict] = {}                          # {a C file that others include: its macros}
 
     def known(p: str) -> dict[str, str]:
         """`shared`, and the macros of each C file that `p` includes: those are known in the file that includes it."""
         more: dict[str, str] = {}
+        folder = p.rsplit("/", 1)[0] + "/" if "/" in p else ""
         for inc in INCLUDE.findall(texts[p]) if "include" in texts[p] else ():
-            target = next((c for c in places(p, inc) if tree.has(c)), None)
+            target = next((c for c in (os.path.normpath(folder + inc), os.path.normpath(inc), "include/" + inc) if tree.has(c)), None)
             if target in texts and target != p and is_c(target) and texts[target] is not None:
                 if target not in own:
                     own[target] = _macros(strip(texts[target]), shared) if "define" in texts[target] else {}
@@ -1167,56 +1410,36 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, 
         if is_asm(p):
             out[p] = {} if p in evidence else {SCOPE: {"asm": 1}}
         else:
-            out[p] = file_bodies(p, texts[p], known(p), based, header)
+            out[p] = file_bodies(p, texts[p], known(p), based, header, None if view is None else view.get(p, []))
             for name in evidence.get(p, ()):
                 if name != SCOPE:
                     out[p].get(name, {}).pop("asm", None)
         if FILENAME.fullmatch(p.rsplit("/", 1)[-1].rsplit(".", 1)[0]):
             out[p].setdefault(SCOPE, {})["filename"] = 1       # a name that says an address or a number, not a subject
-    users: dict[str, set] = {}                         # {an included source: the (path, body) pairs that include it}
-    for p in files:
-        if texts[p] is None or is_asm(p):
+    for p, hits in (view or {}).items():               # what a unit read and the count above does not: another suffix, another folder
+        if p in out or covered(p) or (tree._keep is not None and not tree._keep(p)):
             continue
-        scan, unread = scan_file(p, texts[p], known(p), header), 0
-        for name, inc in scan["includes"]:
-            target = next((c for c in places(p, inc) if tree.has(c)), None)
-            if target is None:                         # no file of this tree, unless a link or a submodule stands in the way
-                unread += bool(behind) and any(c.startswith(behind) for c in places(p, inc))
-            elif not target.lower().endswith(C_SUFFIXES) or not is_source(target) or covered(target):
-                unread += 1                            # a file of this tree that the count does not read
-            elif not is_header(target) and name != SCOPE:   # inside a function's braces: the file is that body's text
-                users.setdefault(target, set()).add((p, name))
-        for inc in scan["angles"]:                     # the angle form is for the system's headers, not for the tree's
-            unread += any(tree.has(c) or behind and c.startswith(behind) for c in places(p, inc))
-        if unread:
-            got = out[p].setdefault(SCOPE, {})
-            got["obscured"] = got.get("obscured", 0) + unread
-    tree.memo[("users", tuple(skip))] = users
-    for target in users:                               # a fragment: its statements stand outside a function by design
-        scope = out.get(target, {}).get(SCOPE, {})
-        left = scope.get("obscured", 0) - scan_file(target, texts[target], known(target), header)["loose"]
-        if left > 0:
-            scope["obscured"] = left
-        else:
-            scope.pop("obscured", None)
-    for p in tree.links:                               # a source behind a symbolic link is compiled and never read here
-        if is_source(p) and not covered(p):
-            out.setdefault(p, {}).setdefault(SCOPE, {})["obscured"] = 1
+        text = tree.read(p) if not is_asm(p) else None
+        got: dict[str, int] = {}
+        for kind, _ in marked(hits, markers(text) if text and "!FAKE:" in text else {}):
+            got[kind] = got.get(kind, 0) + 1
+        out.setdefault(p, {})[SCOPE] = got
     for (kind, p), n in flag_counts(repo, tree).items():
         if not covered(p):
             out.setdefault(p, {}).setdefault(SCOPE, {})[kind] = n
-    tree.memo[("bodies", tuple(skip))] = out
+    tree.memo[("bodies", tuple(skip), cmd)] = out
     return out
 
 
-def debt_counts(repo, skip=(), tree: Tree | None = None, bodies=None) -> dict[tuple[str, str], int]:
+def debt_counts(repo, skip=(), tree: Tree | None = None, bodies=None, cpp=False) -> dict[tuple[str, str], int]:
     """{(kind, path): count}: the sum of each file's bodies and scope (`bodies`: a result of debt_bodies)."""
     out: dict[tuple[str, str], int] = {}
-    for p, by in (debt_bodies(repo, skip, tree) if bodies is None else bodies).items():
+    for p, by in (debt_bodies(repo, skip, tree, cpp) if bodies is None else bodies).items():
         for got in by.values():
             for kind, n in got.items():
                 out[(kind, p)] = out.get((kind, p), 0) + n
     return out
+
 
 
 # ---- the baseline: one row per count, and the policy that judges a change -------------------------------------------
@@ -1225,7 +1448,7 @@ def debt_counts(repo, skip=(), tree: Tree | None = None, bodies=None) -> dict[tu
 # lets one change go over by its number. The change itself cannot weaken any of this: `admission` reads the policy of
 # the revision that the change starts from.
 MODES = ("count", "down")                            # weakest first
-START_DOWN = ("asm", "pin-unmarked", "goto-unmarked", "barrier-unmarked", "obscured")   # what `debt --recount` starts as `down`
+START_DOWN = ("asm", "pin-unmarked", "goto-unmarked", "barrier-unmarked")   # what `debt --recount` starts as `down`
 PUBLIC_PATHS = "config/public-paths.txt"
 
 
@@ -1287,6 +1510,8 @@ def parse_baseline(text: str | None) -> Baseline:
         elif m is None:
             raise Fail("%s: not `<count> <kind> <path>`, `mode <kind> down|count`, `raise <kind> <n> <date> <reason>`, "
                        "`skip <entry>` or a `#` comment" % where)
+        elif kind in RETIRED:
+            continue
         elif kind not in KINDS:
             bl.other.append(l)
         elif mode or budget:
@@ -1338,7 +1563,6 @@ def recount_text(repo, tree: Tree | None = None) -> tuple[str, list[str]]:
     bl = parse_baseline(tree.read(BASELINE))
     notes = []
     if bl.version == 0:
-        bl.skip = [e for e in FIRST_SKIP if e in tree.paths]
         bl.head = list(BASELINE_HEAD)
     counts = debt_counts(repo, bl.skip, tree)
     for kind in bl.lacks():
@@ -1350,8 +1574,7 @@ def recount_text(repo, tree: Tree | None = None) -> tuple[str, list[str]]:
 
 
 def first_baseline(repo) -> str:
-    """A game's first baseline: the counts of now, the starting mode of each kind, the stub macro's header skipped
-    where one is tracked."""
+    """A game's first baseline: the counts of now and the starting mode of each kind."""
     return recount_text(repo)[0]
 
 
@@ -1420,7 +1643,8 @@ def admission(repo, base: Tree | None, head: Tree) -> tuple[list[tuple[str, str]
     """([(check, detail)] for what a change may not do, the INFO lines). `base`: the tree the change starts from
     (None: a first commit, with nothing to compare). `head`: the tree it makes. Check `policy`: policy_findings.
     Check `debt`: the total of a `down` kind in the tree rose. Both trees are counted by this tool, with the `skip`
-    lines that both baselines hold, so a row that the change wrote decides nothing. A `raise` line that the change
+    lines that both baselines hold and with the preprocess command of the base's record, so a row or a command that
+    the change wrote decides nothing. A `raise` line that the change
     adds lets its kind go over by its number. A kind in mode `count` is never refused."""
     new = parse_baseline(head.read(BASELINE))
     if base is None:
@@ -1428,7 +1652,8 @@ def admission(repo, base: Tree | None, head: Tree) -> tuple[list[tuple[str, str]
     old = parse_baseline(base.read(BASELINE))
     fails = [("policy", f) for f in policy_findings(old, new)]
     skip = tuple(e for e in new.skip if e in old.skip) if old.version else tuple(new.skip)
-    was, now = debt_counts(repo, skip, base), debt_counts(repo, skip, head)
+    cpp = floor_cpp(base)                              # both trees in the view of the tree the change starts from
+    was, now = debt_counts(repo, skip, base, cpp=cpp), debt_counts(repo, skip, head, cpp=cpp)
     tot0, tot1 = _kind_totals(was), _kind_totals(now)
     seen = list(old.raises)
     slack: dict[str, int] = {}
@@ -1562,6 +1787,10 @@ def cmd_debt(repo, update=False, down=None, source: str | None = None, against: 
                                                                   "" if source is None else "; counted in " + source_name(source)))
         if bl.skip:
             print("DEBT INFO skip: %s (the checker does not read these files)" % ", ".join(bl.skip))
+        if floor_cpp(tree):
+            print("DEBT INFO pin, goto, barrier and asm are read in the output of `[floor] cpp` (`%s`)" % floor_cpp(tree))
+        elif any(k[0].split("-")[0] in ("pin", "goto", "barrier") or k[0] == "asm" and not is_asm(k[1]) for k in counts):
+            print("DEBT INFO %s" % cpp_probe(repo, tree)[1])
         if bl.other:
             print("DEBT INFO %d line(s) of a kind this tool does not know: kept, not checked" % len(bl.other))
         if raise_:
@@ -2060,7 +2289,7 @@ def guard_hook(stdin=None) -> int:
 TRIAL_ENV = ("PSXD_TRIAL_FILE", "PSXD_TRIAL_FUNC", "PSXD_TRIAL_PATH")
 PROBE_SECONDS = 600
 MARK = re.compile(r"!FAKE:[ \t]*([^\n]*?)[ \t]*(?:\*/|$)", re.M)
-BARRIER = re.compile(r"\b(?:asm|__asm__|__asm)\b\s*(?:(?:volatile|__volatile__)\b\s*)?\(\s*\"(\s*)\"\s*\)\s*;")
+BARRIER = re.compile(r"\b(?:asm|__asm__|__asm)\b\s*(?:(?:volatile|__volatile__|__volatile)\b\s*)?\(\s*\"(\s*)\"\s*\)\s*;")
 PIN_CLAUSE = re.compile(r'\s*\b(?:asm|__asm__|__asm)\s*\(\s*"([^"\n]*)"\s*\)')   # what a trial cuts: the clause, nothing else
 PIN_VAR = re.compile(r"([A-Za-z_]\w*)\s*$")
 DECL_END = re.compile(r"[;{}]")
@@ -2089,7 +2318,7 @@ def markers(text: str) -> dict[int, tuple[str, bool]]:
 def _crutches(text: str, code: str) -> list[dict]:
     """The crutches of a text, in order, each with its marker: `crutches` without the function, the id and the hash.
     A marker covers one crutch: the one on its line, or the one on the line below when the marker stands alone."""
-    plain = _STRIP.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)) if m.group(0)[0] == "/" else m.group(0), text)
+    plain = uncommented(text)
     found = []
     for m in PIN.finditer(code):                       # each `asm("…")` clause of the declaration is a pin of its own
         stop = DECL_END.search(code, m.end())
@@ -2128,7 +2357,7 @@ def crutches(rel: str, text: str) -> list[dict]:
     starts = [a for _, a, _ in scan["extents"]]
     seen: dict[tuple, int] = {}
     out = []
-    for c in scan["crutches"]:
+    for c in _crutches(text, PREPROC.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), strip(text))):
         c = dict(c)
         i = bisect.bisect_right(starts, c["a"]) - 1
         c["func"] = scan["extents"][i][0] if i >= 0 and c["a"] < scan["extents"][i][2] else SCOPE
@@ -2478,19 +2707,13 @@ def protected_findings(base: Tree, head: Tree, online: bool = False) -> tuple[li
     out += ["%s lost the row `deny %s %s`" % (GUARD, r[1], r[2]) for r in gone]
     out += ["%s has a new `allow` row (%s %s): the first row that matches decides, so it can open a denied path" % (
         GUARD, r[1], r[2]) for r in rules1 if r[0] == "allow" and r[:3] not in [x[:3] for x in rules0]]
-    env = lambda c: {k: v for k, v in (c.get("env") or {}).items() if k.startswith("CLAUDE")} if isinstance(c.get("env"), dict) else {}  # noqa: E731
-    if not new.get("_broken") and env(new) != env(old):
-        out.append("%s sets %s in `env`: a hook finds the repository by that variable" % (SETTINGS, ", ".join(sorted(env(new)) or sorted(env(old)))))
+    env = lambda c: c.get("env") if isinstance(c.get("env"), dict) else {}  # noqa: E731
+    if not new.get("_broken") and env(new) != env(old):   # any variable: one can move the project folder, another can still a hook
+        moved = sorted(k for k in set(env(new)) | set(env(old)) if env(new).get(k) != env(old).get(k))
+        out.append("%s changes %s in `env`: a hook reads its surroundings from there" % (SETTINGS, ", ".join(map(str, moved))))
     local = SETTINGS.replace(".json", ".local.json")
     if head.has(local) and head.raw(local) != base.raw(local):
         out.append("%s is tracked and changed: the settings of one machine are not the repository's" % local)
-    had = [(name, text) for _, name, text in stub_definitions(base)]
-    for rel, name, text in stub_definitions(head):
-        if (name, text) in had:
-            had.remove((name, text))
-        else:
-            out.append("%s defines %s anew or otherwise: the count exempts that macro by its name, so its definition "
-                       "keeps its text" % (rel, name))
     skip = parse_baseline(base.read(BASELINE)).skip if _baseline_ok(base) else []
     for rel in sorted(set(base.paths) | set(head.paths)) if skip else ():
         if any(entry_match(e, rel) for e in skip) and base.raw(rel) != head.raw(rel):
@@ -2517,20 +2740,6 @@ def protected_findings(base: Tree, head: Tree, online: bool = False) -> tuple[li
         elif was != now:
             out.append("%s changed (the record names it: a check of the game's own keeps its bytes)" % rel)
     return out, infos, replaced
-
-
-def stub_definitions(tree: Tree) -> list:
-    """[(path, macro, its text with no comment and one space for each run)] for each `#define` of a stub macro in a
-    C file of the tree, also in one that a `skip` line covers. For the tree a change starts from: (macro, text) only."""
-    if "stub-definitions" not in tree.memo:
-        found = []
-        for p in tree.paths:
-            text = tree.read(p) if is_source(p) and not is_asm(p) else None
-            if text and "define" in text and any(name in text for name in STUB_MACROS):
-                plain = _STRIP.sub(lambda m: " " if m.group(0)[0] == "/" else m.group(0), text)
-                found += [(p, m.group(1), " ".join(m.group(2).replace("\\\n", " ").split())) for m in STUB_DEF.finditer(plain)]
-        tree.memo["stub-definitions"] = found
-    return list(tree.memo["stub-definitions"])
 
 
 def _baseline_ok(tree: Tree) -> bool:
@@ -2682,6 +2891,8 @@ def cmd_gate(repo, mode: str, rng: str | None = None, part: str = "all") -> int:
     infos: list[str] = []
     warns: list[str] = []
     passed, what = None, mode
+    global _cpp_cache_on
+    _cpp_cache_on = mode in ("staged", "bank")         # a push and CI run every unit: no file of this machine vouches
     try:
         if mode in ("staged", "bank"):
             head = Tree(repo, INDEX) if mode == "staged" else Tree(repo, None, untracked=True)
@@ -2783,12 +2994,9 @@ C_DEBT = {
     "barrier-unmarked": ('void Walk(void) {\n    asm("");\n}\n', {"barrier": 1, "barrier-unmarked": 1}),
     "pin, the other spellings": ('void Walk(void) {\n    register s32 i __asm("$16");\n    register s32 j\n        __asm__ ( "$17" );\n}\n',
                                  {"pin": 2, "pin-unmarked": 2}),
-    "asm, through a macro": ('#define PIN(r) asm(r)\nvoid Walk(void) {\n    register s32 i PIN("$16");\n}\n', {"asm": 2}),
+    "asm, the word in a macro (in raw text: once, at the definition)": ('#define PIN(r) asm(r)\nvoid Walk(void) {\n    register s32 i PIN("$16");\n}\n', {"asm": 1}),
     "cast": ("void Walk(Obj *p, s32 a) {\n    a = (s32)&p->next;\n    p = (Obj *)(s32)a;\n    a = (s32)(u8 *)p;\n}\n", {"cast": 3}),
     "field": ("s32 Walk(Obj *p) {\n    return p->unk_10 + p->field_0x14 + p->unk3C + p->hp;\n}\n", {"field": 3}),
-    "obscured, a head in K&R form": ("s32 Walk(n)\ns32 n;\n{\n    if (n) {\n        return 1;\n    }\n    return 0;\n}\n", {"obscured": 3}),
-    "obscured, a spliced line": ("void Walk(s32 n) {\n    n = n + \\\n        1;\n}\n", {"obscured": 1}),
-    "obscured, a digraph": ("void Walk(s32 n) <%\n    n = 1;\n%>\n", {"obscured": 2}),
     "extern": ("extern s32 g_Mode;\ns32 Other(s32 a);\nstatic s32 Mine(s32 a);\ns32 Walk(void) {\n    extern s32 g_Late;\n    return g_Mode;\n}\n",
                {"extern": 3}),
     "placeholder, a disassembler's name": ("s32 FUN_80012344(void) {\n    return DAT_800A1234 + sub_80012000();\n}\n",
@@ -3006,8 +3214,8 @@ def self_test_debt(check) -> None:
     check("a struct in include/ is no debt", file_debt("include/a.h", C_DEBT["struct"][0]) == {})
     check("the address header may hold addresses", file_debt("include/addr.h", C_DEBT["address"][0]) == {})
     plumbing = '__asm__(".include \\"macro.inc\\"\\n");\nstatic inline void Nop(void) {\n    __asm__("nop");\n}\n'
-    check("a header's file-scope asm statement is no debt", file_debt("include/common.h", plumbing) == {"asm": 1}
-          and file_debt("src/a.c", plumbing) == {"asm": 2}, file_debt("include/common.h", plumbing))
+    check("a file-scope asm statement of directives is no debt, an instruction in a function is", file_debt("include/common.h", plumbing) == {"asm": 1}
+          and file_debt("src/a.c", plumbing) == {"asm": 1}, file_debt("include/common.h", plumbing))
     shared = _macros(strip("#define HP(p) (*(s16 *)((u8 *)(p) + 0x10))\n"))
     check("a header's offset macro counts at each use", file_debt("src/a.c", "s32 Walk(void *p) {\n    return HP(p);\n}\n", shared)
           == {"offset": 1})
@@ -3057,19 +3265,19 @@ def self_test_debt(check) -> None:
         rc, out = run(update=True)
         check("--update writes no first baseline", rc == 1 and not base_file.exists(), out)
         text = first_baseline(repo)
-        check("the first baseline: a policy line per kind, the stub header skipped, the rows", text.startswith(
+        check("the first baseline: a policy line per kind and the rows; the stub macro's header is read, and holds no debt", text.startswith(
             "# config/debt-baseline.txt: ") and text.endswith(
             "mode pin count\nmode pin-unmarked down\nmode goto count\nmode goto-unmarked down\nmode barrier count\n"
             "mode barrier-unmarked down\nmode offset count\nmode address count\nmode cast count\nmode field count\n"
-            "mode macro count\nmode asm down\nmode obscured down\nmode placeholder count\nmode placeholder-use count\n"
+            "mode macro count\nmode asm down\nmode placeholder count\nmode placeholder-use count\n"
             "mode unbased count\nmode struct count\nmode extern count\nmode filename count\nmode flag count\n"
-            "mode reservation count\nskip include/include_asm.h\n1 asm src/boot.s\n1 goto src/walk.c\n"), text)
+            "mode reservation count\n1 asm src/boot.s\n1 goto src/walk.c\n"), text)
         rc, out = run(recount=True)
         check("--recount writes it", rc == 0 and base_file.read_text() == text and "DEBT RECOUNT written" in out
               and "DEBT INFO policy written: pin: count\n" in out, out)
         rc, out = run()
         check("an equal baseline passes", rc == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); down: pin-unmarked, goto-unmarked, "
-              "barrier-unmarked, asm, obscured; count: pin, goto, barrier, offset, address, cast, field, macro, placeholder, "
+              "barrier-unmarked, asm; count: pin, goto, barrier, offset, address, cast, field, macro, placeholder, "
               "placeholder-use, unbased, struct, extern, filename, flag, reservation)" in out, out)
         _git(repo, "add", "config")
         _commit(repo, "the floor")
@@ -3078,8 +3286,7 @@ def self_test_debt(check) -> None:
         rc, out = run()
         check("a rise fails the equality of rows and counts, and names the command", rc == 1
               and "DEBT FAIL rise goto src/walk.c: 2, its row is 1\n" in out
-              and "debt --update`, then commit config/debt-baseline.txt" in out
-              and "DEBT INFO skip: include/include_asm.h" in out, out)
+              and "debt --update`, then commit config/debt-baseline.txt" in out, out)
         check("a counted kind is never refused", not judge("HEAD"), judge("HEAD"))
         rc, out = run(update=True)
         check("--update writes the rows of a counted kind", rc == 0 and "DEBT INFO goto src/walk.c: 1 -> 2\n" in out
@@ -3141,7 +3348,7 @@ def self_test_debt(check) -> None:
                 ("a policy line taken out", mine.replace("mode pin-unmarked down\n", ""), "the policy line of pin-unmarked is gone (it was down)"),
                 ("a weaker mode", mine.replace("mode pin-unmarked down", "mode pin-unmarked count"),
                  "pin-unmarked went from down to count: a mode only gets stronger"),
-                ("a new skip line", mine.replace("skip include/", "skip src/\nskip include/"), "a new `skip` line (src/)")):
+                ("a new skip line", mine + "skip src/\n", "a new `skip` line (src/)")):
             base_file.write_text(text2)
             got = judge("HEAD")
             check("policy: " + name, ("policy", want) in got, got)
@@ -3372,12 +3579,12 @@ C_BODIES = {
     "two plain bodies": ("s32 A(void *p) {\n    return *(s32 *)(p + 4);\n}\n\nvoid B(void) {\nx:\n    goto x; // !FAKE: the loop\n}\n",
                          {"A": {"offset": 1}, "B": {"goto": 1}}),
     "a K&R definition is file scope": ("s32 A(p)\nvoid *p;\n{\n    return *(s32 *)(p + 4);\n}\nvoid B(void) {\n}\n",
-                                        {SCOPE: {"offset": 1, "obscured": 1}, "B": {}}),
+                                        {SCOPE: {"offset": 1}, "B": {}}),
     "a definition by a macro is file scope": ("HANDLER(A) {\nx:\n    goto x; // !FAKE: the loop\n}\nvoid B(void) {\n}\n",
-                                               {SCOPE: {"goto": 1, "obscured": 1}, "B": {}}),
-    "an #if with two heads is one body, and a brace inside its branches is hidden code": (
+                                               {SCOPE: {"goto": 1}, "B": {}}),
+    "an #if with two heads is one body": (
         "#ifdef VERSION_JP\ns32 A(s32 a) {\n#else\ns32 A(void) {\n#endif\nx:\n"
-        "    goto x; // !FAKE: the loop\n}\nvoid B(void) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 1, "obscured": 2}, "B": {"goto": 1}}),
+        "    goto x; // !FAKE: the loop\n}\nvoid B(void) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 1}, "B": {"goto": 1}}),
     "an #if with two heads and the brace behind its #endif": (
         "#ifdef VERSION_JP\ns32 A(s32 a)\n#else\ns32 A(void)\n#endif\n{\nx:\n"
         "    goto x; // !FAKE: the loop\n}\nvoid B(void) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 1}, "B": {"goto": 1}}),
@@ -3385,9 +3592,9 @@ C_BODIES = {
                                                "    }\n}\n", {"A": {"goto": 1}}),
     "a body beside its stub": ("#ifndef NON_MATCHING\nINCLUDE_ASM(\"asm/nonmatchings/a\", func_80012344);\n#else\n"
                                "s32 func_80012344(s32 a) {\nx:\n    goto x; // !FAKE: the loop\n}\n#endif\n", {"func_80012344": {"goto": 1, "placeholder": 1}}),
-    "braces that never close end at the next definition, and the branches that open them are hidden code": (
+    "braces that never close end at the next definition": (
         "void A(s32 a) {\n#ifdef X\n    if (a) {\n#else\n    if (!a) {\n#endif\nx:\n        goto x; // !FAKE: the loop\n    }\n}\n"
-        "void B(void) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 1, "obscured": 2}, "B": {"goto": 1}}),
+        "void B(void) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 1}, "B": {"goto": 1}}),
     "two bodies of one name are one entry": ("void A(void) {\nx:\n    goto x; // !FAKE: the loop\n}\nstruct S {\n    s32 a;\n};\n"
                                              "void A(s32 b) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 2}, SCOPE: {"struct": 1}}),
     "data, a macro and a struct are file scope": ("#define SWAP(a, b) { a = b; }\ns32 D_800A1234 = 4;\nstruct S {\n    s32 a;\n};\n",
@@ -3452,47 +3659,91 @@ def self_test_bodies(check) -> None:
               and "DEBT BODIES 3 file(s), 2 function bodies, 2 with debt, 1 count(s) at file scope; totals: goto 2, asm 1\n" in out, out)
 
 
+# A preprocessor for the self-test, so that it needs none on the machine: it follows `#include "…"`, replaces the
+# object-like macros it has read, prints a line marker at each change of file, and blanks every other directive. With
+# PSXD_SELF_CPP_LOG set it writes each unit it is run for into that file.
+CPP_SELF = r'''import os, re, sys
+defs = {}
+def emit(path, out):
+    out.append('# 1 "%s"' % path)
+    for n, line in enumerate(open(path, encoding="utf-8").read().split("\n"), 1):
+        inc = re.match(r'\s*#\s*include\s*"([^"]+)"', line)
+        define = re.match(r"\s*#\s*define\s+(\w+)\s+(.*)", line)
+        if inc:
+            found = next((p for p in (os.path.join(os.path.dirname(path), inc[1]), os.path.join("include", inc[1])) if os.path.isfile(p)), None)
+            if found is None:
+                sys.exit("%s:%d: fatal error: %s: No such file or directory" % (path, n, inc[1]))
+            emit(os.path.normpath(found), out)
+            out.append('# %d "%s" 2' % (n + 1, path))
+        elif define:
+            defs[define[1]] = define[2]
+            out.append("")
+        elif line.lstrip().startswith("#"):
+            out.append("")
+        else:
+            for name, body in defs.items():
+                line = re.sub(r"\b%s\b" % name, body, line)
+            out.append(line)
+if os.environ.get("PSXD_SELF_CPP_LOG"):
+    open(os.environ["PSXD_SELF_CPP_LOG"], "a").write(sys.argv[1] + "\n")
+out = []
+emit(sys.argv[1], out)
+print("\n".join(out))
+'''
+
+
 def self_test_files(check) -> None:
-    """Which files count, and the kinds that a file's text alone does not decide."""
+    """Which files count, the kinds that a file's text alone does not decide, and the keyword kinds in the view of the
+    game's preprocessor."""
     for path, want in (("src/a.c", True), ("include/a.h", True), ("lib/libgte/a.c", True), ("Src/A.C", True), ("game/a.cpp", True),
                        ("src/body.inc", True), ("src/boot.S", True), ("src/boot.asm", True), ("asm/main/a.s", False),
                        ("tools/host.c", False), ("build/a.c", False), ("refs/x/a.c", False), (".run/a.c", False),
                        ("src/.cache/a.c", False), ("docs/a.md", False), ("src/a.txt", False)):
         check("a counted file: %s" % path, is_source(path) == want)
     plumbing = '__asm__(".include \\"macro.inc\\"\\n");\n__asm__(".macro glabel label\\n.global \\\\label\\n\\\\label:\\n.endm\\n");\n'
-    check("a header's assembler directives are the stub's plumbing", file_debt("include/include_asm.h", plumbing) == {}, file_debt("include/include_asm.h", plumbing))
-    check("an instruction in a header's asm statement is assembly", file_debt("include/fast.h", '__asm__(".text\\nFast:\\n    jr $ra\\n nop\\n");\n') == {"asm": 1})
-    check("the same statements in a C file are assembly", file_debt("src/a.c", plumbing) == {"asm": 2})
+    stub = '__asm__(".pushsection .text\\n\\t.align\\t2\\n\\t.set noreorder\\n\\t.set noat\\n.include \\"asm/a/Run.s\\"\\n\\t.set reorder\\n\\t.set at\\n.popsection");\n'
+    for name, text, want in (
+            ("a file-scope asm statement of assembler directives is the stub's plumbing, in a header and in a C file", plumbing, {}),
+            ("an expanded stub is no debt", stub, {}),
+            ("an instruction in a file-scope asm statement is assembly", '__asm__(".text\\nFast:\\n    jr $ra\\n nop\\n");\n', {"asm": 1}),
+            ("data in a file-scope asm statement is assembly", '__asm__(".section .text\\n.word 0x03E00008\\n");\n', {"asm": 1}),
+            ("a file pulled in as bytes is assembly", '__asm__(".incbin \\"blob.bin\\"");\n', {"asm": 1}),
+            ("the use of an assembler macro is an instruction", '__asm__(".macro ret\\n jr $ra\\n.endm\\nret\\n");\n', {"asm": 1}),
+            ("an asm statement that is no string is assembly", "__asm__(TEXT);\n", {"asm": 1}),
+            ("assembler directives inside a function force the compiler: a barrier", 'void A(void) {\n    __asm__(".set noreorder");\n}\n',
+             {"barrier": 1, "barrier-unmarked": 1}),
+            ("an empty asm statement with another volatile spelling is a barrier", 'void A(void) {\n    __asm__ __volatile("");\n}\n',
+             {"barrier": 1, "barrier-unmarked": 1}),
+            ("a goto as an argument", "void A(s32 n) {\nl:\n    DO(goto, l);\n}\n", {"goto": 1, "goto-unmarked": 1}),
+            ("a computed goto", "void A(void *p) {\n    goto *p;\n}\n", {"goto": 1, "goto-unmarked": 1}),
+            ("a goto with a reason", "void A(void *p) {\n    // !FAKE: the jump table of the original\n    goto *p;\n}\n", {"goto": 1}),
+            ("offsets with a minus and a negative index",
+             "s32 A(u8 *p) {\n    return *(s32 *)(p - 4) + *(s32 *)((u8 *)p - 8) + ((s32 *)p)[-2];\n}\n", {"offset": 3}),
+            ("the integer types of the SDK in a cast of a pointer",
+             "u_long A(void *p) {\n    return (u_long)&p + (u_int)(s32 *)p + *(s32 *)(ulong)p + *((u_char *)p + 4);\n}\n", {"cast": 3, "offset": 1})):
+        for rel in ("src/a.c", "include/a.h"):
+            got = file_debt(rel, text)
+            check("%s (%s)" % (name, rel), got == want, got)
+    import time
+    t0 = time.time()
+    file_debt("src/slow.c", "s32 A(void) {\n    return *(" + "a " * 4000 + ");\n}\n" + "".join("#define M%d M%d\n" % (i, i + 1) for i in range(400)))
+    check("a long run of words and a long chain of macros cost no more than a second", time.time() - t0 < 1.0, time.time() - t0)
     with tempfile.TemporaryDirectory() as td:
         repo = _repo(td)
         put = lambda rel, text: ((repo / rel).parent.mkdir(parents=True, exist_ok=True), (repo / rel).write_text(text))  # noqa: E731
         unmarked = C_DEBT["goto-unmarked"][0]
         for rel in ("src/walk.c", "lib/walk.c", "asm/walk.c", "tools/walk.c", "src/func_80012344.c", "src/misc12.c"):
             put(rel, unmarked.replace("Walk", "W_" + re.sub(r"\W", "_", rel)))
-        put("src/body.inc", "loop:\n    if (--n) goto loop;\n    return n;\n")
         put("src/hand.asm", "nop\n")
-        os.symlink("walk.c", repo / "src" / "link.c")
         _git(repo, "add", "-A")
         got = debt_bodies(repo)
         check("code in any folder counts; the splitter's and the tools' folders do not", sorted(got) == [
-            "lib/walk.c", "src/body.inc", "src/func_80012344.c", "src/hand.asm", "src/link.c", "src/misc12.c", "src/walk.c"], sorted(got))
-        check("the statements of a file that no body includes are hidden code, whatever its name", got["src/body.inc"] == {
-            SCOPE: {"goto": 1, "goto-unmarked": 1, "obscured": 3}}, got["src/body.inc"])
+            "lib/walk.c", "src/func_80012344.c", "src/hand.asm", "src/misc12.c", "src/walk.c"], sorted(got))
         check("a file named by an address or a number", got["src/func_80012344.c"][SCOPE] == {"filename": 1}
               and got["src/misc12.c"][SCOPE] == {"filename": 1} and SCOPE not in got["src/walk.c"], got["src/misc12.c"])
-        check("an assembly file by another suffix; a source behind a symbolic link", got["src/hand.asm"] == {SCOPE: {"asm": 1}}
-              and got["src/link.c"] == {SCOPE: {"obscured": 1}}, (got["src/hand.asm"], got["src/link.c"]))
-        put("drafts/walk.c", unmarked)
-        put("src/user.c", 'void User(s32 n) {\n#include "../drafts/walk.c"\n}\n')
-        _git(repo, "add", "-A")
-        got = debt_bodies(repo)
-        check("an include of code that the count does not read", "drafts/walk.c" not in got and got["src/user.c"] == {
-            "User": {}, SCOPE: {"obscured": 1}}, got["src/user.c"])
-        (repo / "src" / "user.c").unlink()
-        _git(repo, "add", "-A")
-        got = debt_bodies(repo)
+        check("an assembly file by another suffix", got["src/hand.asm"] == {SCOPE: {"asm": 1}}, got["src/hand.asm"])
         _commit(repo, "the tree")
-        check("a revision holds the same files and the same link", debt_bodies(repo, tree=Tree(repo, "HEAD")) == got
+        check("a revision and the index hold the same files", debt_bodies(repo, tree=Tree(repo, "HEAD")) == got
               and debt_bodies(repo, tree=Tree(repo, INDEX)) == got)
         # the two kinds that the game counts: its lister for the work tree, its rows for a revision
         put(RECORD, "[psxdecomp]\nversion = \"0.6.0\"\n\n[debt]\nflags = '%s tools/flags.py'\n" % sys.executable)
@@ -3510,95 +3761,135 @@ def self_test_files(check) -> None:
             check("a lister that fails is a refusal", False)
         except Fail as e:
             check("a lister that fails is a refusal", "exited 4" in str(e), str(e))
-        # a fragment is the body of the functions that include it
-        put("tools/flags.py", "print('2 reservation src/walk.c')\nprint('1 flag src/walk.c')\n")
-        frag = "    s32 v = *(s32 *)(obj + 4);\n    if (v) {\n        return v;\n    }\n    return 0;\n"
-        put("src/shared/body.inc.c", frag)
-        put("src/unit.c", 'INCLUDE_ASM("asm/nonmatchings/unit", One);\nINCLUDE_ASM("asm/nonmatchings/unit", Two);\n')
-        _git(repo, "add", "-A")
-        _commit(repo, "two stubs")
-        judge = lambda: admission(repo, Tree(repo, "HEAD"), Tree(repo, None, untracked=True))[0]  # noqa: E731
-        put("src/unit.c", 's32 One(u8 *obj) {\n#include "shared/body.inc.c"\n}\nINCLUDE_ASM("asm/nonmatchings/unit", Two);\n')
-        put("src/shared/body.inc.c", frag)
-        check("a fragment's statements are no hidden code", "obscured" not in debt_bodies(repo, tree=Tree(repo, None, untracked=True))["src/shared/body.inc.c"][SCOPE])
-        check("a new body may bring its fragment", judge() == [], judge())
-        _git(repo, "add", "-A")
-        _commit(repo, "one body and its fragment")
-        # ---- text that hides code: each attack on that question is a control here ----
-        # ---- which body is which: each attack on that question is a control here ----
-        _git(repo, "reset", "-q", "--hard", "HEAD")
-        _git(repo, "clean", "-q", "-fd")
-        kept = "s32 Kept(s32 n) {\n    return n;\n}\n"
-        stub = 'INCLUDE_ASM("asm/nonmatchings/id", %s);'
-        dummy = "s32 Dummy(s32 n) {\n    return *(s32 *)(n + 4);\n}\n"
-        put("src/id.c", kept + stub % "StubB" + "\n" + stub % "StubC" + "\n")
-        _commit(repo, "a body and two stubs")
-        said = lambda word: [t for _, t in judge() if word in t]  # noqa: E731
-        put("src/id.c", "s32 StubB(s32 n) {\n#ifdef NEVER\n    {\n#endif\n    return n;\n}\n" + kept.replace("    return n;", "    n += *(s32 *)(n + 4);\n    return n;")
-            + "#ifdef NEVER\n}\n#endif\n" + stub % "StubC" + "\n")
-        check("a brace in a branch of a conditional cannot make a new body swallow the next one", said("obscured"), judge())
-        put("src/id.c", "s32 Kept(s32 n) {\n#ifdef NEVER\n}\n#endif\n    n += *(s32 *)(n + 4);\n#ifdef NEVER\nvoid Never(s32 n) {\n#endif\n    return n;\n}\n"
-            "s32 StubB(s32 n) {\n    return n;\n}\n" + stub % "StubC" + "\n")
-        check("nor end a body early, so that its tail reads as file scope beside a new body", said("obscured"), judge())
-        check("`#if 0` around a lone brace is such a branch", file_debt("src/a.c", "void A(void) {\n#if 0\n    {\n#endif\n}\n") == {"obscured": 1},
-              file_debt("src/a.c", "void A(void) {\n#if 0\n    {\n#endif\n}\n"))
-        paired = "#if A\ns32 F(void) {\n    return 1;\n}\n#else\ns32 F(void) {\n    return 2;\n}\n#endif\n#ifndef G\n#define G {\n#endif\n"
-        check("a conditional whose branches pair their braces is plain text", "obscured" not in file_debt("src/a.c", paired), file_debt("src/a.c", paired))
-        put("src/id.c", kept + stub % "StubB" + "\n" + stub % "StubC" + "\n")
-        put("src/loose.inc.c", "    s32 Loose(s32 n) {\n        return *(s32 *)(n + 4);\n    }\n")
-        check("a file is a fragment because a body includes it, never by its name", said("obscured"), judge())
-        # ---- code that the count would not see: each attack is a control here ----
-        (repo / "src/loose.inc.c").unlink()
-        worse = kept.replace("    return n;", "%s    return n;")
-        put("src/id.c", worse % '#include "body.def"\n' + stub % "StubB" + "\n" + stub % "StubC" + "\n")
-        put("src/body.def", "    n += *(s32 *)(n + 4);\n")
-        check("an include of a tracked file that the count does not read is hidden code", said("obscured"), judge())
-        (repo / "src/body.def").unlink()
-        put("include/fast.h", "#define FAST 1\n")
-        put("src/id.c", "#include <fast.h>\n" + kept + stub % "StubB" + "\n" + stub % "StubC" + "\n")
-        check("an angle include of a file of the tree is hidden code", said("obscured"), judge())
-        (repo / "include/fast.h").unlink()
-        put("vendor/x.h", "#define X 1\n")
-        os.symlink("../vendor", repo / "include" / "ext")
-        put("src/id.c", '#include "ext/x.h"\n' + kept + stub % "StubB" + "\n" + stub % "StubC" + "\n")
-        check("an include through a linked folder is hidden code", said("obscured"), judge())
-        (repo / "include" / "ext").unlink()
-        put("src/id.c", '#include "sub/x.h"\n' + kept + stub % "StubB" + "\n" + stub % "StubC" + "\n")
-        _git(repo, "add", "-A")
-        _git(repo, "update-index", "--add", "--cacheinfo", "160000,%s,include/sub" % _rev(repo, "HEAD"))
-        got = [t for _, t in admission(repo, Tree(repo, "HEAD"), Tree(repo, INDEX))[0] if "obscured" in t]
-        check("an include through a submodule is hidden code", got, admission(repo, Tree(repo, "HEAD"), Tree(repo, INDEX))[0])
-        _git(repo, "reset", "-q", "--hard", "HEAD")
-        _git(repo, "clean", "-q", "-fd")
-        put("include/addr.h", "#define JUMP(l) goto l\n")
-        put("src/id.c", '#include "addr.h"\n' + kept.replace("    return n;", "again:\n    JUMP(again);\n    return n;") + stub % "StubB" + "\n" + stub % "StubC" + "\n")
-        check("a macro of the address header that hides a goto counts where it is used", said("goto"), judge())
-        (repo / "include/addr.h").unlink()
+        # a macro of a header and of an included C file that hides an offset counts where it is used
+        put("tools/flags.py", "")
         put("src/shared/mac.c", "#define FIELD4(p) (*(s32 *)((p) + 4))\n")
-        put("src/id.c", '#include "shared/mac.c"\n' + kept.replace("    return n;", "    return FIELD4(n);") + stub % "StubB" + "\n" + stub % "StubC" + "\n")
+        put("src/id.c", '#include "shared/mac.c"\ns32 Kept(s32 n) {\n    return FIELD4(n);\n}\n')
         got = debt_bodies(repo, tree=Tree(repo, None, untracked=True))["src/id.c"]
         check("a macro of an included C file that hides an offset counts where it is used", got["Kept"] == {"offset": 1}, got)
-        (repo / "src/shared/mac.c").unlink()
-        put("src/id.c", "#define INCLUDE_RODATA(x) __asm__(x)\n" + kept + stub % "StubB" + "\n" + stub % "StubC" + "\n")
-        got = protected_findings(Tree(repo, "HEAD"), Tree(repo, None, untracked=True))[0]
-        check("the definition of a stub macro is protected text: the count exempts it by its name", [f for f in got if "INCLUDE_RODATA" in f], got)
-        put("src/id.c", kept + stub % "StubB" + "\n" + stub % "StubC" + "\n")
-        check("and a tree that defines none anew has no such finding", not [f for f in protected_findings(
-            Tree(repo, "HEAD"), Tree(repo, None, untracked=True))[0] if "INCLUDE_" in f])
-    hidden = {
-        "an asm word behind a macro": ('void A(void) {\n    register s32 a K(asm)("$17");\n}\n', {"asm": 1}),
-        "an asm word as an argument": ('void A(void) {\n    register s32 a APPLY(asm, "$17");\n}\n', {"asm": 1}),
-        "an asm statement with another volatile spelling": ('void A(void) {\n    __asm__ __volatile("");\n}\n', {"asm": 1}),
-        "a goto as an argument": ("void A(s32 n) {\nl:\n    DO(goto, l);\n}\n", {"goto": 1, "goto-unmarked": 1}),
-        "a computed goto": ("void A(void *p) {\n    goto *p;\n}\n", {"goto": 1, "goto-unmarked": 1}),
-        "a paste of two tokens": ("#define CAT(a, b) a##b\nvoid A(void) {\n}\n", {"obscured": 1}),
-        "offsets with a minus and a negative index": (
-            "s32 A(u8 *p) {\n    return *(s32 *)(p - 4) + *(s32 *)((u8 *)p - 8) + ((s32 *)p)[-2];\n}\n", {"offset": 3}),
-        "the integer types of the SDK in a cast of a pointer": (
-            "u_long A(void *p) {\n    return (u_long)&p + (u_int)(s32 *)p + *(s32 *)(ulong)p + *((u_char *)p + 4);\n}\n", {"cast": 3, "offset": 1}),
-    }
-    for name, (text, want) in hidden.items():
-        check("hidden code: " + name, file_debt("src/a.c", text) == want, file_debt("src/a.c", text))
+    self_test_view(check)
+
+
+def self_test_view(check) -> None:
+    """The keyword kinds in the view of the game's preprocessor: what a macro, an include of any file and a second
+    unit do to the count, the three sources of a tree, a unit that cannot be read, and what one change costs."""
+    out = '# 1 "src/u.c"\nvoid A(void) {\n# 1 "src/frag.def" 1\n    goto x;\n# 3 "src/u.c" 2\n    go\\\nto y; register int r\n# 1 "include/pin.h" 1\n asm("$4");\n# 5 "src/u.c" 2\n}\n'
+    hits, files = unit_view(out, "src/u.c", "/nowhere")
+    check("the view: each hit has the file and the line of its first character", hits == {
+        ("goto", "src/frag.def", 0): 1, ("pin", "src/u.c", 3): 1} and files == {"src/u.c", "src/frag.def", "include/pin.h"}, (hits, files))
+    twice = '# 1 "src/u.c"\n# 1 "src/t.c" 1\ngoto a; goto b;\n# 2 "src/u.c" 2\n# 1 "src/t.c" 1\ngoto a; goto b;\n# 3 "src/u.c" 2\n'
+    check("the view: a file that a unit includes twice is read once", unit_view(twice, "src/u.c", "/nowhere")[0] == {("goto", "src/t.c", 0): 2})
+    check("the view: marks cover one construct each, on the line or alone above it", marked(
+        [("goto", 3), ("goto", 3), ("pin", 5), ("asm", 7)], {2: ("the loop", True), 5: ("", False)}) == [
+        ("goto", 3), ("goto", 3), ("goto-unmarked", 3), ("pin", 5), ("pin-unmarked", 5), ("asm", 7)])
+    saved = os.environ.get("PSXD_SELF_CPP_LOG")
+    with tempfile.TemporaryDirectory() as td:
+        repo = _repo(td)
+        put = lambda rel, text: ((repo / rel).parent.mkdir(parents=True, exist_ok=True), (repo / rel).write_text(text))  # noqa: E731
+        log = pathlib.Path(td + ".cpp.log")
+        os.environ["PSXD_SELF_CPP_LOG"] = str(log)
+
+        def ran() -> list[str]:
+            got = sorted(log.read_text().split()) if log.is_file() else []
+            log.unlink(missing_ok=True)
+            return got
+
+        cpp = "[psxdecomp]\nversion = \"0.6.0\"\n\n[floor]\ncpp = '%s tools/cpp.py {file}'\n" % sys.executable
+        put("tools/cpp.py", CPP_SELF)
+        put("include/m.h", "#define AGAIN goto again\n")
+        put("src/unit.c", '#include "m.h"\n#include "shared/body.c"\ns32 Two(s32 n) {\n#include "pins.def"\n    return n;\n}\n')
+        put("src/shared/body.c", "s32 One(s32 n) {\nagain:\n    if (n--) AGAIN;\n    return n;\n}\n")
+        put("src/pins.def", '    register s32 t asm("$17");\n')
+        put("src/other.c", '#include "m.h"\n#include "shared/body.c"\n')
+        put("src/alone.c", "s32 Alone(s32 n) {\n    return n;\n}\n")
+        _git(repo, "add", "-A")
+        raw = debt_counts(repo)
+        check("no [floor] cpp: the raw text shows the macro's goto at its definition, and no file of another suffix", raw == {
+            ("goto", "include/m.h"): 1, ("goto-unmarked", "include/m.h"): 1}, raw)
+        put(RECORD, cpp)
+        _git(repo, "add", "-A")
+        want = {("goto", "src/shared/body.c"): 1, ("goto-unmarked", "src/shared/body.c"): 1,
+                ("pin", "src/pins.def"): 1, ("pin-unmarked", "src/pins.def"): 1}
+        got = debt_counts(repo)
+        check("[floor] cpp: a goto behind a macro counts where it is used, a pin in a file of any suffix where it stands, "
+              "and a file that two units read once", got == want, got)
+        check("the view: the units are the C files that no other unit read", ran() == ["src/alone.c", "src/other.c", "src/unit.c"])
+        _commit(repo, "the tree")
+        for name, src in (("the index", INDEX), ("a revision", "HEAD"), ("the work tree with the files git does not track", None)):
+            tree = Tree(repo, src, untracked=src is None)
+            check("the view: %s gives the same count" % name, debt_counts(repo, tree=tree) == want, debt_counts(repo, tree=tree))
+        check("the view: no unit ran again, each result was kept beside the files it read", ran() == [], "ran")
+        put("src/shared/body.c", "s32 One(s32 n) {\nagain:\n    // !FAKE: the loop of the original\n    if (n--) AGAIN;\n    return n;\n}\n")
+        got = debt_bodies(repo)
+        check("the view: a marker in the file that holds the line covers the construct", got["src/shared/body.c"] == {"One": {"goto": 1}}
+              and got["src/pins.def"] == {SCOPE: {"pin": 1, "pin-unmarked": 1}}, got)
+        check("the view: one changed file costs the units that read it", ran() == ["src/other.c", "src/unit.c"])
+        put("src/alone.c", 's32 Alone(s32 n) {\n    __asm__("nop");\n    return n;\n}\n')
+        check("the view: an asm statement in a function", debt_counts(repo).get(("asm", "src/alone.c")) == 1 and ran() == ["src/alone.c"])
+        put(ASM_EVIDENCE, "\t".join(ASM_COLUMNS) + "\nmain\tAlone\tsrc/alone.c\thand-asm\tsrc/alone.c:2\t2026-01-02\tdeveloper\n")
+        check("the view: an assembly row clears the function that holds the line", ("asm", "src/alone.c") not in debt_counts(repo))
+        (repo / ASM_EVIDENCE).unlink()
+        global _cpp_cache_on
+        _cpp_cache_on = False
+        debt_counts(repo)
+        check("the view: a push and CI run every unit again", ran() == ["src/alone.c", "src/other.c", "src/unit.c"])
+        _cpp_cache_on = True
+        # a judge that cannot read passes nothing
+        put("src/alone.c", '#include "gone.h"\ns32 Alone(s32 n) {\n    return n;\n}\n')
+        try:
+            debt_counts(repo)
+            check("the view: a unit that the command cannot preprocess is a refusal", False)
+        except Fail as e:
+            check("the view: a unit that the command cannot preprocess is a refusal", "cannot preprocess 1 unit(s) of the work tree: "
+                  "src/alone.c: src/alone.c:1: fatal error: gone.h" in str(e), str(e))
+        rc, out = _capture(cmd_debt, repo)
+        check("debt: and it says so", rc == 1 and "DEBT FAIL `[floor] cpp`" in out, out)
+        put("src/alone.c", "s32 Alone(s32 n) {\n    return n;\n}\n")
+        put(RECORD, cpp.replace(sys.executable, "/nowhere/psxd-no-such-cpp"))
+        try:
+            debt_counts(repo)
+            check("the view: a program that the machine lacks is a refusal", False)
+        except Fail as e:
+            check("the view: a program that the machine lacks is a refusal", "names a program that this machine lacks (`/nowhere/psxd-no-such-cpp`)" in str(e), str(e))
+        # the command of the tree a change starts from judges it
+        put(RECORD, cpp)
+        put("src/shared/body.c", "s32 One(s32 n) {\nagain:\n    if (n--) AGAIN;\n    return n;\n}\n")
+        _git(repo, "add", "-A")
+        put(BASELINE, first_baseline(repo))
+        _commit(repo, "the floor, with its rows in the compiler's view")
+        check("the first baseline holds the rows of the view", "1 pin-unmarked src/pins.def\n" in (repo / BASELINE).read_text()
+              and "1 goto-unmarked src/shared/body.c\n" in (repo / BASELINE).read_text() and _capture(cmd_debt, repo)[0] == 0, (repo / BASELINE).read_text())
+        put("include/m.h", "#define AGAIN goto again\n#define HIDDEN goto again\n")
+        put("src/alone.c", '#include "m.h"\ns32 Alone(s32 n) {\nagain:\n    if (n--) HIDDEN;\n    return n;\n}\n')
+        put(RECORD, "[psxdecomp]\nversion = \"0.6.0\"\n\n[floor]\ncpp = '%s -c pass {file}'\n" % sys.executable)
+        _git(repo, "add", "-A")
+        got = admission(repo, Tree(repo, "HEAD"), Tree(repo, INDEX))[0]
+        check("a change that swaps the preprocessor for one that prints nothing is judged by the command it started from", got == [
+            ("debt", "goto-unmarked is `down` and its total rose: 1 -> 2 (src/alone.c 0 -> 1)")], got)
+        found = protected_findings(Tree(repo, "HEAD"), Tree(repo, INDEX))[0]
+        check("and the command itself is a protected value", any("[floor] cpp changed" in f for f in found), found)
+    if saved is None:
+        os.environ.pop("PSXD_SELF_CPP_LOG", None)
+    else:
+        os.environ["PSXD_SELF_CPP_LOG"] = saved
+    import shutil
+    cc = shutil.which("cc")
+    if cc:                                             # a real preprocessor, where the machine has one: text that a pattern cannot read
+        with tempfile.TemporaryDirectory() as td:
+            repo = _repo(td)
+            put = lambda rel, text: ((repo / rel).parent.mkdir(parents=True, exist_ok=True), (repo / rel).write_text(text))  # noqa: E731
+            put(RECORD, "[psxdecomp]\nversion = \"0.6.0\"\n\n[floor]\ncpp = 'cc -E -nostdinc -undef -Iinclude {file}'\n")
+            put("include/common.h", '#define INCLUDE_ASM(FOLDER, NAME) __asm__(".section .text\\n\\t.include \\"" FOLDER "/" #NAME ".s\\"\\n")\n'
+                "#define GLUE(a, b) a##b\n#define JUMP(l) GLUE(go, to) l\n#define REG(t, v, r) register t v GLUE(as, m)(r)\n")
+            put("src/a.c", '#include "common.h"\nINCLUDE_ASM("asm/a", Run);\nint Walk(int n) <%\n    REG(int, i, "$16");\nloop:\n    if (--n) JUMP(loop);\n'
+                "    if (n) go\\\nto loop;\n#if 0\n    goto loop;\n#endif\n    return i;\n%>\n")
+            _git(repo, "add", "-A")
+            try:
+                got = {k: n for k, n in debt_counts(repo).items() if k[0].split("-")[0] in ("pin", "goto", "barrier", "asm")}
+            except Fail as e:
+                got = str(e)
+            check("a real preprocessor: a paste, a splice, a digraph, a stub and a branch that is not compiled", got == {
+                ("pin", "src/a.c"): 1, ("pin-unmarked", "src/a.c"): 1, ("goto", "src/a.c"): 2, ("goto-unmarked", "src/a.c"): 2}, got)
 
 
 def self_test_tree(check) -> None:
@@ -3884,7 +4175,9 @@ def self_test_gate(check) -> None:
                                                                       _git(repo, "add", "-f", SETTINGS.replace(".json", ".local.json"))),
                      ".claude/settings.local.json is tracked and changed"),
                     ("the project folder of the hooks, moved", lambda: put(SETTINGS, json.dumps(dict(hooks, env={"CLAUDE_PROJECT_DIR": "/nowhere"}))),
-                     "sets CLAUDE_PROJECT_DIR in `env`")):
+                     "changes CLAUDE_PROJECT_DIR in `env`"),
+                    ("a variable that stills a check, set for every session", lambda: put(SETTINGS, json.dumps(dict(hooks, env={"PSXD_GATE": "1"}))),
+                     "changes PSXD_GATE in `env`")):
                 change()
                 rc, out = staged()
                 check("gate: " + name, rc == 1 and "GATE FAIL protected: " in out and want in out, out)
