@@ -19,6 +19,14 @@
     floor.py debt --down [KIND]           switch a kind (or every kind) to `down`, one way: it never rises again
     floor.py debt --raise KIND N --reason TEXT
                                           the developer's act: a dated `raise` line that lets one change go over by N
+    floor.py gate --staged | --bank | --ci BASE..HEAD | --push [BASE..HEAD]
+                                          every check of the floor, each judged against what the change cannot
+                                          rewrite: `GATE FAIL <check>: <detail>` lines; exit 1 on a FAIL. --staged: the
+                                          index against HEAD (the commit hook). --bank: the work tree against HEAD, with
+                                          the files git does not track yet; it writes the rows of an admitted change
+                                          and runs the game's own check. --ci: each commit of the range against its
+                                          parent, and the head of the range against its base. --push: as --ci, and the
+                                          game's own check
     floor.py names [--init] [--repo DIR]  check config/names.tsv and config/asm-evidence.tsv; --init writes their header lines
     floor.py toolchain [--repo DIR]       config/toolchain.tsv: each pinned checkout at its pin and clean, each file at its hash
     floor.py guard --hook                 a PreToolUse hook: stdin is the event, config/guard.tsv holds the rules
@@ -95,6 +103,7 @@ ASM_EVIDENCE = "config/asm-evidence.tsv"
 TOOLCHAIN = "config/toolchain.tsv"
 GUARD = "config/guard.tsv"
 VENDORED = "tools/psxd_floor.py"
+VERSION = "0.6.0"                                    # psxdecomp's version: a game's tool changes only to a later one
 
 
 class Fail(Exception):
@@ -170,6 +179,16 @@ class Tree:
                 data = self._object(self._blob[path]) if path in self._blob else None
             self._text[path] = None if data is None else data.decode("utf-8", "replace").replace("\r\n", "\n")
         return self._text[path]
+
+    def raw(self, path: str) -> bytes | None:
+        """A file's bytes as the source holds them; None as `read`."""
+        if self.source is not None:
+            return self._object(self._blob[path]) if path in self._blob else None
+        f = self.repo / path
+        try:
+            return None if f.is_symlink() else f.read_bytes()
+        except OSError:
+            return None
 
     def _object(self, sha: str) -> bytes | None:
         if self._cat is None:
@@ -1351,14 +1370,18 @@ def _cmd_raise(repo, bl: Baseline, raise_, reason) -> int:
     if os.environ.get("CLAUDECODE"):
         print("DEBT FAIL a raise is the developer's act, not an agent session's (CLAUDECODE is set)")
         return 1
-    if bl.version != 2 or kind not in KINDS or not n.isdigit() or int(n) < 1 or not (reason or "").strip():
-        print("DEBT FAIL --raise KIND N --reason TEXT: a kind of %s, a number above zero, a reason, and a version 2 %s"
-              % ("|".join(KINDS), BASELINE))
+    if bl.version != 2 or kind not in KINDS + ("protected",) or not n.isdigit() or int(n) < 1 or not (reason or "").strip():
+        print("DEBT FAIL --raise KIND N --reason TEXT: a kind of %s, or `protected` (N changes of the files that carry "
+              "the floor), a number above zero, a reason, and a version 2 %s" % ("|".join(KINDS), BASELINE))
         return 1
     import time
-    bl.raises.append((kind, int(n), time.strftime("%Y-%m-%d"), " ".join(reason.split())))
+    line = (kind, int(n), time.strftime("%Y-%m-%d"), " ".join(reason.split()))
+    if kind == "protected":
+        bl.other.append("raise %s %d %s %s" % line)
+    else:
+        bl.raises.append(line)
     _write_baseline(repo, baseline_text(bl))
-    print("DEBT RAISE written: raise %s %d %s %s" % bl.raises[-1])
+    print("DEBT RAISE written: raise %s %d %s %s" % line)
     print("DEBT INFO commit it with the change it admits; the pre-push hook asks you about each new `raise` line")
     return 0
 
@@ -1373,10 +1396,11 @@ ASM_COLUMNS = ("image", "symbol", "path", "class", "evidence", "date")
 ASM_CLASSES = ("sdk-object", "hand-asm", "data-in-text")
 
 
-def names_findings(repo) -> list[tuple[str, str]]:
-    """[(FAIL|INFO, detail)] for the two ledgers: a FAIL is a malformed file or row."""
-    repo, out = pathlib.Path(repo), []
-    rows, errs = read_tsv(repo / NAMES, NAME_COLUMNS)
+def names_findings(repo, tree: Tree | None = None) -> list[tuple[str, str]]:
+    """[(FAIL|INFO, detail)] for the two ledgers of a tree (default: the work tree): a FAIL is a malformed file or
+    row."""
+    tree, out = tree or Tree(repo), []
+    rows, errs = read_tsv(NAMES, NAME_COLUMNS, tree)
     if rows is None:
         out.append(("INFO", "no %s (`names --init` writes its header line)" % NAMES))
     else:
@@ -1401,7 +1425,7 @@ def names_findings(repo) -> list[tuple[str, str]]:
         out += [("FAIL", "%s: %s" % (NAMES, e)) for e in errs]
         by = {d: sum(r["decision"] == d for r in rows) for d in DECISIONS}
         out.append(("INFO", "%s: %d row(s): %s" % (NAMES, len(rows), ", ".join("%d %s" % (by[d], d) for d in DECISIONS))))
-    rows, errs = read_tsv(repo / ASM_EVIDENCE, ASM_COLUMNS)
+    rows, errs = read_tsv(ASM_EVIDENCE, ASM_COLUMNS, tree)
     if rows is None:
         out.append(("INFO", "no %s (`names --init` writes its header line)" % ASM_EVIDENCE))
     else:
@@ -1623,6 +1647,312 @@ def guard_hook(stdin=None) -> int:
         if alarm:
             signal.alarm(0)
     return 0
+
+
+# ---- the gate: every check of the floor in one command, at the commit, at the bank, before a push and in CI ---------
+# A check holds only against something the change cannot rewrite. So each change is judged against the tree it starts
+# from (`transition`): HEAD for a commit and a bank, a commit's parent and the range's base in CI. The tree a change
+# makes is then checked as it stands (`state`). A tool that a change replaces judges that change itself. The new tool
+# takes over for what follows, and only after the old one accepted it.
+TOOLS = (VENDORED, "tools/psxd_publish.py")
+WORKFLOWS = ".github/workflows/"
+SETTINGS = ".claude/settings.json"
+RECORD_TABLES = ("own", "trial", "floor", "debt")     # the tables of the record that name a check of the game's own
+DATA_SUFFIXES = (".tsv", ".txt", ".toml", ".json", ".md", ".csv")      # a ledger: its lines stay, a line may be added
+GATE_ENV = "PSXD_GATE"                               # set while the game's own check runs: a gate inside it skips that check
+GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR",
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX")
+
+
+def tool_version(text: str | None) -> tuple[int, ...]:
+    """The VERSION of a tool's text as a tuple; () for a text with none (a tool from before psxdecomp 0.6.0)."""
+    m = re.search(r'^VERSION = "(\d+)\.(\d+)\.(\d+)"', text or "", re.M)
+    return tuple(int(x) for x in m.groups()) if m else ()
+
+
+def record_table(tree: Tree, table: str) -> dict[str, str]:
+    """The string values of one table of config/psxdecomp.toml, read as text (no tomllib, as address_header)."""
+    out, cur = {}, None
+    for line in (tree.read(RECORD) or "").split("\n"):
+        head = re.match(r"\s*\[\s*([^\]]+?)\s*\]\s*(?:#.*)?$", line)
+        if head:
+            cur = head[1]
+            continue
+        m = re.match(r"""\s*["']?([\w.-]+)["']?\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')""", line)
+        if m and cur == table:
+            out[m[1]] = m[2].replace('\\"', '"').replace("\\\\", "\\") if m[2] is not None else m[3]
+    return out
+
+
+def _settings(tree: Tree) -> dict:
+    try:
+        conf = json.loads(tree.read(SETTINGS) or "{}")
+    except ValueError:
+        return {"_broken": True}
+    return conf if isinstance(conf, dict) else {"_broken": True}
+
+
+def _hook_rows(conf: dict) -> list[tuple[str, str, frozenset]]:
+    """[(event, the hook entry as JSON, the tools of its matcher)] for each hook of a settings file that runs one of
+    psxdecomp's tools."""
+    out = []
+    hooks = conf.get("hooks") if isinstance(conf.get("hooks"), dict) else {}
+    for event, groups in hooks.items():
+        for g in groups if isinstance(groups, list) else ():
+            for h in (g.get("hooks") or ()) if isinstance(g, dict) else ():
+                if isinstance(h, dict) and "psxd_" in str(h.get("command", "")):
+                    out.append((event, json.dumps(h, sort_keys=True), frozenset(str(g.get("matcher", "")).split("|"))))
+    return out
+
+
+def protected_findings(base: Tree, head: Tree, online: bool = False) -> tuple[list[str], list[str], bool]:
+    """(what a change may not do to the files that carry the floor, the INFO lines, a tool was replaced and that is
+    accepted). Each file is valid when it is valid against the tree the change starts from:
+    - psxdecomp's two tools are the same bytes, or a later version (`online`: the released digest is the judge);
+    - a workflow is the same bytes (a new workflow is free; psxdecomp's own may change with its tools);
+    - the settings keep each hook that runs a psxdecomp tool, each deny rule, and no `disableAllHooks`;
+    - the guard keeps each `deny` row and gets no `allow` row;
+    - the record keeps each value of [own], [trial], [floor] and [debt], and a file that such a value names keeps its
+      bytes (a script) or its lines (a ledger)."""
+    out, infos, replaced = [], [], False
+    for rel in TOOLS:
+        was, now = base.raw(rel), head.raw(rel)
+        if was is None or was == now:
+            continue
+        if now is None:
+            out.append("%s is gone" % rel)
+            continue
+        v0, v1 = tool_version(base.read(rel)), tool_version(head.read(rel))
+        text = lambda v: ".".join(map(str, v)) or "no version"  # noqa: E731
+        if v1 < v0:
+            out.append("%s went from version %s back to %s" % (rel, text(v0), text(v1)))
+        elif v1 == v0:
+            out.append("%s changed and its version did not (%s): a tool changes only with an upgrade of psxdecomp" % (
+                rel, text(v0)))
+        else:
+            replaced = True
+            infos.append("%s: version %s -> %s%s" % (rel, text(v0), text(v1), "" if online else
+                                                     " (CI and the pre-push hook compare it with the released digest)"))
+    for rel in sorted(p for p in base.paths if p.startswith(WORKFLOWS)):
+        if base.raw(rel) != head.raw(rel) and not (replaced and rel == WORKFLOWS + "psxdecomp-readme.yml"):
+            out.append("%s %s" % (rel, "is gone" if not head.has(rel) else "changed: a workflow that exists keeps its bytes"))
+    old, new = _settings(base), _settings(head)
+    if new.get("_broken"):
+        out.append("%s is not a JSON object" % SETTINGS)
+    elif not old.get("_broken"):
+        have = _hook_rows(new)
+        for event, entry, tools in _hook_rows(old):
+            if not any(e == event and h == entry and tools <= t for e, h, t in have):
+                out.append("%s lost a hook of %s (or a tool of its matcher): %s" % (SETTINGS, event, json.loads(entry).get("command")))
+        deny = lambda c: (c.get("permissions") or {}).get("deny") or [] if isinstance(c.get("permissions"), dict) else []  # noqa: E731
+        gone = [r for r in deny(old) if r not in deny(new)]
+        if gone:
+            out.append("%s lost %d deny rule(s): %s" % (SETTINGS, len(gone), ", ".join(map(str, gone[:3]))))
+        if new.get("disableAllHooks"):
+            out.append("%s sets disableAllHooks" % SETTINGS)
+    rules0, rules1 = parse_guard(base.read(GUARD)), parse_guard(head.read(GUARD))
+    gone = [r for r in rules0 if r[0] == "deny" and r[:3] not in [x[:3] for x in rules1]]
+    out += ["%s lost the row `deny %s %s`" % (GUARD, r[1], r[2]) for r in gone]
+    out += ["%s has a new `allow` row (%s %s): the first row that matches decides, so it can open a denied path" % (
+        GUARD, r[1], r[2]) for r in rules1 if r[0] == "allow" and r[:3] not in [x[:3] for x in rules0]]
+    named: list[str] = []
+    for table in RECORD_TABLES:
+        vals0, vals1 = record_table(base, table), record_table(head, table)
+        for key, val in sorted(vals0.items()):
+            if vals1.get(key) != val:
+                out.append("%s [%s] %s changed (it was %r)" % (RECORD, table, key, val))
+            named += [tok for tok in re.split(r"[\s=:,;()'\"]+", val) if tok in base.paths and tok not in named]
+    for rel in named:
+        was, now = base.read(rel), head.read(rel)
+        if now is None:
+            out.append("%s is gone (the record names it)" % rel)
+        elif rel.endswith(DATA_SUFFIXES):
+            left = set(now.split("\n"))
+            lost = [l for l in was.split("\n") if l not in left]
+            if lost:
+                out.append("%s lost or changed %d line(s) (the record names it: a ledger keeps its lines)" % (rel, len(lost)))
+        elif was != now:
+            out.append("%s changed (the record names it: a check of the game's own keeps its bytes)" % rel)
+    return out, infos, replaced
+
+
+def _sibling_run(repo, *args) -> tuple[int, list[str]]:
+    """(the exit code, the output lines) of psxdecomp's other tool, the copy beside this file. 127 when none is there."""
+    if not sibling().is_file():
+        return 127, ["no %s beside %s" % (sibling().name, pathlib.Path(__file__).name)]
+    r = subprocess.run([sys.executable, "-I", str(sibling()), *args], cwd=str(repo), capture_output=True, text=True)
+    return r.returncode, (r.stdout + r.stderr).splitlines()
+
+
+def _source_args(tree: Tree) -> list[str]:
+    return [] if tree.source is None else ["--staged"] if tree.source == INDEX else ["--rev", tree.source]
+
+
+def transition(repo, bases: list[Tree], head: Tree, online: bool = False, changed=None) -> tuple[list, list, bool]:
+    """([(check, detail)], the INFO lines, a tool was replaced) for the change from a base tree to `head`. With
+    several bases (a merge and its parents) the change passes when it passes against one of them. `changed`: the
+    paths the change touches, when the caller knows them: a check whose files it does not touch is not run."""
+    best = None
+    debt_due = changed is None or any(p.startswith("config/") or p.endswith((".c", ".h", ".s", ".S", ".inc")) for p in changed)
+    style_due = changed is None or any(p.startswith("config/") or p.endswith(".md") for p in changed)
+    for base in bases:
+        fails, infos = admission(repo, base, head) if debt_due else ([], [])
+        found, more, replaced = protected_findings(base, head, online)
+        other = parse_baseline(base.read(BASELINE)).other
+        slack = sum(int(m[1]) for l in parse_baseline(head.read(BASELINE)).other if l not in other
+                    for m in [re.fullmatch(r"raise protected (\d+) \S+ \S.*", l)] if m)
+        infos += more
+        if found and len(found) <= slack:
+            infos += ["protected, and a `raise protected` line of the change allows it: %s" % f for f in found]
+        else:
+            fails += [("protected", f) for f in found]
+        if style_due:
+            rc, lines = _sibling_run(repo, "style", *_source_args(head), "--against", base.source, "--repo", str(repo))
+            if rc:
+                fails += [("style", l[11:]) for l in lines if l.startswith("STYLE FAIL ")] or [
+                    ("style", "exit %d: %s" % (rc, (lines or ["no output"])[-1]))]
+        if best is None or len(fails) < len(best[0]):
+            best = (fails, infos, replaced)
+        if not fails:
+            break
+    return best if best is not None else ([], [], False)
+
+
+def state(repo, tree: Tree, here: bool = True) -> list[tuple[str, str]]:
+    """[(check, detail)] for a tree as it stands: its baseline, its ledgers, and (`here`: the work tree holds this
+    tree) its plan, its toolchain pins, its README and its category ids."""
+    out = [("debt", f) for f in state_findings(repo, tree)[0]]
+    out += [("names", d) for lv, d in names_findings(repo, tree) if lv == "FAIL"]
+    if not here:
+        return out
+    out += [("plan", "%s: %s" % (ck, d)) for lv, ck, d in lint_plan(repo) if lv == "FAIL"]
+    out += [("toolchain", "%s: %s" % (name, d)) for st, name, d in toolchain_rows(repo) or () if st == "FAIL"]
+    for check, rel, args in (("readme", "README.md", ["lint", "README.md"]),
+                             ("categories", "config/categories.tsv", ["categories", "config/categories.tsv", "--history"])):
+        if tree.has(rel):
+            rc, lines = _sibling_run(repo, *args, "--repo", str(repo))
+            if rc:
+                out += [(check, l) for l in lines if " FAIL " in l or " ERROR " in l][:20] or [(check, "exit %d" % rc)]
+    return out
+
+
+def game_check(repo, tree: Tree) -> list[tuple[str, str]]:
+    """The game's own check, `[floor] gate` or `[own] gate` of the record, run by the shell in the repository."""
+    cmd = record_table(tree, "floor").get("gate") or record_table(tree, "own").get("gate")
+    if not cmd or os.environ.get(GATE_ENV):
+        return []
+    r = subprocess.run(cmd, shell=True, cwd=str(repo), capture_output=True, text=True, env=dict(os.environ, **{GATE_ENV: "1"}))
+    last = ((r.stdout + r.stderr).strip().splitlines() or ["no output"])[-1]
+    return [("game", "`%s` exited %d: %s" % (cmd, r.returncode, last[:200]))] if r.returncode else []
+
+
+def _rev(repo, name: str) -> str | None:
+    r = _git(repo, "rev-parse", "-q", "--verify", name + "^{commit}")
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def _handover(repo, tree: Tree, args: list[str]) -> tuple[int, str] | None:
+    """Run the gate again with the tools that `tree` holds, from a temporary folder: (its exit code, its output).
+    None when the tree holds the very tool that runs."""
+    mine = pathlib.Path(__file__).read_bytes()
+    if tree.raw(VENDORED) in (None, mine):
+        return None
+    with tempfile.TemporaryDirectory() as td:
+        for rel in TOOLS:
+            if tree.raw(rel) is not None:
+                (pathlib.Path(td) / pathlib.Path(rel).name).write_bytes(tree.raw(rel))
+        r = subprocess.run([sys.executable, "-I", str(pathlib.Path(td) / pathlib.Path(VENDORED).name), "gate", *args,
+                            "--repo", str(repo)], capture_output=True, text=True)
+    return r.returncode, r.stdout + r.stderr
+
+
+def cmd_gate(repo, mode: str, rng: str | None = None, part: str = "all", range_base: str | None = None) -> int:
+    """`gate --staged | --bank | --ci <base>..<head> | --push [<base>..<head>]`: `GATE FAIL <check>: <detail>` lines and
+    one last line, `GATE OK` or `GATE FAIL`; exit 1 on a FAIL. `--bank` also counts the source files that git does not
+    track yet, writes the rows of the baseline when the change is admitted, and runs the game's own check. `--ci`
+    judges each commit of the range against its parent, and the head of the range against its base."""
+    repo = pathlib.Path(repo)
+    index = os.environ.get("GIT_INDEX_FILE")
+    if index and not os.path.isabs(index):             # `git commit -a` gives the hook an index of its own
+        os.environ["GIT_INDEX_FILE"] = os.path.abspath(index)
+    for k in GIT_LOCATION_ENV:                         # git exports these to a hook, and they win over `-C`
+        os.environ.pop(k, None)
+    fails: list[tuple[str, str]] = []
+    infos: list[str] = []
+    passed, what = None, mode
+    try:
+        if mode in ("staged", "bank"):
+            head = Tree(repo, INDEX) if mode == "staged" else Tree(repo, None, untracked=True)
+            bases = [Tree(repo, r) for r in ("HEAD", "MERGE_HEAD") if _rev(repo, r)]
+            replaced = False
+            if part == "all" and bases:
+                fails, infos, replaced = transition(repo, bases, head)
+            elif part == "all":
+                infos.append("no commit yet: nothing to judge the change against")
+            if mode == "bank" and not fails:
+                st = state_findings(repo, head)[1]
+                if st["baseline"].version == 2 and (st["rise"] or st["stale"]):
+                    _write_baseline(repo, baseline_text(st["baseline"], st["counts"]))
+                    infos.append("%s: the rows of now written (%d rose with a new body, %d fell)" % (
+                        BASELINE, len(st["rise"]), len(st["stale"])))
+                    head = Tree(repo, None, untracked=True)
+            passed = _handover(repo, head, ["--" + mode, "--part", "state"]) if replaced and not fails else None
+            if passed is None:
+                fails += state(repo, head)
+                if mode == "bank" and not fails:
+                    fails += game_check(repo, head)
+        else:
+            base, _, tip = (rng or "").partition("..")
+            tip = _rev(repo, tip or "HEAD")
+            if tip is None:
+                raise Fail("%s names no commit: `gate --%s <base>..<head>`" % (rng, mode))
+            base = _rev(repo, base) if base and set(base) != {"0"} else None
+            if base is None and mode == "push" and not rng:
+                base = _rev(repo, "@{upstream}")
+            commits = _git(repo, "rev-list", "--reverse", tip, *(["^" + base] if base else ["--max-count=0"])).stdout.split()
+            what = "%s; %d commit(s)%s" % (mode, len(commits), "" if base else "; no base: the tree of the head only")
+            head = Tree(repo, tip)
+            for n, c in enumerate(commits if part == "all" else ()):
+                parents = _git(repo, "rev-list", "--parents", "-n", "1", c).stdout.split()[1:]
+                if not parents:
+                    continue
+                changed = set()
+                for p in parents:
+                    changed |= {x for x in _git(repo, "diff-tree", "-r", "--name-only", "--no-commit-id", "-z", p, c).stdout.split("\0") if x}
+                found, more, replaced = transition(repo, [Tree(repo, p) for p in parents], Tree(repo, c), mode == "push" or mode == "ci", changed)
+                fails += [(ck, "%s: %s" % (c[:10], d)) for ck, d in found]
+                infos += ["%s: %s" % (c[:10], i) for i in more]
+                if replaced and not found:
+                    passed = _handover(repo, Tree(repo, c), ["--" + mode, "%s..%s" % (c, tip)] + (
+                        ["--range-base", range_base or base] if (range_base or base) else []))
+                    if passed is not None:
+                        what += "; from %s on, the tools of that commit judge" % c[:10]
+                        break
+            if passed is None:
+                first = range_base or base
+                if part == "all" and first and (len(commits) > 1 or range_base):
+                    found, more, _ = transition(repo, [Tree(repo, first)], head, True)
+                    fails += [(ck, "%s..%s: %s" % (first[:10], tip[:10], d)) for ck, d in found if (ck, d) not in
+                              [(k, x.split(": ", 1)[-1]) for k, x in fails]]
+                here = _rev(repo, "HEAD") == tip
+                if not here:
+                    infos.append("the work tree is not at %s: its plan, README and category ids are not read" % tip[:10])
+                fails += state(repo, head, here)
+                if mode == "push" and not fails:
+                    fails += game_check(repo, head)
+    except Fail as e:
+        fails.append(("gate", str(e)))
+    for check, detail in fails:
+        print("GATE FAIL %s: %s" % (check, detail))
+    for text in infos:
+        print("GATE INFO %s" % text)
+    rc = 1 if fails else 0
+    if passed is not None:
+        sys.stdout.write(passed[1])
+        rc = rc or (1 if passed[0] else 0)
+    if passed is None or fails:
+        print("GATE %s (%s%s)" % ("FAIL" if fails else "OK", what, "; %d finding(s)" % len(fails) if fails else ""))
+    return rc
 
 
 # ---- self-test ------------------------------------------------------------------------------------------------------
@@ -2261,6 +2591,173 @@ def self_test_tree(check) -> None:
     check("the two tools stand side by side", sibling().name == pathlib.Path(__file__).name.replace("floor", "publish"))
 
 
+GATE_SETTINGS = {"permissions": {"deny": ["Bash(git push *)", "Edit(/config/debt-baseline.txt)"]}, "hooks": {"PreToolUse": [
+    {"matcher": "Bash|Edit|Write", "hooks": [{"type": "command", "command": 'python3 "$CLAUDE_PROJECT_DIR/tools/psxd_floor.py" guard --hook'}]},
+    {"matcher": "Bash", "hooks": [{"type": "command", "command": "the game's own hook"}]}]}}
+
+
+def self_test_gate(check) -> None:
+    global _sibling_run
+    keep = _sibling_run
+    if not sibling().is_file():                        # this file alone: the checks of the other tool are not its to test
+        _sibling_run = lambda repo, *args: (0, [])  # noqa: E731
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            repo = _repo(td)
+            put = lambda rel, text: ((repo / rel).parent.mkdir(parents=True, exist_ok=True), (repo / rel).write_text(text))  # noqa: E731
+            gate = lambda mode, rng=None: _capture(cmd_gate, repo, mode, rng)  # noqa: E731
+            mine = pathlib.Path(__file__).read_text(encoding="utf-8")
+            put("src/walk.c", C_DEBT["goto"][0])
+            put(VENDORED, mine)
+            put(TOOLS[1], sibling().read_text(encoding="utf-8") if sibling().is_file() else "VERSION = \"0.6.0\"\n")
+            put(SETTINGS, json.dumps(GATE_SETTINGS, indent=2) + "\n")
+            put(GUARD, "deny\tpath\tasm/\tasm/ is generated\n")
+            put(RECORD, '[psxdecomp]\nversion = "0.6.0"\n\n[own]\nnames = "config/names.basis.tsv"\ndebt = "python3 tools/scan.py --all"\n')
+            put("config/names.basis.tsv", "name\tbasis\nWalk\tthe string it prints\n")
+            put("tools/scan.py", "print('SCAN OK')\n")
+            put(WORKFLOWS + "no-rom.yml", "name: no-rom\n")
+            _git(repo, "add", "-A")
+            put(BASELINE, first_baseline(repo))
+            _git(repo, "add", "-A")
+            rc, out = gate("staged")
+            check("gate --staged before the first commit: the tree as it stands", rc == 0 and "no commit yet" in out
+                  and out.endswith("GATE OK (staged)\n"), out)
+            _commit(repo, "the floor")
+            start = _rev(repo, "HEAD")
+            rc, out = gate("staged")
+            check("gate --staged with nothing staged", (rc, out) == (0, "GATE OK (staged)\n"), out)
+            base_text = (repo / BASELINE).read_text()
+            staged = lambda: (_git(repo, "add", "-A"), gate("staged"))[1]  # noqa: E731
+            undo = lambda: (_git(repo, "reset", "-q", "--hard", "HEAD"), _git(repo, "clean", "-q", "-fd"))  # noqa: E731
+            # the baseline: a row written by hand, a policy line taken out, a new skip line
+            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
+            put(BASELINE, base_text.replace("1 goto src/walk.c", "2 goto src/walk.c"))
+            rc, out = staged()
+            check("gate: a row written by hand admits nothing", rc == 1 and "GATE FAIL debt: rose in an existing body: goto "
+                  "src/walk.c Walk: 1 -> 2\n" in out and out.endswith("GATE FAIL (staged; 1 finding(s))\n"), out)
+            undo()
+            for name, text, want in (("a policy line taken out", base_text.replace("mode pin-unmarked down\n", ""),
+                                      "GATE FAIL policy: the policy line of pin-unmarked is gone"),
+                                     ("a weaker mode", base_text.replace("mode asm down", "mode asm admit-new"),
+                                      "GATE FAIL policy: asm went from down to admit-new"),
+                                     ("a new skip line", base_text + "skip src/\n", "GATE FAIL policy: a new `skip` line (src/)")):
+                put(BASELINE, text)
+                rc, out = staged()
+                check("gate: " + name, rc == 1 and want in out, out)
+            undo()
+            (repo / BASELINE).unlink()
+            rc, out = staged()
+            check("gate: a deleted baseline", rc == 1 and "GATE FAIL policy: config/debt-baseline.txt is gone" in out
+                  and "GATE FAIL debt: no config/debt-baseline.txt" in out, out)
+            undo()
+            # the files that carry the floor: each is valid against HEAD
+            hooks = json.loads(json.dumps(GATE_SETTINGS))
+            for name, change, want in (
+                    ("a tool that changed", lambda: put(VENDORED, mine + "# a change\n"), "tools/psxd_floor.py changed and its version did not"),
+                    ("a tool with a lower version", lambda: put(VENDORED, mine.replace('VERSION = "%s"' % VERSION, 'VERSION = "0.5.9"')),
+                     "tools/psxd_floor.py went from version %s back to 0.5.9" % VERSION),
+                    ("a tool that is gone", lambda: (repo / TOOLS[1]).unlink(), "tools/psxd_publish.py is gone"),
+                    ("a workflow that changed", lambda: put(WORKFLOWS + "no-rom.yml", "name: nothing\n"), "no-rom.yml changed"),
+                    ("a hook that is gone", lambda: put(SETTINGS, json.dumps(dict(hooks, hooks={}))), "lost a hook of PreToolUse"),
+                    ("a hook with a narrower matcher", lambda: put(SETTINGS, json.dumps(GATE_SETTINGS).replace("Bash|Edit|Write", "Edit|Write")),
+                     "lost a hook of PreToolUse (or a tool of its matcher)"),
+                    ("a hook command made empty", lambda: put(SETTINGS, json.dumps(GATE_SETTINGS).replace("guard --hook", "guard --hook || true")),
+                     "lost a hook of PreToolUse"),
+                    ("a deny rule that is gone", lambda: put(SETTINGS, json.dumps(GATE_SETTINGS).replace('"Bash(git push *)", ', "")),
+                     "lost 1 deny rule(s): Bash(git push *)"),
+                    ("disableAllHooks", lambda: put(SETTINGS, json.dumps(dict(hooks, disableAllHooks=True))), "sets disableAllHooks"),
+                    ("a guard row that is gone", lambda: put(GUARD, "deny\tpath\tbuild/\tx\n"), "lost the row `deny path asm/`"),
+                    ("a new allow row", lambda: put(GUARD, "allow\tpath\tasm/x.s\t\ndeny\tpath\tasm/\tasm/ is generated\n"), "a new `allow` row (path asm/x.s)"),
+                    ("the game's own scanner, edited", lambda: put("tools/scan.py", "print('SCAN OK')  # always\n"),
+                     "tools/scan.py changed (the record names it"),
+                    ("the game's own ledger, a row changed", lambda: put("config/names.basis.tsv", "name\tbasis\nWalk\tnone\n"),
+                     "config/names.basis.tsv lost or changed 1 line(s)"),
+                    ("the record's own check, replaced", lambda: put(RECORD, (repo / RECORD).read_text().replace("python3 tools/scan.py --all", "true")),
+                     "config/psxdecomp.toml [own] debt changed")):
+                change()
+                rc, out = staged()
+                check("gate: " + name, rc == 1 and "GATE FAIL protected: " in out and want in out, out)
+                undo()
+            put("config/names.basis.tsv", "name\tbasis\nWalk\tthe string it prints\nRun\tits caller\n")
+            put(WORKFLOWS + "extra.yml", "name: extra\n")
+            put(GUARD, "deny\tpath\tasm/\tasm/ is generated\ndeny\tpath\tbuild/\tthe build writes it\n")
+            put(SETTINGS, json.dumps(GATE_SETTINGS).replace('"Bash|Edit|Write"', '"Bash|Edit|Write|MultiEdit"'))
+            rc, out = staged()
+            check("gate: a new ledger row, a new workflow, a new deny row and a wider matcher pass", (rc, out) == (0, "GATE OK (staged)\n"), out)
+            undo()
+            put(WORKFLOWS + "no-rom.yml", "name: nothing\n")
+            put(BASELINE, base_text.replace("skip ", "raise protected 1 2026-01-02 the runner changed\nskip ") if "skip " in base_text
+                else base_text.replace("1 goto src/walk.c", "raise protected 1 2026-01-02 the runner changed\n1 goto src/walk.c"))
+            rc, out = staged()
+            check("gate: a `raise protected` line of the developer allows one such change", rc == 0 and
+                  "GATE INFO protected, and a `raise protected` line of the change allows it: .github/workflows/no-rom.yml changed" in out, out)
+            undo()
+            # a tool of a later version judges the tree, after the tool of HEAD accepted the change
+            later = mine.replace('VERSION = "%s"' % VERSION, 'VERSION = "99.0.0"').replace('"GATE %s (%s%s)"', '"GATE %s by the later tool (%s%s)"')
+            put(VENDORED, later)
+            rc, out = staged()
+            check("gate: a later tool is accepted, and it judges the tree", rc == 0 and "GATE INFO tools/psxd_floor.py: version "
+                  "%s -> 99.0.0" % VERSION in out and out.endswith("GATE OK by the later tool (staged)\n"), out)
+            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
+            rc, out = staged()
+            check("gate: a later tool beside a refused change does not take over", rc == 1 and "by the later tool" not in out
+                  and "rose in an existing body" in out, out)
+            undo()
+            # the bank: the files git does not track yet count, and the rows of an admitted change are written
+            put("src/new.c", C_DEBT["goto"][0].replace("Walk", "Run"))
+            rc, out = gate("bank")
+            check("gate --bank admits a new body and writes its rows", rc == 0 and "1 goto src/new.c\n" in (repo / BASELINE).read_text()
+                  and "GATE INFO config/debt-baseline.txt: the rows of now written (1 rose with a new body, 0 fell)" in out
+                  and out.endswith("GATE OK (bank)\n"), out)
+            put("src/new.c", C_DEBT["pin-unmarked"][0].replace("Walk", "Run"))
+            before = (repo / BASELINE).read_text()
+            rc, out = gate("bank")
+            check("gate --bank refuses an unmarked pin in a file that is not tracked yet", rc == 1 and
+                  "GATE FAIL debt: rose in total: pin-unmarked is `down`: 0 -> 1" in out and (repo / BASELINE).read_text() == before, out)
+            put("src/new.c", C_DEBT["goto"][0].replace("Walk", "Run"))
+            put(RECORD, (repo / RECORD).read_text() + '\n[floor]\ngate = "echo the build is red; exit 3"\n')
+            rc, out = gate("bank")
+            check("gate --bank runs the game's own check", rc == 1 and "GATE FAIL game: `echo the build is red; exit 3` exited 3: "
+                  "the build is red" in out, out)
+            os.environ[GATE_ENV] = "1"
+            check("a gate inside the game's own check does not run it again", gate("bank")[0] == 0)
+            del os.environ[GATE_ENV]
+            put(RECORD, (repo / RECORD).read_text().replace("echo the build is red; exit 3", "exit 0"))
+            _git(repo, "add", "-A")
+            _commit(repo, "a bank")
+            # CI: each commit against its parent, and the range against its base
+            rc, out = gate("ci", "%s..HEAD" % start)
+            check("gate --ci: an admitted commit", (rc, out) == (0, "GATE OK (ci; 1 commit(s))\n"), out)
+            put("src/walk.c", 'INCLUDE_ASM("asm/nonmatchings/a", Walk);\n')
+            _capture(cmd_debt, repo, update=True)
+            _git(repo, "add", "-A")
+            _commit(repo, "the body leaves")
+            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
+            _capture(cmd_debt, repo, update=True)
+            _git(repo, "add", "-A")
+            _commit(repo, "the body is back, worse")
+            rc, out = gate("ci", "HEAD~2..HEAD")
+            check("gate --ci: a body that left and came back worse fails as the range", rc == 1 and out.count("GATE FAIL") == 2
+                  and "GATE FAIL debt: %s..%s: rose in an existing body: goto src/walk.c Walk: 1 -> 2" % (
+                      _rev(repo, "HEAD~2")[:10], _rev(repo, "HEAD")[:10]) in out, out)
+            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;\n    goto loop;"))
+            put(BASELINE, (repo / BASELINE).read_text().replace("2 goto src/walk.c", "3 goto src/walk.c"))
+            _git(repo, "add", "-A")
+            _commit(repo, "a commit that no hook saw")
+            sha = _rev(repo, "HEAD")[:10]
+            rc, out = gate("ci", "HEAD~1..HEAD")
+            check("gate --ci: a commit that skipped the hook fails by its own name", rc == 1 and
+                  "GATE FAIL debt: %s: rose in an existing body: goto src/walk.c Walk: 2 -> 3" % sha in out, out)
+            rc, out = gate("ci", "0000000000000000000000000000000000000000..HEAD")
+            check("gate --ci with no base: the tree of the head", rc == 0 and "no base: the tree of the head only" in out, out)
+            rc, out = gate("ci", "HEAD..nowhere")
+            check("gate --ci: a range that names no commit", rc == 1 and "GATE FAIL gate: HEAD..nowhere names no commit" in out, out)
+            rc, out = gate("push", "HEAD~1..HEAD")
+            check("gate --push: the range, as --ci", rc == 1 and "rose in an existing body" in out, out)
+    finally:
+        _sibling_run = keep
+
+
 def self_test_toolchain(check) -> None:
     with tempfile.TemporaryDirectory() as td:
         repo = _repo(td)
@@ -2407,6 +2904,7 @@ def self_test() -> int:
         self_test_debt(check)
         self_test_bodies(check)
         self_test_tree(check)
+        self_test_gate(check)
         self_test_toolchain(check)
         self_test_guard(check)
     finally:
@@ -2418,7 +2916,7 @@ def self_test() -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", nargs="?", choices=["plan", "ladder", "debt", "names", "toolchain", "guard"])
+    ap.add_argument("cmd", nargs="?", choices=["plan", "ladder", "debt", "names", "toolchain", "guard", "gate"])
     ap.add_argument("file", nargs="?", help="ladder: the constitution to read")
     ap.add_argument("--repo", help="the repository; default: the git checkout that holds the working directory")
     ap.add_argument("--update", action="store_true")
@@ -2428,7 +2926,13 @@ def main(argv=None) -> int:
     ap.add_argument("--reason", help="debt --raise: why")
     ap.add_argument("--init", action="store_true")
     ap.add_argument("--hook", action="store_true")
-    ap.add_argument("--staged", action="store_true", help="debt: count the index")
+    ap.add_argument("--staged", action="store_true", help="debt: count the index; gate: judge the index against HEAD")
+    ap.add_argument("--bank", action="store_true", help="gate: judge the work tree against HEAD, write the rows")
+    ap.add_argument("--ci", metavar="BASE..HEAD", help="gate: judge each commit of the range, and the range")
+    ap.add_argument("--push", nargs="?", const="", metavar="BASE..HEAD", help="gate: as --ci, and the game's own check")
+    ap.add_argument("--part", default="all", choices=["all", "state"], help=argparse.SUPPRESS)
+    ap.add_argument("--range-base", help=argparse.SUPPRESS)
+    ap.add_argument("--version", action="version", version=VERSION)
     ap.add_argument("--rev", help="debt: count this revision")
     ap.add_argument("--against", metavar="BASE", help="debt: report the counts that differ from this revision's")
     ap.add_argument("--bodies", action="store_true", help="debt: the counts of each function body, no check")
@@ -2455,6 +2959,11 @@ def main(argv=None) -> int:
                         against=a.against, recount=a.recount, raise_=a.raise_, reason=a.reason)
     if a.cmd == "names":
         return cmd_names(a.repo, init=a.init)
+    if a.cmd == "gate":
+        modes = [m for m, on in (("staged", a.staged), ("bank", a.bank), ("ci", a.ci), ("push", a.push is not None)) if on]
+        if len(modes) != 1:
+            ap.error("gate: one of --staged, --bank, --ci <base>..<head> and --push [<base>..<head>]")
+        return cmd_gate(a.repo, modes[0], a.ci or a.push or None, a.part, a.range_base)
     if a.cmd == "toolchain":
         return cmd_toolchain(a.repo)
     ap.print_help()

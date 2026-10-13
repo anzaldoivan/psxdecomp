@@ -714,6 +714,8 @@ def test_floor_is_vendorable():
     assert mods == {"__future__", "argparse", "bisect", "contextlib", "fnmatch", "hashlib", "io", "json", "os", "pathlib", "re", "signal",
                     "subprocess", "sys", "tempfile", "time"}, mods
     assert floor.VENDORED == "tools/psxd_floor.py"
+    assert floor.VERSION == publish.VERSION == common.plugin_version()          # a game's tool changes only to a later one
+    assert _floor("--version").stdout.strip() == floor.VERSION
     assert len(floor.LADDER) == 11 and [r[0] for r in floor.LADDER] == list(range(11))
 
 
@@ -992,6 +994,93 @@ def test_debt_bodies(tmp_path):
     assert r.returncode == 0 and "DEBT BODY src/a.c A: offset 1\nDEBT BODY src/a.c B: goto 1\n" in r.stdout, r.stdout
     assert "DEBT BODIES 1 file(s), 2 function bodies, 2 with debt, 0 count(s) at file scope" in r.stdout
     assert "DEBT BODIES 1 file(s), 1 function bodies, 0 with debt" in _floor("debt", "--bodies", "--repo", repo).stdout
+
+
+def _gate_repo(tmp_path):
+    """A committed game with the two vendored tools, a version 2 baseline, one prose file and a commit hook that runs
+    `gate --staged` with this checkout's floor.py."""
+    repo = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], "docs/a.md": "Clean.\n", "tools/x": "x\n"})
+    for src, dst in (("scripts/floor.py", floor.VENDORED), ("scripts/publish.py", publish.VENDORED)):
+        (repo / dst).write_bytes((ROOT / src).read_bytes())
+    assert _floor("debt", "--recount", "--repo", repo).returncode == 0
+    hook = pathlib.Path(run(["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-commit"]).stdout.strip())
+    hook.parent.mkdir(exist_ok=True)
+    hook.write_text("#!/bin/sh\nexec '%s' '%s' gate --staged\n" % (PY, ROOT / "scripts/floor.py"))
+    hook.chmod(0o755)
+    run(["git", "-C", repo, "add", "-A"])
+    run(["git", "-C", repo, "-c", "commit.gpgsign=false", "commit", "-qm", "the floor"])
+    return repo
+
+
+def test_gate_modes(tmp_path):
+    """`gate --staged` as a commit hook. `git commit -a` and `git commit -- <path>` give the hook an index of their
+    own: the gate reads that one, also for the style check of the other tool. A linked worktree is judged against its
+    own HEAD. A merge passes when it adds nothing to either parent, and is refused when it does. A first commit has
+    nothing to be judged against. `gate --ci` judges the same history afterwards."""
+    repo = _gate_repo(tmp_path)
+    git = lambda *a, cwd=repo, check=True: run(["git", "-C", cwd, "-c", "commit.gpgsign=false", *a], check=check)  # noqa: E731
+    worse = floor.C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;")
+    start = git("rev-parse", "HEAD").stdout.strip()
+    (repo / "src/a.c").write_text(worse)                                        # never staged: `commit -a` stages it
+    for form in (("commit", "-qam", "worse"), ("commit", "-qm", "worse", "--", "src/a.c")):
+        r = git(*form, check=False)
+        assert r.returncode != 0 and "GATE FAIL debt: rose in an existing body: goto src/a.c Walk: 1 -> 2" in r.stdout + r.stderr, form
+    git("checkout", "--", "src/a.c")
+    (repo / "docs/a.md").write_text("One; two.\n")
+    r = git("commit", "-qam", "prose", check=False)
+    assert r.returncode != 0 and "GATE FAIL style: docs/a.md: 1 finding(s), its row is 0" in r.stdout + r.stderr, r.stdout + r.stderr
+    git("checkout", "--", "docs/a.md")
+    assert git("rev-parse", "HEAD").stdout.strip() == start
+    # a linked worktree: its own index, its own HEAD, the hooks of the repository
+    side = tmp_path / "side"
+    git("worktree", "add", "-q", "-b", "side", side)
+    (side / "src/a.c").write_text(worse)
+    r = git("commit", "-qam", "worse", cwd=side, check=False)
+    assert r.returncode != 0 and "rose in an existing body" in r.stdout + r.stderr, r.stdout + r.stderr
+    git("checkout", "--", "src/a.c", cwd=side)
+    (side / "src/b.c").write_text(floor.C_DEBT["goto"][0].replace("Walk", "Run"))
+    git("add", "-A", cwd=side)
+    r = _floor("gate", "--bank", "--repo", side)                                 # the bank writes the rows of the new body
+    assert r.returncode == 0 and "1 goto src/b.c\n" in (side / floor.BASELINE).read_text(), r.stdout
+    git("commit", "-qam", "a new body on the side", cwd=side)
+    # a merge: both sides added a body and a row
+    (repo / "src/c.c").write_text(floor.C_DEBT["goto"][0].replace("Walk", "Jump"))
+    assert _floor("gate", "--bank", "--repo", repo).returncode == 0
+    git("add", "-A")
+    git("commit", "-qm", "a new body on main")
+    r = git("merge", "-q", "--no-ff", "--no-commit", "side", check=False)
+    (repo / floor.BASELINE).write_bytes(run(["git", "-C", repo, "show", "HEAD:" + floor.BASELINE]).stdout.encode())
+    (repo / "src/a.c").write_text(worse)                                        # and the merge itself makes a body worse
+    assert _floor("debt", "--update", "--repo", repo).returncode == 1
+    git("add", "-A")
+    r = git("commit", "-qm", "an evil merge", check=False)
+    assert r.returncode != 0 and "rose in an existing body: goto src/a.c Walk: 1 -> 2" in r.stdout + r.stderr, r.stdout + r.stderr
+    (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0])
+    r = _floor("debt", "--update", "--repo", repo)
+    assert r.returncode == 0 and "1 goto src/b.c\n" in (repo / floor.BASELINE).read_text(), r.stdout
+    git("add", "-A")
+    git("commit", "-qm", "the merge")
+    assert len(git("rev-list", "--parents", "-n", "1", "HEAD").stdout.split()) == 3
+    r = _floor("gate", "--ci", "%s..HEAD" % start, "--repo", repo)
+    assert (r.returncode, r.stdout) == (0, "GATE OK (ci; 3 commit(s))\n"), r.stdout
+    assert _floor("gate", "--push", "--repo", repo).stdout == "GATE OK (push; 0 commit(s); no base: the tree of the head only)\n"
+    # a first commit: nothing to judge it against, and its tree is checked as it stands
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    run(["git", "init", "-q", fresh])
+    (fresh / "src").mkdir()
+    (fresh / "src/a.c").write_text(floor.C_DEBT["goto"][0])
+    run(["git", "-C", fresh, "add", "-A"])
+    r = _floor("gate", "--staged", "--repo", fresh)
+    assert r.returncode == 1 and "GATE FAIL debt: no %s" % floor.BASELINE in r.stdout and "no commit yet" in r.stdout, r.stdout
+    assert _floor("debt", "--recount", "--repo", fresh).returncode == 0
+    run(["git", "-C", fresh, "add", "-A"])
+    assert _floor("gate", "--staged", "--repo", fresh).returncode == 0
+    run(["git", "-C", fresh, "-c", "commit.gpgsign=false", "commit", "-qm", "first"])
+    r = _floor("gate", "--ci", "%s..HEAD" % ("0" * 40), "--repo", fresh)
+    assert r.returncode == 0 and "no base: the tree of the head only" in r.stdout, r.stdout
+    r = _floor("gate", "--repo", fresh)
+    assert r.returncode == 2 and "one of --staged, --bank" in r.stderr
 
 
 def test_debt_against_rev(tmp_path):

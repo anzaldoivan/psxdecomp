@@ -132,6 +132,7 @@ ARTIFACT = re.compile(r"^[A-Za-z0-9._-]+_report$")
 
 # ---- what psxdecomp writes into a game repository from this standard (S10, /psxdecomp:upgrade) -------------------
 VENDORED = "tools/psxd_publish.py"                        # this file, byte for byte
+VERSION = "0.6.0"                                         # psxdecomp's version: a game's tool changes only to a later one
 WORKFLOW = ".github/workflows/psxdecomp-readme.yml"       # profiles/psx/psxdecomp-readme.yml: lint + the freeze
 
 # ---- the category list ------------------------------------------------------------------------------------------
@@ -5310,7 +5311,10 @@ def main(argv=None) -> int:
     sy.add_argument("--against", metavar="BASE",
                     help="judge by the ratchet, the `skip` lines and the public list of this revision as well")
     a = ap.parse_args(argv)
+    index = os.environ.get("GIT_INDEX_FILE")          # a commit hook's own index (`git commit -a`): `style --staged` reads it
     own_git_env()
+    if index and a.cmd == "style" and a.staged:
+        os.environ["GIT_INDEX_FILE"] = os.path.abspath(index)
     if a.self_test:
         return self_test()
     if a.cmd == "style":

@@ -107,6 +107,28 @@ A game has one command that proves a change. The default is `make verify`.
   That key answers the `gate` row of the doctor, and the game's gate then holds its own hashes.
 - psxdecomp delivers no makefile. Each game has targets of its own shape.
 
+## The gate of the floor
+
+`python3 tools/psxd_floor.py gate` runs the checks of this file in one command. Each finding is a line
+`GATE FAIL <check>: <detail>`. The last line is `GATE OK` or `GATE FAIL`.
+
+| Mode | It judges | Against |
+|---|---|---|
+| `--staged` | the index | `HEAD` |
+| `--bank` | the work tree, with the files that git does not track yet | `HEAD` |
+| `--ci <base>..<head>` | each commit of the range, then the head of the range | the parent of each commit, then the base of the range |
+| `--push` | the same as `--ci` | the same as `--ci` |
+
+- The gate judges a change against a tree that the change cannot rewrite. An edited baseline or tool decides nothing.
+- `--bank` writes the rows of the baseline when the change is admitted. A bank tool calls it before the commit.
+- `--bank` and `--push` also run the check of the game, `[floor] gate` or `[own] gate`.
+- The checks are `policy`, `debt`, `protected`, `style`, `names`, `plan`, `toolchain`, `readme` and `categories`.
+- `protected` covers the files that carry the floor. The first are the two tools and the workflows.
+- It also covers the hooks and the deny rules of `.claude/settings.json`, and the `deny` rows of `config/guard.tsv`.
+- It also covers each check that the record names in `[own]`, `[trial]`, `[floor]` or `[debt]`.
+- A tool changes only to a later version. The new tool then judges the tree.
+- The developer allows one protected change with `debt --raise protected <n> --reason <text>`.
+
 ## Readability debt
 
 `python3 tools/psxd_floor.py debt` counts ten kinds of debt in the tracked files of `src/` and `include/`. The rule

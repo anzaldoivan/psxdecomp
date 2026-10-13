@@ -311,6 +311,28 @@ def test_s10_writes_the_debt_baseline_and_debt_passes(game):
     assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
 
 
+def test_fresh_game_passes_its_gate(game):
+    """A game as S10 leaves it passes its own gate with its own vendored tools: the index against HEAD, the handoff
+    commit against its parent, and the bank (which writes nothing when nothing changed). A source file with an
+    unmarked pin that git does not track yet fails the bank."""
+    import floor
+    gate = lambda *a: run([PY, floor.VENDORED, "gate", *a], cwd=game, check=False)  # noqa: E731
+    for args, want in ((("--staged",), "GATE OK (staged)\n"), (("--ci", "HEAD~1..HEAD"), "GATE OK (ci; 1 commit(s))\n"),
+                       (("--bank",), "GATE OK (bank)\n")):
+        r = gate(*args)
+        assert (r.returncode, r.stdout) == (0, want), (args, r.stdout, r.stderr)
+    assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+    src = game / "src/probe.c"
+    try:
+        src.parent.mkdir(exist_ok=True)
+        src.write_text(floor.C_DEBT["pin-unmarked"][0])
+        r = gate("--bank")
+        assert r.returncode == 1 and "GATE FAIL debt: rose in total: pin-unmarked is `down`: 0 -> 1" in r.stdout, r.stdout
+    finally:
+        src.unlink()
+    assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+
+
 def test_phase_rows_wait_at_bootstrap(game):
     """The phase-conditional rows of the floor at the handoff: gate, toolchain, names, debt and progress say WAIT with
     the phase that makes each due, and the doctor still exits 0 (S10 aborts on a FAIL)."""
