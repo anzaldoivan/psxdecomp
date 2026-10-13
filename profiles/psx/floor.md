@@ -141,17 +141,17 @@ is `rules/FIN1.md`.
 |---|---|
 | `pin` | a register that the source forces: `register ... asm("$n")`, also with `__asm__` or `__asm` |
 | `pin-unmarked` | a pin with no `// !FAKE: <reason>` comment of its own |
-| `goto` | a `goto`, or a macro that hides one, at each use |
+| `goto` | the word `goto` wherever it stands, or a macro that hides one, at each use. Only `goto label;` can carry a marker. |
 | `goto-unmarked` | a `goto` with no `// !FAKE: <reason>` comment of its own |
 | `barrier` | an empty assembly statement, `__asm__("")` |
 | `barrier-unmarked` | a barrier with no `// !FAKE: <reason>` comment of its own |
-| `offset` | a field read by its offset: `*(T *)(p + N)`, `((T *)p)[N]`, `M2C_FIELD(`, or a byte pointer plus a number. A macro that hides one counts at each use. |
+| `offset` | a field read by its offset: `*(T *)(p + N)`, `((T *)p)[N]`, `M2C_FIELD(`, or a byte pointer plus a number, each also with a minus. A macro that hides one counts at each use. |
 | `address` | a literal in the address ranges of the console with no symbol, or a macro that hides one, outside the address header |
-| `cast` | an integer made of a pointer, or a pointer made of an integer: `(s32)&x`, `(T *)(s32)x` |
+| `cast` | an integer made of a pointer, or a pointer made of an integer: `(s32)&x`, `(T *)(s32)x`, also with `u_long`, `u_int` and `u_short` |
 | `field` | a name such as `unk_10` or `field_0x10`: a field with an offset and no name |
 | `macro` | a `#define` whose body holds `{`, `;` or a line continuation |
-| `asm` | an assembly file, an inline assembly statement, or a macro that holds one, with no row in `config/asm-evidence.tsv` |
-| `obscured` | text that hides code from the tool: a statement outside each function body that the tool sees, or a line continuation outside a directive. A digraph for a brace and a source behind a symbolic link count too. |
+| `asm` | an assembly file, an inline assembly statement, the word `asm` in any other place, or a macro that holds one, with no row in `config/asm-evidence.tsv` |
+| `obscured` | text that hides code from the tool: a statement outside each function body that the tool sees, or a line continuation outside a directive. A digraph for a brace, a `##` paste and a source behind a symbolic link count too. |
 | `placeholder` | a `func_` or `D_` address name that a C file defines, also `FUN_`, `DAT_`, `sub_` and `loc_` |
 | `placeholder-use` | each other place where such a name stands |
 | `unbased` | any other function that a C file defines, with no accepted row in `config/names.tsv` |
@@ -165,7 +165,12 @@ is `rules/FIN1.md`.
   `tests/`, `fixtures/` and `cookbook/`.
 - It does not read the work folders of a campaign: `drafts/`, `waves/`, `repro/`, `scratch/` and `sandbox/`.
 - It also does not read a folder whose name starts with a dot. It reads each other folder.
-- An `#include` of C code from a folder that the tool does not read counts as `obscured`.
+- An `#include` of a file of the tree that the tool does not read counts as `obscured`.
+- That is a file with another suffix, or a file in a folder that is not read.
+- A path through a linked folder or a submodule counts the same way.
+- An `#include <...>` of a file of the tree counts as `obscured` too. Write the tree's own headers with quotes.
+- The tool knows the macros of each header in every file, and those of an included C file in the file that includes it.
+- The definition of `INCLUDE_ASM` and `INCLUDE_RODATA` is protected. A change of it needs a `raise protected` line.
 - A fragment is a file that a function includes inside its braces. Its name decides nothing.
 - A file of statements that no function includes counts as `obscured`.
 - A branch of an `#if` must pair its braces. A lone brace in a branch counts as `obscured`.

@@ -71,24 +71,31 @@ The debt kinds (one `<count> <kind> <path>` row each in the baseline). Every tra
 suffix is read, in any folder but the splitter's output, the build's, the reference library, the folders of tools,
 documents, records and tests, and the work folders of a campaign (drafts/, waves/, repro/, scratch/, sandbox/):
   pin              `register T x asm("$n")` (also `__asm__`, `__asm`): a register forced by hand
-  goto             a `goto`, or a macro that hides one (each use)
+  goto             the word `goto` wherever it stands (a computed goto and a macro's argument too), or a macro that
+                   hides one (each use). Only `goto label;` can carry a marker
   barrier          an empty asm statement, `__asm__("")`: it forces the compiler and holds no instruction
   <those three>-unmarked
                    one of them with no `// !FAKE: <reason>` comment of its own: on its line, or alone on the line
                    above. One marker covers one construct, and a marker with no reason covers none
   offset           a field read by its offset: `*(T *)(p + N)`, `((T *)p)[N]`, `M2C_FIELD(`, a byte pointer plus a
-                   number, or a macro that hides one (each use). A sum with a variable is not counted
+                   number, each also with a minus, or a macro that hides one (each use). A sum with a variable
+                   is not counted
   address          a literal in the console's address ranges (RAM, scratchpad, I/O, BIOS) with no symbol, or a macro
                    that hides one (each use), outside the address header (`[debt] address_header`, include/addr.h)
-  cast             an integer made of a pointer, or a pointer made of an integer: `(s32)&x`, `(T *)(s32)x`
+  cast             an integer made of a pointer, or a pointer made of an integer: `(s32)&x`, `(T *)(s32)x`, also
+                   with the SDK's names (`u_long`, `u_int`, `u_short`)
   field            a member or a name `unk_10`, `field_0x10`: a field that has an offset and no name
   macro            a `#define` whose body holds `{`, `;` or a line continuation
-  asm              an assembly file, an inline asm statement, or a macro that holds one (the macro and each use),
-                   with no row in config/asm-evidence.tsv
+  asm              an assembly file, an inline asm statement, the word `asm` in any other place (a macro's
+                   argument), or a macro that holds one (the macro and each use), with no row in
+                   config/asm-evidence.tsv
   obscured         text that hides code from this tool: a statement outside every function body it sees (a head in
                    K&R form, by a macro, or not in column 0), a line continuation outside a directive, a digraph or
-                   a trigraph for a brace, a source behind a symbolic link, an `#include` of C code from a folder
-                   that is not read, a branch of a preprocessor conditional whose braces do not pair. A file that
+                   a trigraph for a brace, a `##` paste, a source behind a symbolic link, an `#include` of a file
+                   of the tree that the count does not read (another suffix, a folder that is not read, the `<>`
+                   form, a path through a linked folder or a submodule), a branch of a preprocessor conditional
+                   whose braces do not pair. The macros of a header are known in every file, those of an
+                   included C file in the file that includes it. A file that
                    a function includes inside its braces is a fragment: its statements are counted in its own
                    file, and they rise only when each body that includes it is new
   placeholder      a `func_XXXXXXXX` or `D_XXXXXXXX` name defined in a C file (also `FUN_`, `DAT_`, `sub_`, `loc_`)
@@ -204,6 +211,7 @@ class Tree:
         self.memo: dict = {}                           # what a check derived from this tree, by its own key
         self._set: set | None = None
         self.links: list[str] = []                     # the tracked symbolic links: no file of the tree, and said so
+        self.modules: list[str] = []                   # the submodules: folders whose files this tree does not hold
         self._keep = None                              # a view (`only`): the test of the paths it holds
         self._whole: Tree | None = None                # and the tree it is a view of, which owns the git process
         if source is None:
@@ -214,7 +222,8 @@ class Tree:
                 found = {f.relative_to(self.repo).as_posix() for f in self.repo.rglob("*")
                          if f.is_file() and ".git" not in f.relative_to(self.repo).parts}
             self.paths = sorted(found)
-            self.links = [p for p in self.paths if is_source(p) and (self.repo / p).is_symlink()]
+            self.links = [p for p in self.paths if (self.repo / p).is_symlink()]
+            self.modules = [p for p in self.paths if p not in self.links and (self.repo / p).is_dir()]
             return
         r = _git(repo, "ls-files", "-z", "-s") if source == INDEX else _git(repo, "ls-tree", "-r", "-z", source)
         if r.returncode != 0:
@@ -227,6 +236,8 @@ class Tree:
                 self._blob.setdefault(path, cells[1] if source == INDEX else cells[2])
             elif tab and cells[:1] == ["120000"]:
                 self.links.append(path)
+            elif tab and cells[:1] == ["160000"]:
+                self.modules.append(path)
         self.paths = sorted(self._blob)
 
     def only(self, keep) -> "Tree":
@@ -236,6 +247,7 @@ class Tree:
         view.__dict__.update(self.__dict__)
         view.paths = [p for p in self.paths if keep(p)]
         view.links = [p for p in self.links if keep(p)]
+        view.modules = [p for p in self.modules if keep(p)]
         view._text, view.memo, view._set, view._keep, view._whole = {}, {}, None, keep, self
         return view
 
@@ -685,17 +697,17 @@ OFFX = rf"(?:\([^()]*\)|{NUM}|[A-Za-z_]\w*)(?:\s*[-+*]\s*(?:\([^()]*\)|{NUM}|[A-
 OPND = r"\(?\s*&?\s*\w+(?:\s*(?:->|\.)\s*\w+|\s*\[[^\[\]\n]*\])*\s*\)?"
 PTR = r"\(\s*[\w ]+?\s*\*+\s*\)"
 CAST = r"\(\s*[\w ]+?\s*\**\s*\)"
-CHR = r"(?:const\s+)?(?:(?:unsigned|signed)\s+)?(?:char|[su]8)"
+CHR = r"(?:const\s+)?(?:(?:(?:unsigned|signed)\s+)?(?:char|[su]8)|u_?char)"
 # A field read by its offset, in four forms, and a byte pointer plus a number. A sum with a variable (`(u8 *)dst + n`)
 # is pointer arithmetic.
 OFFSET = re.compile(
-    rf"\*\s*{PTR}\s*\(\s*(?:{CAST}\s*)?{OPND}\s*\+\s*{OFFX}\s*\)"                  # *(T *)(p + N), *(T *)((U *)p + N)
-    rf"|\*\s*\(\s*{PTR}\s*{OPND}\s*\+\s*{OFFX}\s*\)"                               # *((T *)p + N)
-    rf"|{PTR}\s*\(\s*{PTR}\s*{OPND}\s*\+\s*{OFFX}\s*\)\s*\)\s*(?:->|\[)"            # ((T *)((U *)p + N))->f
-    rf"|\(\s*{PTR}\s*{OPND}\s*\)\s*\[\s*{NUM}\s*\]"                                 # ((T *)p)[N]
-    rf"|\(\s*{CHR}\s*\*+\s*\)\s*{OPND}\s*\+\s*{NUM}(?![\w.])"                         # (u8 *)p + N
+    rf"\*\s*{PTR}\s*\(\s*(?:{CAST}\s*)?{OPND}\s*[-+]\s*{OFFX}\s*\)"                 # *(T *)(p + N), *(T *)((U *)p - N)
+    rf"|\*\s*\(\s*{PTR}\s*{OPND}\s*[-+]\s*{OFFX}\s*\)"                              # *((T *)p + N)
+    rf"|{PTR}\s*\(\s*{PTR}\s*{OPND}\s*[-+]\s*{OFFX}\s*\)\s*\)\s*(?:->|\[)"           # ((T *)((U *)p + N))->f
+    rf"|\(\s*{PTR}\s*{OPND}\s*\)\s*\[\s*-?\s*{NUM}\s*\]"                            # ((T *)p)[N], ((T *)p)[-N]
+    rf"|\(\s*{CHR}\s*\*+\s*\)\s*{OPND}\s*[-+]\s*{NUM}(?![\w.])"                        # (u8 *)p + N
     r"|\bM2C_FIELD\s*\(")
-INT = r"(?:(?:(?:un)?signed\s+)?(?:int|long|short)|[su](?:8|16|32)|u?intptr_t)"
+INT = r"(?:(?:(?:un)?signed\s+)?(?:int|long|short)|[su](?:8|16|32)|u?intptr_t|u_?(?:long|int|short))"   # the SDK's names too
 # An integer made of a pointer, or a pointer made of an integer: (s32)&x, (s32)(T *)p, (T *)(s32)x, (T *)((s32)x + n)
 CASTS = re.compile(rf"\(\s*{INT}\s*\)\s*(?:&\s*\w|{PTR})|{PTR}\s*\(?\s*\(\s*{INT}\s*\)")
 FIELD = re.compile(r"\b(?:unk|field)_?(?:0[xX])?[0-9A-Fa-f]{1,6}\b")
@@ -731,6 +743,8 @@ ASM_SUFFIXES = (".s", ".asm", ".sx")                                          # 
 NOT_SOURCE = ("asm/", "build/", "expected/", "extracted/", "refs/", "tools/", "docs/", "config/", "tests/", "fixtures/",
               "cookbook/", "drafts/", "waves/", "repro/", "scratch/", "sandbox/")     # the last five: where a campaign works
 INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*"([^"\n]+)"', re.M)
+ANGLE = re.compile(r"^[ \t]*#[ \t]*include[ \t]*<([^>\n]+)>", re.M)
+STUB_DEF = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(%s)\b((?:\\\n|[^\n])*)" % "|".join(STUB_MACROS), re.M)
 ADDRESS_HEADER = "include/addr.h"
 FIRST_SKIP = ("include/include_asm.h",)             # the stub macro's header, where a game keeps one
 BASELINE_HEAD = (
@@ -777,6 +791,8 @@ def _macros(body: str, known=None) -> dict[str, str]:
     counted by its name, and the stub macros are not debt."""
     defs = [(m.group(1), m.group(2)) for m in DEFINE.finditer(body) if m.group(1) not in ("M2C_FIELD",) + STUB_MACROS]
     out = {}
+    if not defs:                                       # most files define nothing
+        return out
     for name, text in defs:
         if re.search(r"\b%s\b" % ASM_WORD, text):
             out[name] = "asm"
@@ -800,8 +816,16 @@ def _macros(body: str, known=None) -> dict[str, str]:
     return out
 
 
+_USE_RX: dict[frozenset, re.Pattern] = {}
+
+
 def _use_rx(names) -> re.Pattern | None:
-    return re.compile(r"\b(?:%s)\b" % "|".join(map(re.escape, sorted(names)))) if names else None
+    key = frozenset(names)
+    if not key:
+        return None
+    if key not in _USE_RX:                             # the same names in thousands of files: one pattern
+        _USE_RX[key] = re.compile(r"\b(?:%s)\b" % "|".join(map(re.escape, sorted(key))))
+    return _USE_RX[key]
 
 
 def _uses(names, text: str) -> int:
@@ -913,7 +937,7 @@ def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -
     hits += [("asm", d.start()) for d in defines if re.search(r"\b%s\b" % ASM_WORD, d.group(2))]
     for kind in MACRO_KINDS:
         rx = _use_rx([k for k, v in macros.items() if v == kind])
-        if rx and not (kind == "address" and rel == address_header):
+        if rx and not (kind == "address" and rel == address_header):   # (its own address macros are not in `shared`)
             hits += [(kind, m.start()) for m in rx.finditer(code)]
             hits += [("goto-unmarked", m.start()) for m in rx.finditer(code)] if kind == "goto" else []
     hits += [("cast", m.start()) for m in CASTS.finditer(code)]
@@ -927,9 +951,19 @@ def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -
         i = bisect.bisect_right(starts, at) - 1
         return not (i >= 0 and at < ext[i][2])
 
+    read = set()                                       # where an asm word stands that a pattern above or below reads
     for m in INLINE_ASM.finditer(code):                # a header's own plumbing at file scope is the stub's, not debt
+        read.add(m.start())
         if not any(a <= m.start() < b for a, b in spans) and not (is_header(rel) and outside(m.start()) and _plumbing(plain, m.end())):
             hits.append(("asm", m.start()))
+    # The two words count wherever they stand: as a macro's argument, behind a macro, in a form no pattern knows.
+    hits += [("asm", m.start()) for m in re.finditer(r"\b%s\b" % ASM_WORD, code)
+             if m.start() not in read and not any(a <= m.start() < b for a, b in spans)]
+    known = {c["a"] for c in found if c["kind"] == "goto"}
+    for m in re.finditer(r"\bgoto\b", code):
+        if m.start() not in known:                     # no `goto label;`: nothing a marker could cover
+            hits += [("goto", m.start()), ("goto-unmarked", m.start())]
+    hits += [("obscured", m.start()) for m in re.finditer(r"##", body)]   # a paste can spell any word
     loose = [m.start() for m in STATEMENT.finditer(code) if outside(m.start())]
     hits += [("obscured", at) for at in loose]         # `debt_bodies` takes them back for a file that a body includes
     hits += [("obscured", m.start()) for m in SPLICE.finditer(code)]
@@ -963,7 +997,7 @@ def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -
         includes.append((ext[i][0] if i >= 0 and m.start() < ext[i][2] else SCOPE, m.group(1)))
     _SCANS[key] = {"hits": hits, "extents": ext, "funcs": funcs, "stubs": len(STUB_USE.findall(code)),
                    "stub_names": STUB_NAME.findall(code), "inner": inner, "includes": includes,
-                   "crutches": found, "loose": len(loose)}
+                   "crutches": found, "loose": len(loose), "angles": ANGLE.findall(plain)}
     return _SCANS[key]
 
 
@@ -1111,13 +1145,33 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, 
     for r in read_tsv(ASM_EVIDENCE, ASM_COLUMNS, tree, also=(ASM_COLUMNS_OLD,))[0] or []:
         evidence.setdefault(r["path"], set()).add(r["symbol"])
     texts = {p: tree.read(p) for p in files}
+    behind = tuple(l + "/" for l in tree.links + tree.modules)   # folders whose files this tree does not hold
+
+    def places(p: str, inc: str) -> tuple[str, str, str]:
+        folder = p.rsplit("/", 1)[0] + "/" if "/" in p else ""
+        return os.path.normpath(folder + inc), os.path.normpath(inc), "include/" + inc
+
     shared: dict[str, str] = {}
-    heads = [strip(texts[p]) for p in files if (is_header(p) or p.lower().endswith(".inc")) and p != header and texts[p] is not None]
+    # The macros of every header and `.inc` are known in every file. The address header shares what it hides too, but
+    # not its addresses: that is the place for them.
+    heads = [(p, strip(texts[p])) for p in files if texts[p] is not None and (is_header(p) or p.lower().endswith(".inc"))]
     size = -1
     while len(shared) != size:                         # a macro of one header may use a macro of another
         size = len(shared)
-        for body in heads:
-            shared.update(_macros(body, shared))
+        for p, body in heads:
+            shared.update({k: v for k, v in _macros(body, shared).items() if not (p == header and v == "address")})
+    own: dict[str, dict] = {}                          # {a C file that others include: its macros}
+
+    def known(p: str) -> dict[str, str]:
+        """`shared`, and the macros of each C file that `p` includes: those are known in the file that includes it."""
+        more: dict[str, str] = {}
+        for inc in INCLUDE.findall(texts[p]) if "include" in texts[p] else ():
+            target = next((c for c in places(p, inc) if tree.has(c)), None)
+            if target in texts and target != p and is_c(target) and texts[target] is not None:
+                if target not in own:
+                    own[target] = _macros(strip(texts[target]), shared) if "define" in texts[target] else {}
+                more.update(own[target])
+        return dict(shared, **more) if more else shared
     out: dict[str, dict[str, dict[str, int]]] = {}
     for p in files:
         if texts[p] is None:
@@ -1125,7 +1179,7 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, 
         if is_asm(p):
             out[p] = {} if p in evidence else {SCOPE: {"asm": 1}}
         else:
-            out[p] = file_bodies(p, texts[p], shared, based, header)
+            out[p] = file_bodies(p, texts[p], known(p), based, header)
             for name in evidence.get(p, ()):
                 if name != SCOPE:
                     out[p].get(name, {}).pop("asm", None)
@@ -1135,20 +1189,24 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, 
     for p in files:
         if texts[p] is None or is_asm(p):
             continue
-        for name, inc in scan_file(p, texts[p], shared, header)["includes"]:
-            folder = p.rsplit("/", 1)[0] + "/" if "/" in p else ""
-            target = next((c for c in (os.path.normpath(folder + inc), os.path.normpath(inc), "include/" + inc) if tree.has(c)), None)
-            if target is None or not target.lower().endswith(C_SUFFIXES):
-                continue
-            if not is_source(target) or covered(target):
-                got = out[p].setdefault(SCOPE, {})     # code from a folder that the count does not read
-                got["obscured"] = got.get("obscured", 0) + 1
+        scan, unread = scan_file(p, texts[p], known(p), header), 0
+        for name, inc in scan["includes"]:
+            target = next((c for c in places(p, inc) if tree.has(c)), None)
+            if target is None:                         # no file of this tree, unless a link or a submodule stands in the way
+                unread += bool(behind) and any(c.startswith(behind) for c in places(p, inc))
+            elif not target.lower().endswith(C_SUFFIXES) or not is_source(target) or covered(target):
+                unread += 1                            # a file of this tree that the count does not read
             elif not is_header(target) and name != SCOPE:   # inside a function's braces: the file is that body's text
                 users.setdefault(target, set()).add((p, name))
+        for inc in scan["angles"]:                     # the angle form is for the system's headers, not for the tree's
+            unread += any(tree.has(c) or behind and c.startswith(behind) for c in places(p, inc))
+        if unread:
+            got = out[p].setdefault(SCOPE, {})
+            got["obscured"] = got.get("obscured", 0) + unread
     tree.memo[("users", tuple(skip))] = users
     for target in users:                               # a fragment: its statements stand outside a function by design
         scope = out.get(target, {}).get(SCOPE, {})
-        left = scope.get("obscured", 0) - scan_file(target, texts[target], shared, header)["loose"]
+        left = scope.get("obscured", 0) - scan_file(target, texts[target], known(target), header)["loose"]
         if left > 0:
             scope["obscured"] = left
         else:
@@ -2750,6 +2808,13 @@ def protected_findings(base: Tree, head: Tree, online: bool = False) -> tuple[li
     local = SETTINGS.replace(".json", ".local.json")
     if head.has(local) and head.raw(local) != base.raw(local):
         out.append("%s is tracked and changed: the settings of one machine are not the repository's" % local)
+    had = [(name, text) for _, name, text in stub_definitions(base)]
+    for rel, name, text in stub_definitions(head):
+        if (name, text) in had:
+            had.remove((name, text))
+        else:
+            out.append("%s defines %s anew or otherwise: the count exempts that macro by its name, so its definition "
+                       "keeps its text" % (rel, name))
     skip = parse_baseline(base.read(BASELINE)).skip if _baseline_ok(base) else []
     for rel in sorted(set(base.paths) | set(head.paths)) if skip else ():
         if any(entry_match(e, rel) for e in skip) and base.raw(rel) != head.raw(rel):
@@ -2776,6 +2841,20 @@ def protected_findings(base: Tree, head: Tree, online: bool = False) -> tuple[li
         elif was != now:
             out.append("%s changed (the record names it: a check of the game's own keeps its bytes)" % rel)
     return out, infos, replaced
+
+
+def stub_definitions(tree: Tree) -> list:
+    """[(path, macro, its text with no comment and one space for each run)] for each `#define` of a stub macro in a
+    C file of the tree, also in one that a `skip` line covers. For the tree a change starts from: (macro, text) only."""
+    if "stub-definitions" not in tree.memo:
+        found = []
+        for p in tree.paths:
+            text = tree.read(p) if is_source(p) and not is_asm(p) else None
+            if text and "define" in text and any(name in text for name in STUB_MACROS):
+                plain = _STRIP.sub(lambda m: " " if m.group(0)[0] == "/" else m.group(0), text)
+                found += [(p, m.group(1), " ".join(m.group(2).replace("\\\n", " ").split())) for m in STUB_DEF.finditer(plain)]
+        tree.memo["stub-definitions"] = found
+    return list(tree.memo["stub-definitions"])
 
 
 def _baseline_ok(tree: Tree) -> bool:
@@ -3908,6 +3987,57 @@ def self_test_files(check) -> None:
         (repo / "src/carved.c").unlink()
         put("src/loose.inc.c", "    s32 Loose(s32 n) {\n        return *(s32 *)(n + 4);\n    }\n")
         check("a file is a fragment because a body includes it, never by its name", said("obscured"), judge())
+        # ---- code that the count would not see: each attack is a control here ----
+        (repo / "src/loose.inc.c").unlink()
+        worse = kept.replace("    return n;", "%s    return n;")
+        put("src/id.c", worse % '#include "body.def"\n' + stub % "StubB" + "\n" + stub % "StubC" + "\n")
+        put("src/body.def", "    n += *(s32 *)(n + 4);\n")
+        check("an include of a tracked file that the count does not read is hidden code", said("obscured"), judge())
+        (repo / "src/body.def").unlink()
+        put("include/fast.h", "#define FAST 1\n")
+        put("src/id.c", "#include <fast.h>\n" + kept + stub % "StubB" + "\n" + stub % "StubC" + "\n")
+        check("an angle include of a file of the tree is hidden code", said("obscured"), judge())
+        (repo / "include/fast.h").unlink()
+        put("vendor/x.h", "#define X 1\n")
+        os.symlink("../vendor", repo / "include" / "ext")
+        put("src/id.c", '#include "ext/x.h"\n' + kept + stub % "StubB" + "\n" + stub % "StubC" + "\n")
+        check("an include through a linked folder is hidden code", said("obscured"), judge())
+        (repo / "include" / "ext").unlink()
+        put("src/id.c", '#include "sub/x.h"\n' + kept + stub % "StubB" + "\n" + stub % "StubC" + "\n")
+        _git(repo, "add", "-A")
+        _git(repo, "update-index", "--add", "--cacheinfo", "160000,%s,include/sub" % _rev(repo, "HEAD"))
+        got = [t for _, t in admission(repo, Tree(repo, "HEAD"), Tree(repo, INDEX))[0] if "obscured" in t]
+        check("an include through a submodule is hidden code", got, admission(repo, Tree(repo, "HEAD"), Tree(repo, INDEX))[0])
+        _git(repo, "reset", "-q", "--hard", "HEAD")
+        _git(repo, "clean", "-q", "-fd")
+        put("include/addr.h", "#define JUMP(l) goto l\n")
+        put("src/id.c", '#include "addr.h"\n' + kept.replace("    return n;", "again:\n    JUMP(again);\n    return n;") + stub % "StubB" + "\n" + stub % "StubC" + "\n")
+        check("a macro of the address header that hides a goto counts where it is used", said("goto"), judge())
+        (repo / "include/addr.h").unlink()
+        put("src/shared/mac.c", "#define FIELD4(p) (*(s32 *)((p) + 4))\n")
+        put("src/id.c", '#include "shared/mac.c"\n' + kept.replace("    return n;", "    return FIELD4(n);") + stub % "StubB" + "\n" + stub % "StubC" + "\n")
+        check("a macro of an included C file that hides an offset counts where it is used", said("rose in an existing body: offset src/id.c Kept"), judge())
+        (repo / "src/shared/mac.c").unlink()
+        put("src/id.c", "#define INCLUDE_RODATA(x) __asm__(x)\n" + kept + stub % "StubB" + "\n" + stub % "StubC" + "\n")
+        got = protected_findings(Tree(repo, "HEAD"), Tree(repo, None, untracked=True))[0]
+        check("the definition of a stub macro is protected text: the count exempts it by its name", [f for f in got if "INCLUDE_RODATA" in f], got)
+        put("src/id.c", kept + stub % "StubB" + "\n" + stub % "StubC" + "\n")
+        check("and a tree that defines none anew has no such finding", not [f for f in protected_findings(
+            Tree(repo, "HEAD"), Tree(repo, None, untracked=True))[0] if "INCLUDE_" in f])
+    hidden = {
+        "an asm word behind a macro": ('void A(void) {\n    register s32 a K(asm)("$17");\n}\n', {"asm": 1}),
+        "an asm word as an argument": ('void A(void) {\n    register s32 a APPLY(asm, "$17");\n}\n', {"asm": 1}),
+        "an asm statement with another volatile spelling": ('void A(void) {\n    __asm__ __volatile("");\n}\n', {"asm": 1}),
+        "a goto as an argument": ("void A(s32 n) {\nl:\n    DO(goto, l);\n}\n", {"goto": 1, "goto-unmarked": 1}),
+        "a computed goto": ("void A(void *p) {\n    goto *p;\n}\n", {"goto": 1, "goto-unmarked": 1}),
+        "a paste of two tokens": ("#define CAT(a, b) a##b\nvoid A(void) {\n}\n", {"obscured": 1}),
+        "offsets with a minus and a negative index": (
+            "s32 A(u8 *p) {\n    return *(s32 *)(p - 4) + *(s32 *)((u8 *)p - 8) + ((s32 *)p)[-2];\n}\n", {"offset": 3}),
+        "the integer types of the SDK in a cast of a pointer": (
+            "u_long A(void *p) {\n    return (u_long)&p + (u_int)(s32 *)p + *(s32 *)(ulong)p + *((u_char *)p + 4);\n}\n", {"cast": 3, "offset": 1}),
+    }
+    for name, (text, want) in hidden.items():
+        check("hidden code: " + name, file_debt("src/a.c", text) == want, file_debt("src/a.c", text))
 
 
 def self_test_tree(check) -> None:
