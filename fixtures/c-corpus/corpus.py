@@ -207,8 +207,8 @@ def check_trial(t, errors):
             with open(src, "w") as f:
                 f.write(forged)
             with open(rows, "w") as f:
-                f.write("\t".join(floor.TRIAL_COLUMNS) + "\n" + "".join("src/pinned.c\t%s\t%s\t%s\tkept\t%s\n" % (
-                    func, c["id"], c["hash"], "0" * 16) for c in floor.crutches("src/pinned.c", forged)))
+                f.write("\t".join(floor.TRIAL_COLUMNS) + "\n" + "".join("src/pinned.c\t%s\t%s\t%s\tkept\n" % (
+                    func, c["id"], c["hash"]) for c in floor.crutches("src/pinned.c", forged)))
             r = run(repo, "--recheck")
             if r.returncode != 1 or "TRIAL FAIL removable: src/pinned.c %s %s:" % (func, spare) not in r.stdout or r.stdout.count("TRIAL FAIL") != 1:
                 bad("%s: the recheck did not find the forged row of %s: %s" % (comp, spare, r.stdout.strip().splitlines()[-2:]))

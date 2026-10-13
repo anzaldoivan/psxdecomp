@@ -161,6 +161,11 @@ def _read(path) -> str | None:
         return None
 
 
+def as_read(data: bytes) -> str:
+    """A file's bytes as every check reads them: UTF-8 with a replacement for what is none, CRLF and a lone CR as LF."""
+    return data.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
 def lines(text: str | None) -> list[str]:
     """The lines of a file's text: they end at a newline and at nothing else (no form feed, no line separator), so
     every reader of a file sees the same lines. A byte order mark is no part of the first one."""
@@ -252,7 +257,7 @@ class Tree:
                     data = None
             else:
                 data = self._object(self._blob[path]) if path in self._blob else None
-            self._text[path] = None if data is None else data.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+            self._text[path] = None if data is None else as_read(data)
         return self._text[path]
 
     def raw(self, path: str) -> bytes | None:
@@ -1327,6 +1332,16 @@ def first_baseline(repo) -> str:
     return recount_text(repo)[0]
 
 
+def unpublished(tree: Tree):
+    """The test of a path whose row this tree keeps for another tree: config/public-paths.txt exists, the tree lacks
+    the file and the list does not publish it (the public tree of a game in split mode)."""
+    public = tree.read(PUBLIC_PATHS)
+    if public is None:
+        return lambda path: False
+    listed = [l.strip() for l in lines(public) if l.strip() and not l.lstrip().startswith("#")]
+    return lambda path: not tree.has(path) and not any(entry_match(e, path) for e in listed)
+
+
 def state_findings(repo, tree: Tree | None = None) -> tuple[list[str], dict]:
     """(the FAIL lines of a tree's own baseline, what was read). The baseline must exist, be of version 2, hold a
     policy line for each kind and hold each count as its row. A row of a file that the tree lacks is not stale where
@@ -1343,16 +1358,14 @@ def state_findings(repo, tree: Tree | None = None) -> tuple[list[str], dict]:
                 % (BASELINE, bl.old_mode, VENDORED)], st
     out = ["no policy line for %s in %s: run `python3 %s debt --recount`" % (", ".join(bl.lacks()), BASELINE, VENDORED)
            ] if bl.lacks() else []
-    public = tree.read(PUBLIC_PATHS)
-    listed = None if public is None else [l.strip() for l in lines(public) if l.strip() and not l.lstrip().startswith("#")]
+    elsewhere = unpublished(tree)
     keys = sorted(set(bl.rows) | set(counts), key=lambda k: (k[1], KINDS.index(k[0])))
     for k in keys:
         have, row = counts.get(k, 0), bl.rows.get(k, 0)
         if have > row:
             st["rise"].append(k)
             out.append("rise %s %s: %d, its row is %d" % (k[0], k[1], have, row))
-        elif have < row and not (listed is not None and k[1] not in tree.paths
-                                 and not any(entry_match(e, k[1]) for e in listed)):
+        elif have < row and not elsewhere(k[1]):
             st["stale"].append(k)
             out.append("stale %s %s: %d, its row is %d" % (k[0], k[1], have, row))
     return out, st
@@ -2147,16 +2160,19 @@ def guard_hook(stdin=None) -> int:
 # nothing about the game. `trial` takes each one out in turn and asks the game's probe (`[trial] probe` of the
 # record) whether the function still matches. What the match does not need is gone. What it needs gets a
 # `// !FAKE: <reason>` line and a row in config/trials.tsv: path, function, crutch, the hash of the function's body,
-# `kept`, the digest of the probe. The gate asks for that row behind every marked crutch, with the hash of the body
-# as it stands, so an edited body needs a new trial. `trial --recheck` runs rows again: a row that says `kept` for a
-# crutch the function matches without is a forged row.
+# `kept`. The gate asks for that row behind every marked crutch, at the crutch's own path and with the hash of the
+# body as it stands, so an edited or moved body needs a new trial, and a row that stands for no crutch is refused.
+# `trial --recheck` runs rows again: a row that says `kept` for a crutch the function matches without is a forged row.
+# The trial edits bytes: what it does not change comes back as it went in (the encoding, the line ends).
 TRIALS = "config/trials.tsv"
-TRIAL_COLUMNS = ("path", "function", "crutch", "hash", "result", "probe")
+TRIAL_COLUMNS = ("path", "function", "crutch", "hash", "result")
 TRIAL_ENV = ("PSXD_TRIAL_FILE", "PSXD_TRIAL_FUNC", "PSXD_TRIAL_PATH")
 PROBE_SECONDS = 600
 MARK = re.compile(r"!FAKE:[ \t]*([^\n]*?)[ \t]*(?:\*/|$)", re.M)
 BARRIER = re.compile(r"\b(?:asm|__asm__|__asm)\b\s*(?:(?:volatile|__volatile__)\b\s*)?\(\s*\"(\s*)\"\s*\)\s*;")
-PIN_PARTS = re.compile(r"\bregister\s+(?P<decl>[^;{}=]*?\b(?P<var>[A-Za-z_]\w*))\s*\b(?:asm|__asm__|__asm)\s*\(\s*\"(?P<reg>[^\"\n]*)\"\s*\)")
+PIN_CLAUSE = re.compile(r'\s*\b(?:asm|__asm__|__asm)\s*\(\s*"([^"\n]*)"\s*\)')   # what a trial cuts: the clause, nothing else
+PIN_VAR = re.compile(r"([A-Za-z_]\w*)\s*$")
+DECL_END = re.compile(r"[;{}]")
 _COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
 
 
@@ -2190,10 +2206,18 @@ def _crutches(text: str, code: str) -> list[dict]:
     A marker covers one crutch: the one on its line, or the one on the line below when the marker stands alone."""
     plain = _STRIP.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)) if m.group(0)[0] == "/" else m.group(0), text)
     found = []
-    for m in PIN.finditer(code):
-        parts = PIN_PARTS.match(plain, m.start())
-        found.append({"kind": "pin", "a": m.start(), "b": parts.end() if parts else m.end(), "keep": parts["decl"] if parts else None,
-                      "name": "pin:%s:%s" % (parts["reg"], parts["var"]) if parts else "pin:?:?"})
+    for m in PIN.finditer(code):                       # each `asm("…")` clause of the declaration is a pin of its own
+        stop = DECL_END.search(code, m.end())
+        clauses = list(PIN_CLAUSE.finditer(plain, m.start(), stop.start() if stop else len(code)))
+        if not clauses or clauses[0].start() >= m.end():   # the clause is not one string in one pair of brackets
+            found.append({"kind": "pin", "a": m.start(), "b": m.end(), "keep": None, "name": "pin:?:?"})
+            continue
+        lo = m.start()
+        for n, cl in enumerate(clauses):
+            var = PIN_VAR.search(plain[lo:cl.start()])
+            found.append({"kind": "pin", "a": cl.start() if n else lo, "b": cl.end(), "keep": "" if n else text[lo:cl.start()],
+                          "name": "pin:%s:%s" % (cl[1], var[1] if var else "?")})
+            lo = cl.end()
     for m in BARRIER.finditer(code):
         if not plain[m.start(1):m.end(1)].strip():     # the string is empty in the text too, not only once it is blanked
             found.append({"kind": "barrier", "a": m.start(), "b": m.end(), "keep": "", "name": "barrier"})
@@ -2213,8 +2237,9 @@ def _crutches(text: str, code: str) -> list[dict]:
 
 def crutches(rel: str, text: str) -> list[dict]:
     """The crutches of one C file, in order: {kind `pin`|`barrier`, id, func (SCOPE outside a function), line, a, b
-    (the span that `drop` removes), keep (what it leaves), reason (of its marker, None with none), mark (the line of
-    that marker), hash (of its function's body)}. Two crutches never share one marker."""
+    (the span that `drop` removes), keep (what it leaves; None for a pin whose clause this tool cannot read), reason
+    (of its marker, None with none), mark (the line of that marker), hash (of its function's body)}. Two crutches
+    never share one marker."""
     scan = scan_file(rel, text)
     starts = [a for _, a, _ in scan["extents"]]
     spans: dict[str, list] = {}
@@ -2234,8 +2259,9 @@ def crutches(rel: str, text: str) -> list[dict]:
 
 
 def drop(text: str, c: dict) -> str:
-    """The text without one crutch and without its marker. A pin `register T x asm("$n")` becomes `T x`. A barrier
-    goes with its line when nothing else stands on it."""
+    """The text without one crutch and without its marker. A pin loses its `asm("$n")` clause and nothing else:
+    `register T x asm("$n")` becomes `register T x`, whatever stands before the name. A barrier goes with its line
+    when nothing else stands on it."""
     lines = (text[:c["a"]] + c["keep"] + text[c["b"]:]).split("\n")
     if c["kind"] == "barrier" and not lines[c["line"]].strip():
         lines[c["line"]] = None
@@ -2256,23 +2282,39 @@ def mark(text: str, c: dict, reason: str) -> str:
     return "\n".join(l for l in lines if l is not None)
 
 
-def probe_of(tree: Tree) -> tuple[str | None, str]:
-    """(the `[trial] probe` command of the record, 16 hex digits for it and for each file of the tree that it names)."""
-    cmd = record_table(tree, "trial").get("probe")
-    h = hashlib.sha256((cmd or "").encode())
-    for tok in re.split(r"[\s=:,;()'\"]+", cmd or ""):
-        if tok in tree.paths:
-            h.update(tree.raw(tok) or b"")
-    return cmd, h.hexdigest()[:16]
+def probe_of(tree: Tree) -> str | None:
+    """The `[trial] probe` command of the record. The record and the scripts it names are protected files."""
+    return record_table(tree, "trial").get("probe")
 
 
-def run_probe(repo, cmd: str, text: str, rel: str, func: str) -> int:
-    """Ask the game's probe about one variant of a file: 0 the function matches, 1 it does not, 2 the probe failed.
-    The variant is a file beside the tracked one, so the tracked file is never the one that is compiled. The command
-    gets three values, as `{file}`, `{func}` and `{path}` in its text or as three more arguments: the file to
-    compile, the function, and the tracked path that the file stands for."""
+def variant_of(rel: str) -> str:
+    """The path of the copy that a probe compiles: beside the tracked file, so its includes and its build rule hold."""
+    f = pathlib.PurePosixPath(rel)
+    return f.with_name("%s.psxd-trial%s" % (f.stem, f.suffix)).as_posix()
+
+
+def trial_text(data: bytes):
+    """(the text of a source as a trial edits it, the function that gives its bytes back), or a str that says why
+    the file cannot be tried. The text is lossless: a byte that is no UTF-8 comes back as it was, and so do CRLF
+    line ends. Mixed line ends and a lone CR are refused: no edit could keep them line for line."""
+    crlf = b"\r\n" in data
+    if b"\r" in data.replace(b"\r\n", b"") or crlf and data.count(b"\r\n") != data.count(b"\n"):
+        return "mixed line ends or a lone CR: the trial edits a file line for line, with one kind of line end"
+    text = data.decode("utf-8", "surrogateescape").replace("\r\n", "\n")
+    return text, lambda t: (t.replace("\n", "\r\n") if crlf else t).encode("utf-8", "surrogateescape")
+
+
+def run_probe(repo, cmd: str, data: bytes, rel: str, func: str) -> int:
+    """Ask the game's probe about one variant of a file (its bytes): 0 the function matches, 1 it does not, 2 the
+    probe failed. The variant is a file beside the tracked one, so the tracked file is never the one that is
+    compiled; a probe that changes the tracked file has failed, and so has one whose copy would stand on a file.
+    The command gets three values, as `{file}`, `{func}` and `{path}` in its text or as three more arguments: the
+    file to compile, the function, and the tracked path that the file stands for."""
     src = pathlib.Path(repo) / rel
-    variant = src.with_name("%s.psxd-trial%s" % (src.stem, src.suffix))
+    variant = pathlib.Path(repo) / variant_of(rel)
+    if variant.exists() or variant.is_symlink():
+        return 2
+    before = src.read_bytes() if src.is_file() else None
     env = dict(os.environ, **dict(zip(TRIAL_ENV, (str(variant), func, rel))))
     line = cmd
     for key, var in zip(("{file}", "{func}", "{path}"), TRIAL_ENV):
@@ -2280,8 +2322,10 @@ def run_probe(repo, cmd: str, text: str, rel: str, func: str) -> int:
     if line == cmd:
         line += ' "$%s" "$%s" "$%s"' % TRIAL_ENV
     try:
-        variant.write_text(text, encoding="utf-8")
+        variant.write_bytes(data)
         r = subprocess.run(line, shell=True, cwd=str(repo), env=env, capture_output=True, text=True, timeout=PROBE_SECONDS)
+        if (src.read_bytes() if src.is_file() else None) != before:
+            return 2
         return r.returncode if r.returncode in (0, 1) else 2
     except (OSError, subprocess.TimeoutExpired):
         return 2
@@ -2303,8 +2347,14 @@ def trial_function(text: str, rel: str, func: str, ask) -> tuple[str | None, dic
         stats["probes"] += 1
         return ask(t)
 
-    if probe(text) != 0:
-        stats["why"] = "it does not match as it is"
+    odd = [c for c in mine(text) if c["keep"] is None]
+    if odd:
+        stats["why"] = ("line %d: the tool cannot read the `asm(\"…\")` clause of this pin (one string, in one pair of "
+                        "brackets), so it cannot try it" % (odd[0]["line"] + 1))
+        return None, stats
+    rc = probe(text)
+    if rc != 0:
+        stats["why"] = "it does not match as it is" if rc == 1 else "the probe failed (exit 2 or more, or it changed the tracked file)"
         return None, stats
     first = mine(text)[0]
     stats["tried"] = len(mine(text))
@@ -2318,8 +2368,8 @@ def trial_function(text: str, rel: str, func: str, ask) -> tuple[str | None, dic
         while i < len(mine(text)):
             without = drop(text, mine(text)[i])
             rc = probe(without)
-            if rc == 2:
-                stats["why"] = "the probe failed (exit 2 or more)"
+            if rc == 2:                            # an error is no `kept`: nothing was learned about this crutch
+                stats["why"] = "the probe failed (exit 2 or more) on the text without %s" % mine(text)[i]["id"]
                 return None, stats
             if rc == 0:
                 text, went = without, True
@@ -2343,17 +2393,18 @@ def trial_rows(tree: Tree) -> tuple[list[dict], list[str]]:
 
 def trials_findings(repo, tree: Tree | None = None) -> list[str]:
     """What the gate refuses about crutches: a marker with no reason, a marked crutch with no row in
-    config/trials.tsv, a row whose hash is not the body's (the body changed since its trial), a marked crutch and no
-    `[trial] probe`, a crutch outside a function. An unmarked crutch is debt (`pin-unmarked`), not a finding here.
-    A row is found by function, crutch and hash, so a function that moved to another file keeps its row."""
+    config/trials.tsv, a row whose hash is not the body's (the body changed since its trial), a row that stands for
+    no marked crutch, a marked crutch and no `[trial] probe`, a crutch outside a function. An unmarked crutch is debt
+    (`pin-unmarked`), not a finding here. A row belongs to its path: a function that moved is tried again."""
     tree = tree or Tree(repo)
     rows, errs = trial_rows(tree)
     out = ["%s: %s" % (TRIALS, e) for e in errs]
     have: dict[tuple, set] = {}
     for r in rows:
+        have.setdefault((r["path"], r["function"], r["crutch"]), set())
         if r["result"] == "kept":
-            have.setdefault((r["function"], r["crutch"]), set()).add(r["hash"])
-    marked = 0
+            have[(r["path"], r["function"], r["crutch"])].add(r["hash"])
+    marked, used = 0, set()
     for p in tree.paths:
         text = tree.read(p) if is_source(p) and not is_asm(p) else None
         if not text or "!FAKE:" not in text:
@@ -2363,7 +2414,8 @@ def trials_findings(repo, tree: Tree | None = None) -> list[str]:
                 continue
             marked += c["kind"] != "goto"
             where = "%s %s %s" % (p, c["func"] or "(file scope)", c["id"])
-            row = have.get((c["func"], c["id"]))
+            row = have.get((p, c["func"], c["id"]))
+            used.add((p, c["func"], c["id"]))
             if not reason_ok(c["reason"]):
                 out.append("no reason: %s: a `// !FAKE:` marker says why the crutch stays" % where)
             elif c["kind"] == "goto":                  # a goto needs its reason, and no trial
@@ -2376,7 +2428,11 @@ def trials_findings(repo, tree: Tree | None = None) -> list[str]:
             elif c["hash"] not in row:
                 out.append("stale: %s: the body changed since its trial (hash %s, the row holds %s): run the trial again"
                            % (where, c["hash"], ", ".join(sorted(row))))
-    if marked and not probe_of(tree)[0]:
+    elsewhere = unpublished(tree)
+    out += ["no crutch: %s %s %s: a row of %s, and no marked crutch stands there (the body changed or moved): run "
+            "`python3 %s trial %s`, which writes the rows of that file again" % (key + (TRIALS, VENDORED, key[0]))
+            for key in sorted(have) if key not in used and not elsewhere(key[0])]
+    if marked and not probe_of(tree):
         out.append("no [trial] probe in %s: a game cannot keep a crutch that it cannot examine" % RECORD)
     return out
 
@@ -2397,7 +2453,7 @@ def cmd_trial(repo, file: str | None, func: str | None = None, recheck: bool = F
     N more chosen at random; exit 1 on a row that says `kept` for a crutch the function matches without."""
     repo = pathlib.Path(repo)
     tree = Tree(repo)
-    cmd, digest = probe_of(tree)
+    cmd = probe_of(tree)
     if not cmd:
         print("TRIAL FAIL no [trial] probe in %s: the command that says whether one function of a file still matches "
               "(exit 0 match, 1 no match, 2 or more an error)" % RECORD)
@@ -2408,19 +2464,34 @@ def cmd_trial(repo, file: str | None, func: str | None = None, recheck: bool = F
         return 1
     if recheck:
         return _recheck(repo, tree, cmd, rows, against, sample, base_rows)
-    rel = pathlib.Path(repo / file).resolve().relative_to(repo.resolve()).as_posix() if file else ""
-    text = tree.read(rel) if rel else None
-    if text is None:
-        print("TRIAL FAIL %s: no file of this repository (`trial <file> [--func <name>]`)" % (file or "no file"))
+    try:
+        rel = pathlib.Path(repo / file).resolve().relative_to(repo.resolve()).as_posix() if file else ""
+    except ValueError:                                 # a path outside the repository
+        rel = ""
+    data = tree.raw(rel) if rel else None
+    if data is None:
+        gone = [r for r in rows if r["path"] == rel] if rel else []
+        if not gone:
+            print("TRIAL FAIL %s: no file of this repository (`trial <file> [--func <name>]`)" % (file or "no file"))
+            return 1
+        _write_trials(repo, [r for r in rows if r["path"] != rel])
+        print("TRIAL OK %s: the file is gone, and so are its %d row(s)" % (rel, len(gone)))
+        return 0
+    lossless = trial_text(data)
+    if isinstance(lossless, str):
+        print("TRIAL FAIL %s: %s" % (rel, lossless))
         return 1
+    if (repo / variant_of(rel)).exists() or tree.has(variant_of(rel)):
+        print("TRIAL FAIL %s: %s exists, and that is where the trial puts the copy that the probe compiles: move it"
+              % (rel, variant_of(rel)))
+        return 1
+    text, to_bytes = lossless
     funcs = list(dict.fromkeys(c["func"] for c in crutches(rel, text) if c["func"] != SCOPE and c["kind"] != "goto"
                                and func in (None, c["func"])))
-    if not funcs:
-        print("TRIAL OK %s%s: no pin and no barrier in a function" % (rel, " " + func if func else ""))
-        return 0
     total, bad = {"tried": 0, "removed": 0, "kept": 0, "probes": 0}, 0
+    tried = []
     for name in funcs:
-        new, stats = trial_function(text, rel, name, lambda t: run_probe(repo, cmd, t, rel, name))
+        new, stats = trial_function(text, rel, name, lambda t: run_probe(repo, cmd, to_bytes(t), rel, name))
         for k in total:
             total[k] += stats[k]
         if new is None:
@@ -2428,47 +2499,65 @@ def cmd_trial(repo, file: str | None, func: str | None = None, recheck: bool = F
             print("TRIAL FAIL %s %s: %s" % (rel, name, stats["why"]))
             continue
         text = new
+        tried.append(name)
         print("TRIAL %s %s: %d tried, %d removed, %d kept" % (rel, name, stats["tried"], stats["removed"], stats["kept"]))
-        here = lambda r: r["path"] == rel or name not in [n for n, _, _ in scan_file(r["path"], tree.read(r["path"]) or "")["extents"]]  # noqa: E731
-        rows = [r for r in rows if not (r["function"] == name and here(r))]
-        rows += [{"path": rel, "function": name, "crutch": c["id"], "hash": c["hash"], "result": "kept", "probe": digest}
-                 for c in crutches(rel, text) if c["func"] == name and c["kind"] != "goto"]
-    if text != tree.read(rel):
-        (repo / rel).write_text(text, encoding="utf-8")
-    if rows != trial_rows(tree)[0] or tree.read(TRIALS) is None and bad < len(funcs):
-        _write_trials(repo, rows)
+    if to_bytes(text) != data:
+        (repo / rel).write_bytes(to_bytes(text))
+    # the rows of this file: those of the functions tried, written again from the text as every check reads it; a row
+    # of this file whose crutch is gone goes too
+    now = [c for c in crutches(rel, as_read(to_bytes(text))) if c["kind"] != "goto" and c["func"] != SCOPE]
+    live = {(c["func"], c["id"]) for c in now}
+    kept = [r for r in rows if r["path"] != rel or (r["function"] not in tried and (r["function"], r["crutch"]) in live)]
+    kept += [{"path": rel, "function": c["func"], "crutch": c["id"], "hash": c["hash"], "result": "kept"} for c in now if c["func"] in tried]
+    plain = lambda rs: sorted(tuple(r[c] for c in TRIAL_COLUMNS) for r in rs)  # noqa: E731
+    if plain(kept) != plain(rows) or tree.read(TRIALS) is None and tried:
+        _write_trials(repo, kept)
+    if not funcs:
+        print("TRIAL OK %s%s: no pin and no barrier in a function" % (rel, " " + func if func else ""))
+        return 0
     print("TRIAL %s (%d function(s), %d tried, %d removed, %d kept; %d probe(s))" % (
         "FAIL" if bad else "OK", len(funcs), total["tried"], total["removed"], total["kept"], total["probes"]))
     return 1 if bad else 0
 
 
 def _recheck(repo, tree: Tree, cmd: str, rows: list[dict], against: str | None, sample: int, base_rows: str | None = None) -> int:
+    key = lambda r: tuple(r[c] for c in TRIAL_COLUMNS)  # noqa: E731
     if base_rows is not None:
-        old = {tuple(r[c] for c in TRIAL_COLUMNS) for r in read_tsv(base_rows, TRIAL_COLUMNS)[0] or []}
+        old = {key(r) for r in read_tsv(base_rows, TRIAL_COLUMNS)[0] or []}
         against = against or base_rows
     else:
-        old = {tuple(r[c] for c in TRIAL_COLUMNS) for r in trial_rows(Tree(repo, against))[0]} if against else set()
-    new = [r for r in rows if tuple(r[c] for c in TRIAL_COLUMNS) not in old] if against else []
+        old = {key(r) for r in trial_rows(Tree(repo, against))[0]} if against else set()
+    new = [r for r in rows if key(r) not in old] if against else []
     rest = [r for r in rows if r not in new]
     import random
     picked = new + random.sample(rest, min(sample, len(rest)))
-    bad = done = 0
+    bad = 0
     for r in picked:
-        text = tree.read(r["path"])
-        c = next((c for c in crutches(r["path"], text or "") if (c["func"], c["id"]) == (r["function"], r["crutch"])), None)
         where = "%s %s %s" % (r["path"], r["function"], r["crutch"])
-        if c is None:
-            print("TRIAL INFO %s: the source holds no such crutch (a row of a body that changed or moved)" % where)
-            continue
-        done += 1
-        if run_probe(repo, cmd, text, r["path"], r["function"]) != 0:
+        data = tree.raw(r["path"])
+        lossless = trial_text(data) if data is not None else "no such file"
+        text, to_bytes = lossless if not isinstance(lossless, str) else ("", None)
+        c = next((c for c in crutches(r["path"], text) if (c["func"], c["id"]) == (r["function"], r["crutch"])), None)
+        if c is None or c["keep"] is None:             # the gate refuses such a row too: a row stands for a crutch
             bad += 1
-            print("TRIAL FAIL %s: the function does not match as it is" % where)
-        elif run_probe(repo, cmd, drop(text, c), r["path"], r["function"]) == 0:
+            print("TRIAL FAIL no crutch: %s: the row stands for no crutch that the source holds and the tool can read (%s)"
+                  % (where, lossless if isinstance(lossless, str) else "the body changed or moved"))
+            continue
+        rc = run_probe(repo, cmd, to_bytes(text), r["path"], r["function"])
+        if rc != 0:
+            bad += 1
+            print("TRIAL FAIL %s: %s" % (where, "the function does not match as it is" if rc == 1 else "the probe failed on the file as it is"))
+            continue
+        rc = run_probe(repo, cmd, to_bytes(drop(text, c)), r["path"], r["function"])
+        if rc == 0:
             bad += 1
             print("TRIAL FAIL removable: %s: the row says `kept`, and the function matches without it" % where)
+        elif rc != 1:                                  # an error is no `kept`: the probe said nothing about this crutch
+            bad += 1
+            print("TRIAL FAIL error: %s: the probe failed (exit 2 or more) on the text without it, so nothing shows that "
+                  "the match needs it" % where)
     print("TRIAL RECHECK %s (%d row(s) run again: %d new since %s, %d of the %d others; %d finding(s))" % (
-        "FAIL" if bad else "OK", done, len(new), against or "no base", len(picked) - len(new), len(rest), bad))
+        "FAIL" if bad else "OK", len(picked), len(new), against or "no base", len(picked) - len(new), len(rest), bad))
     return 1 if bad else 0
 
 
@@ -3804,7 +3893,7 @@ s32 Sum(s32 *p, s32 n) {
 }
 """
 PROBE_SELF = """import sys
-text = open(sys.argv[1]).read()
+text = open(sys.argv[1], encoding="latin-1", newline="").read()
 assert sys.argv[2] and sys.argv[3].endswith(".c"), sys.argv
 RULE
 """
@@ -3823,7 +3912,7 @@ def self_test_trials(check) -> None:
     got = crutches("src/sum.c", C_TRIAL)
     check("crutches: two pins and a barrier of one function", [(c["id"], c["func"], c["line"]) for c in got] == [
         ("pin:$16:i", "Sum", 2), ("pin:$17:t", "Sum", 3), ("barrier:1", "Sum", 4)] and len({c["hash"] for c in got}) == 1, got)
-    check("crutches: a pin leaves its declaration, a barrier leaves nothing", drop(C_TRIAL, got[1]).split("\n")[3] == "    s32 t = 0;"
+    check("crutches: a pin leaves its declaration, a barrier leaves nothing", drop(C_TRIAL, got[1]).split("\n")[3] == "    register s32 t = 0;"
           and '__asm__' not in drop(C_TRIAL, got[2]) and drop(C_TRIAL, got[2]).count("\n") == C_TRIAL.count("\n") - 1)
     check("the hash of a body reads no comment and no space", body_hash("a  b /* c */\n d", [(0, 15)]) == body_hash("a b d", [(0, 5)]))
     check("an asm statement that holds an instruction is no barrier", not crutches("src/a.c", 'void A(void) {\n    __asm__("nop");\n}\n'))
@@ -3855,12 +3944,12 @@ def self_test_trials(check) -> None:
         text = (repo / "src/sum.c").read_text()
         check("trial: what the match needs stays, with a reason; the rest is gone", rc == 0 and
               "TRIAL src/sum.c Sum: 3 tried, 2 removed, 1 kept\n" in out and out.endswith("TRIAL OK (1 function(s), 3 tried, 2 removed, "
-              "1 kept; 6 probe(s))\n") and text == C_TRIAL.replace('    register s32 t asm("$17") = 0;\n    __asm__("");\n', "    s32 t = 0;\n")
+              "1 kept; 6 probe(s))\n") and text == C_TRIAL.replace('    register s32 t asm("$17") = 0;\n    __asm__("");\n', "    register s32 t = 0;\n")
               .replace("    register s32 i", "    // !FAKE: pin:$16:i: the function does not match without it (trial)\n    register s32 i"), out + text)
         rows = (repo / TRIALS).read_text().splitlines()
         check("trial: one row for the survivor", rows[0].split("\t") == list(TRIAL_COLUMNS) and len(rows) == 2 and
               rows[1].split("\t")[:3] == ["src/sum.c", "Sum", "pin:$16:i"] and rows[1].split("\t")[4] == "kept"
-              and re.fullmatch(r"[0-9a-f]{16}\t[a-z]+\t[0-9a-f]{16}", "\t".join(rows[1].split("\t")[3:])), rows)
+              and re.fullmatch(r"[0-9a-f]{16}\t[a-z]+", "\t".join(rows[1].split("\t")[3:])), rows)
         check("trial: no file is left beside the source", sorted(x.name for x in (repo / "src").iterdir()) == ["sum.c"])
         check("the gate's view: a marked pin with its row", found() == [] and file_debt("src/sum.c", text) == {"pin": 1}, found())
         check("trial: a second run changes nothing", trial("src/sum.c")[0] == 0 and (repo / "src/sum.c").read_text() == text
@@ -3870,9 +3959,6 @@ def self_test_trials(check) -> None:
             "stale: src/sum.c Sum pin:$16:i: the body changed since its trial"), found())
         put("src/sum.c", text.replace("for (i = 0;", "/* the sum */\n    for (i = 0;"))
         check("trials: a comment changes no hash", found() == [], found())
-        (repo / "src/sum.c").rename(repo / "src/total.c")
-        check("trials: a function that moved keeps its row", found() == [], found())
-        (repo / "src/total.c").rename(repo / "src/sum.c")
         put("src/sum.c", text)
         put(TRIALS, "\t".join(TRIAL_COLUMNS) + "\n")
         check("trials: a marked pin with no row", len(found()) == 1 and found()[0].startswith("no row: src/sum.c Sum pin:$16:i has a "
@@ -3891,11 +3977,11 @@ def self_test_trials(check) -> None:
         # a row that says `kept` for a pin the function matches without: written by hand, found by the second trial
         _git(repo, "add", "-A")
         _commit(repo, "one honest row")
-        forged = text.replace("    s32 t = 0;", "    // !FAKE: the accumulator must be in $17\n    register s32 t asm(\"$17\") = 0;")
+        forged = text.replace("    register s32 t = 0;", "    // !FAKE: the accumulator must be in $17\n    register s32 t asm(\"$17\") = 0;")
         put("src/sum.c", forged)
         c = [c for c in crutches("src/sum.c", forged) if c["id"] == "pin:$17:t"][0]
-        put(TRIALS, "\t".join(TRIAL_COLUMNS) + "\n" + "".join("src/sum.c\tSum\t%s\t%s\tkept\t%s\n" % (
-            x["id"], x["hash"], "0" * 16) for x in crutches("src/sum.c", forged)))
+        put(TRIALS, "\t".join(TRIAL_COLUMNS) + "\n" + "".join("src/sum.c\tSum\t%s\t%s\tkept\n" % (
+            x["id"], x["hash"]) for x in crutches("src/sum.c", forged)))
         check("a forged row passes the record check", found() == [] and c["reason"] == "the accumulator must be in $17", found())
         rc, out = trial(None, recheck=True, against="HEAD", sample=0)
         check("trial --recheck finds the forged row", rc == 1 and "TRIAL FAIL removable: src/sum.c Sum pin:$17:t: the row says `kept`, "
@@ -3904,10 +3990,10 @@ def self_test_trials(check) -> None:
         _git(repo, "checkout", "--", "src/sum.c", TRIALS)
         base_copy = repo / ".psxd-trials-base.tsv"   # a build with no git gets the base's rows as a file
         base_copy.write_text(_git(repo, "show", "HEAD:" + TRIALS).stdout)
-        put(TRIALS, (repo / TRIALS).read_text() + "src/sum.c\tSum\tpin:$17:t\t%s\tkept\t%s\n" % ("0" * 16, "0" * 16))
+        put(TRIALS, (repo / TRIALS).read_text() + "src/sum.c\tSum\tpin:$17:t\t%s\tkept\n" % ("0" * 16))
         rc, out = trial(None, recheck=True, sample=0, base_rows=str(base_copy))
-        check("trial --recheck --base-rows: the rows that the copy of the base does not hold", rc == 0 and "1 new since" in out
-              and "the source holds no such crutch" in out, out)
+        check("trial --recheck --base-rows: the rows that the copy of the base does not hold", rc == 1 and "1 new since" in out
+              and "TRIAL FAIL no crutch: src/sum.c Sum pin:$17:t" in out, out)
         base_copy.unlink()
         _git(repo, "checkout", "--", TRIALS)
         rc, out = trial(None, recheck=True, against="HEAD")
@@ -3921,6 +4007,81 @@ def self_test_trials(check) -> None:
         rc, out = trial("src/sum.c")
         check("trial: a file with no crutch", (rc, out) == (0, "TRIAL OK src/sum.c: no pin and no barrier in a function\n"), out)
         check("trial: a file that is not there", trial("src/gone.c")[0] == 1)
+        # ---- what the reference projects do (stage2/audit/AUDIT.md): each attack is a control here ----
+
+        def safe(fn, *a, **kw):                        # a crash is an answer of its own, and a wrong one
+            try:
+                return fn(*a, **kw)
+            except Exception as e:
+                return "%s: %s" % (type(e).__name__, str(e)[:120])
+
+        bare = 'void A(void) {\n    register k asm("$17");\n    k = 1;\n}\n'
+        got = safe(lambda: drop(bare, crutches("src/a.c", bare)[0]))
+        check("a pin loses its asm clause and nothing else, so a declaration with no type still compiles",
+              got == bare.replace(' asm("$17")', ""), got)
+        two = 'void A(void) {\n    register s32 j = 0, k asm("$17");\n    register s32 a asm("$4"), b asm("$5");\n}\n'
+        got = safe(lambda: [(c["id"], drop(two, c).split("\n")[c["line"]]) for c in crutches("src/a.c", two)])
+        check("each asm clause of a declaration is a pin of its own", got == [
+            ("pin:$17:k", "    register s32 j = 0, k;"), ("pin:$4:a", '    register s32 a, b asm("$5");'),
+            ("pin:$5:b", '    register s32 a asm("$4"), b;')] and file_debt("src/a.c", two) == {"pin": 3, "pin-unmarked": 3}, got)
+        check("the rows hold no digest of the probe: the probe is a protected file", TRIAL_COLUMNS == ("path", "function", "crutch", "hash", "result"))
+        keep16 = "sys.exit(0 if 'asm(\"$16\")' in text else 1)"
+        rule(keep16)
+        put("src/odd.c", 'void Odd(void) {\n    register s32 a asm("$" "4");\n}\n')
+        got = safe(trial, "src/odd.c")
+        check("trial: a pin whose clause the tool cannot read is a finding, not a crash and not a skip", isinstance(got, tuple) and got[0] == 1
+              and "TRIAL FAIL src/odd.c Odd: " in got[1] and "cannot read" in got[1], got)
+        (repo / "src/odd.c").unlink()
+        # the bytes of a source are its own: Shift-JIS text and CRLF line ends come back as they went in
+        sjis = C_TRIAL.replace("s32 Sum", "/* テスト */\ns32 Sum").replace("\n", "\r\n").encode("shift_jis")
+        (repo / "src/sum.c").write_bytes(sjis)
+        got = safe(trial, "src/sum.c")
+        want = (sjis.replace(b' asm("$17")', b"").replace(b'    __asm__("");\r\n', b"")
+                .replace(b"    register s32 i", b"    // !FAKE: pin:$16:i: the function does not match without it (trial)\r\n    register s32 i"))
+        check("trial: the bytes it does not change stay (Shift-JIS, CRLF)", isinstance(got, tuple) and got[0] == 0
+              and (repo / "src/sum.c").read_bytes() == want and found() == [], (got, (repo / "src/sum.c").read_bytes()[:160], found()))
+        (repo / "src/sum.c").write_bytes(C_TRIAL.encode().replace(b"    return t;\n", b"    return t;\r\n"))
+        got = safe(trial, "src/sum.c")
+        check("trial: mixed line ends are refused, the file stays", isinstance(got, tuple) and got[0] == 1 and "line ends" in got[1]
+              and b"return t;\r\n" in (repo / "src/sum.c").read_bytes(), got)
+        # the copy that the probe compiles never stands on a file, and a path outside the repository is no crash
+        put("src/sum.c", C_TRIAL)
+        put("src/sum.psxd-trial.c", "int tracked;\n")
+        got = safe(trial, "src/sum.c")
+        check("trial: a file where its copy would go is not written over and not deleted", isinstance(got, tuple) and got[0] == 1
+              and "src/sum.psxd-trial.c" in got[1] and (repo / "src/sum.psxd-trial.c").read_text() == "int tracked;\n"
+              and (repo / "src/sum.c").read_text() == C_TRIAL, got)
+        (repo / "src/sum.psxd-trial.c").unlink(missing_ok=True)
+        got = safe(trial, "/etc/hosts")
+        check("trial: a path outside the repository is a refusal", isinstance(got, tuple) and got[0] == 1 and "TRIAL FAIL" in got[1], got)
+        rule("open(sys.argv[3], 'a').write('/* touched */\\n')\n" + keep16)
+        got = safe(trial, "src/sum.c")
+        check("trial: a probe that writes the tracked file has failed", isinstance(got, tuple) and got[0] == 1 and "the probe failed" in got[1], got)
+        # a row belongs to its path, a row with no crutch fails, and a probe error is no `kept`
+        put("src/sum.c", C_TRIAL)
+        put(TRIALS, "\t".join(TRIAL_COLUMNS) + "\n")
+        rule(keep16)
+        check("trial: the fixture of the row controls", safe(trial, "src/sum.c") != 1 and found() == [], found())
+        honest = (repo / TRIALS).read_text()
+        put(TRIALS, honest.replace("src/sum.c\t", "src/other.c\t"))
+        f = found()
+        check("trials: a row that names another path covers nothing, and it stands for no crutch", sorted(x.split(":")[0] for x in f) == [
+            "no crutch", "no row"] and any(x.startswith("no row: src/sum.c Sum pin:$16:i") for x in f), f)
+        got = safe(trial, None, recheck=True, sample=5)
+        check("trial --recheck: a row with no crutch fails", isinstance(got, tuple) and got[0] == 1 and "TRIAL FAIL no crutch: src/other.c Sum pin:$16:i" in got[1], got)
+        put(TRIALS, honest)
+        (repo / "src/sum.c").rename(repo / "src/total.c")
+        f = found()
+        check("trials: a function that moved needs its trial again", sorted(x.split(":")[0] for x in f) == ["no crutch", "no row"], f)
+        (repo / "src/total.c").rename(repo / "src/sum.c")
+        rule("sys.exit(0 if 'asm(\"$16\")' in text else 2)")
+        got = safe(trial, None, recheck=True, sample=5)
+        check("trial --recheck: a probe that fails on the text without the crutch proves nothing", isinstance(got, tuple) and got[0] == 1
+              and "TRIAL FAIL error: src/sum.c Sum pin:$16:i" in got[1], got)
+        (repo / "src/sum.c").unlink()
+        got = safe(trial, "src/sum.c")
+        check("trial: the rows of a file that is gone go with it", isinstance(got, tuple) and got[0] == 0
+              and (repo / TRIALS).read_text() == "\t".join(TRIAL_COLUMNS) + "\n", got)
 
 
 GATE_SETTINGS = {"permissions": {"deny": ["Bash(git push *)", "Edit(/config/debt-baseline.txt)"]}, "hooks": {"PreToolUse": [

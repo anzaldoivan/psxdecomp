@@ -223,7 +223,7 @@ A register pin or an empty assembly statement is a crutch. It forces the compile
 `python3 tools/psxd_floor.py trial <file>` examines each crutch of a file.
 
 1. The tool takes one crutch out and asks the probe of the game.
-2. The crutch is gone when the function still matches.
+2. The crutch is gone when the function still matches. A pin loses its `asm("…")` clause and nothing else.
 3. A crutch that the match needs gets a `// !FAKE: <reason>` line above it.
 4. The tool writes one row for that crutch in `config/trials.tsv`.
 
@@ -231,14 +231,20 @@ A register pin or an empty assembly statement is a crutch. It forces the compile
 - The probe gets a file to compile, a function, and the path that the file stands for.
 - Write them as `{file}`, `{func}` and `{path}` in the command. Without them, the tool adds three arguments.
 - The probe exits 0 when the function matches, and 1 when it does not. Any other code is an error.
+- An error is never read as "the match needs it". The trial stops, and `trial --recheck` fails on that row.
+- The probe compiles a copy beside the source. A probe that changes the source itself has failed.
+- The tool edits bytes. The encoding and the line ends of the file stay. It refuses a file with mixed line ends.
 - The tool first changes a comment only. It refuses a probe that then gives another answer.
 - One marker covers one crutch. It stands on the line of the crutch, or alone on the line above.
 - A marker with no reason covers nothing. The pin then counts as `pin-unmarked`.
-- The columns of `config/trials.tsv` are `path function crutch hash result probe`.
+- The columns of `config/trials.tsv` are `path function crutch hash result`.
+- A row belongs to its path. A function that moved to another file is tried again.
 - The hash is of the function body with no comment. A body that changed needs a new trial.
-- The gate refuses a marked crutch with no row, and a row with another hash.
+- The gate refuses a marked crutch with no row, a row with another hash, and a row that stands for no marked crutch.
+- `trial <file>` writes the rows of that file again. For a file that is gone, it removes them.
 - With no probe, the gate refuses every marked crutch. A game keeps no pin that it cannot examine.
 - `trial --recheck` runs rows again. It fails on a row for a crutch that the function matches without.
+- It also fails on a row with no crutch behind it.
 
 ## Names and assembly evidence
 
