@@ -212,6 +212,9 @@ The baseline holds one policy line for each kind. `debt --recount` writes the st
 - The gate refuses a new `raise` line in an agent session. The developer commits it from a terminal.
 - The gate refuses a new row of `config/asm-evidence.tsv` in an agent session in the same way.
 - `debt --bodies` prints the counts of each function body.
+- `debt --files` prints the state of each C file: `stubs`, `matched` or `finished`.
+- A finished file has every function in C and no debt of any kind. The names ledger must exist.
+- The README shows that count in a generated block. The README lint refuses the count in any other place.
 
 ## Trials
 

@@ -12,6 +12,12 @@
     floor.py debt --bodies [--staged | --rev REV]
                                           the same counts by function body: one `DEBT BODY <path> <function>` line per
                                           body with debt, `(file scope)` for what no body holds; no check
+    floor.py debt --files [--public] [--staged | --rev REV]
+                                          the state of each C file: `stubs` (a function is still assembly), `matched`
+                                          (every function is in C, and debt is left) or `finished` (no debt of any
+                                          kind); the last line is the count that a README's generated block shows.
+                                          --public: of the files that config/public-paths.txt lists only, which is what
+                                          the public repository of a game in split mode can count itself
     floor.py debt --update                rewrite the rows to the counts of now; refused when the change since HEAD is
                                           one that HEAD's policy does not admit
     floor.py debt --recount               write the baseline in version 2: the rows of now and a policy line for each
@@ -179,6 +185,8 @@ class Tree:
         self.memo: dict = {}                           # what a check derived from this tree, by its own key
         self._set: set | None = None
         self.links: list[str] = []                     # the tracked symbolic links: no file of the tree, and said so
+        self._keep = None                              # a view (`only`): the test of the paths it holds
+        self._whole: Tree | None = None                # and the tree it is a view of, which owns the git process
         if source is None:
             r = _git(repo, "ls-files", "-z", *(("--cached", "--others", "--exclude-standard") if untracked else ()))
             if r.returncode == 0:
@@ -202,6 +210,16 @@ class Tree:
                 self.links.append(path)
         self.paths = sorted(self._blob)
 
+    def only(self, keep) -> "Tree":
+        """A view of this tree that holds the paths `keep(path)` accepts and no other: what a public repository
+        holds of a game in split mode. A file outside the view reads as absent."""
+        view = Tree.__new__(Tree)
+        view.__dict__.update(self.__dict__)
+        view.paths = [p for p in self.paths if keep(p)]
+        view.links = [p for p in self.links if keep(p)]
+        view._text, view.memo, view._set, view._keep, view._whole = {}, {}, None, keep, self
+        return view
+
     def has(self, path: str) -> bool:
         """The source holds the file: a tracked one, or (a work tree with `untracked`) one that git does not ignore."""
         if self._set is None:
@@ -209,6 +227,8 @@ class Tree:
         return path in self._set
 
     def read(self, path: str) -> str | None:
+        if self._keep is not None:
+            return self._whole.read(path) if self._keep(path) else None
         if path not in self._text:
             if self.source is None:
                 f = self.repo / path
@@ -223,6 +243,8 @@ class Tree:
 
     def raw(self, path: str) -> bytes | None:
         """A file's bytes as the source holds them; None as `read`."""
+        if self._keep is not None:
+            return self._whole.raw(path) if self._keep(path) else None
         if self.source is not None:
             return self._object(self._blob[path]) if path in self._blob else None
         f = self.repo / path
@@ -244,7 +266,7 @@ class Tree:
         return data if head[1] == b"blob" else None
 
     def close(self) -> None:
-        if self._cat is not None:
+        if self._cat is not None and self._whole is None:
             self._cat.stdin.close()
             self._cat.stdout.close()
             self._cat.wait()
@@ -1540,6 +1562,56 @@ def cmd_bodies(repo, source: str | None = None) -> int:
                     "%s %d" % (k, got[k]) for k in KINDS if got.get(k))))
     print("DEBT BODIES %d file(s), %d function bodies, %d with debt, %d count(s) at file scope; totals: %s" % (
         len(bodies), n, with_debt, at_scope, _totals(debt_counts(repo, bodies=bodies))))
+    return 0
+
+
+def public_view(tree: Tree) -> Tree:
+    """The tree as its public repository holds it: where config/public-paths.txt exists, the files it lists. A count
+    that a published text shows is taken from this view, so the public repository's own check finds the same one."""
+    listed = tree.read(PUBLIC_PATHS)
+    if listed is None:
+        return tree
+    entries = [l.strip() for l in listed.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    return tree.only(lambda p: any(entry_match(e, p) for e in entries))
+
+
+def file_states(repo, tree: Tree | None = None) -> list[tuple[str, str, dict]]:
+    """[(state, path, its counts)] for each C file that holds a function body or an INCLUDE_ASM line. `stubs`: a
+    function of the file is still assembly. `matched`: every function is in C, and the file holds debt, or the names
+    ledger does not exist yet. `finished`: every function is in C and the file holds no debt of any kind, so each of
+    its names has an accepted row and no crutch is left. Nobody writes that word by hand: this is where it comes
+    from."""
+    tree = tree or Tree(repo)
+    skip = parse_baseline(tree.read(BASELINE)).skip
+    bodies = debt_bodies(repo, skip, tree)
+    stubs = tree_stubs(repo, skip, tree)[0]
+    ledger = tree.read(NAMES) is not None
+    out = []
+    for p in sorted(bodies):
+        if not is_c(p) or is_fragment(p) or not (stubs.get(p) or any(n != SCOPE for n in bodies[p])):
+            continue
+        counts = debt_counts(repo, bodies={p: bodies[p]})
+        got = {k[0]: n for k, n in counts.items()}
+        out.append(("stubs" if stubs.get(p) else "matched" if got or not ledger else "finished", p, got))
+    return out
+
+
+def cmd_files(repo, source: str | None = None, public: bool = False) -> int:
+    """`debt --files`: the state of each C file, and the one line that a README's generated block reads. `public`:
+    of the files that the repository publishes only."""
+    try:
+        tree = Tree(repo, source)
+        tree = public_view(tree) if public else tree
+        states = file_states(repo, tree)
+    except Fail as e:
+        print("DEBT FAIL %s" % e)
+        return 1
+    for state, p, got in states:
+        print("DEBT FILE %-8s %s%s" % (state, p, ": " + ", ".join("%s %d" % (k, got[k]) for k in KINDS if got.get(k)) if got else ""))
+    by = {st: sum(1 for x in states if x[0] == st) for st in ("finished", "matched", "stubs")}
+    print("DEBT FILES %d C file(s): %d finished, %d matched, %d with stubs%s" % (
+        len(states), by["finished"], by["matched"], by["stubs"],
+        "" if tree.read(NAMES) is not None else " (no %s yet: no file is finished before each name has a row)" % NAMES))
     return 0
 
 
@@ -3464,6 +3536,32 @@ def self_test_bodies(check) -> None:
         got = debt_bodies(repo)
         check("bodies: one name in two files is two bodies; an assembly file is file scope", got == {
             "src/one.c": {"Step": {"goto": 1}}, "src/two.c": {"Step": {"goto": 1}}, "src/boot.s": {SCOPE: {"asm": 1}}}, got)
+        (repo / "src" / "half.c").write_text('INCLUDE_ASM("asm/nonmatchings/half", Later);\nvoid Now(void) {\n}\n')
+        (repo / "src" / "done.c").write_text("void Done(void) {\n}\n")
+        (repo / "src" / "table.c").write_text("s32 g_Table[4];\n")
+        _git(repo, "add", "src")
+        rc, out = _capture(cmd_files, repo)
+        check("debt --files: no file is finished before the names ledger exists", rc == 0 and "DEBT FILE matched  src/done.c\n" in out
+              and "DEBT FILE stubs    src/half.c\n" in out and "DEBT FILE matched  src/one.c: goto 1\n" in out and "table.c" not in out
+              and "DEBT FILES 4 C file(s): 0 finished, 3 matched, 1 with stubs (no config/names.tsv yet" in out, out)
+        (repo / "config").mkdir()
+        (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\nfunction\tmain\t\t\tDone\taccepted\tstring:src/done.c:1\tr\n")
+        rc, out = _capture(cmd_files, repo)
+        check("debt --files: a file with no debt of any kind is finished", "DEBT FILE finished src/done.c\n" in out
+              and "DEBT FILE matched  src/one.c: goto 1, unbased 1\n" in out
+              and out.endswith("DEBT FILES 4 C file(s): 1 finished, 2 matched, 1 with stubs\n"), out)
+        (repo / PUBLIC_PATHS).write_text("src/one.c\nsrc/half.c\n")
+        _git(repo, "add", "config")
+        rc, out = _capture(cmd_files, repo, public=True)
+        check("debt --files --public: the files that the repository publishes, as its public tree counts them", out.endswith(
+            "DEBT FILES 2 C file(s): 0 finished, 1 matched, 1 with stubs (no config/names.tsv yet: no file is finished before each "
+            "name has a row)\n") and "src/one.c: goto 1\n" in out, out)
+        _git(repo, "rm", "-q", "-f", "--cached", PUBLIC_PATHS)
+        (repo / PUBLIC_PATHS).unlink()
+        (repo / NAMES).unlink()
+        for name in ("half.c", "done.c", "table.c"):
+            (repo / "src" / name).unlink()
+        _git(repo, "add", "-A", "src")
         rc, out = _capture(cmd_bodies, repo)
         check("debt --bodies prints each bucket", rc == 0 and "DEBT BODY src/one.c Step: goto 1\n" in out
               and "DEBT BODY src/boot.s (file scope): asm 1\n" in out
@@ -4115,6 +4213,8 @@ def main(argv=None) -> int:
     ap.add_argument("--rev", help="debt: count this revision")
     ap.add_argument("--against", metavar="BASE", help="debt: report the counts that differ from this revision's")
     ap.add_argument("--bodies", action="store_true", help="debt: the counts of each function body, no check")
+    ap.add_argument("--files", action="store_true", help="debt: the state of each C file: stubs, matched or finished")
+    ap.add_argument("--public", action="store_true", help="debt --files: of the files that config/public-paths.txt lists only")
     ap.add_argument("--self-test", action="store_true")
     args = sys.argv[1:] if argv is None else list(argv)
     if args[:1] == ["guard"]:                          # a hook: no flag, a wrong flag or a missing one never blocks a call
@@ -4134,6 +4234,8 @@ def main(argv=None) -> int:
             ap.error("debt: --staged or --rev, not both")
         if a.bodies:
             return cmd_bodies(a.repo, INDEX if a.staged else a.rev)
+        if a.files:
+            return cmd_files(a.repo, INDEX if a.staged else a.rev, a.public)
         return cmd_debt(a.repo, update=a.update, down=a.down, source=INDEX if a.staged else a.rev,
                         against=a.against, recount=a.recount, raise_=a.raise_, reason=a.reason)
     if a.cmd == "names":

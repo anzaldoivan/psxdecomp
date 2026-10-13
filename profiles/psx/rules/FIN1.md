@@ -16,4 +16,5 @@ A finished file meets six conditions:
 - New debt arrives only with a new function body. The tool refuses a rise in a body that exists.
 - A kind in `down` never rises. Only the developer raises a count, with `debt --raise`.
 - Never report a matched file as finished, and never report a debt count from memory. Run the tool.
+- `python3 tools/psxd_floor.py debt --files` prints the state of each file. Only the README block of the tool counts finished files.
 - The published progress number counts matched code. It says nothing about finished files.

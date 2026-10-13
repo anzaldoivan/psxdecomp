@@ -103,6 +103,11 @@ README_H2 = ["Description", "Progress", "Building the decompilation", "Repositor
 README_H3 = {"Getting started": ["Setting up", "Contributing", "Reference"]}
 FREE_AFTER = "Acknowledgements"          # any other H2 may follow it (Contact, Links…), none may precede it
 BLOCKS = {"disc": "Description", "progress": "Progress"}      # generated block -> the H2 it lives under
+OPTIONAL_BLOCKS = {"finished": "Progress"}                    # a block that a README may carry. Its count moves with the
+#                                                               source, so a stale one is a WARN, and a FAIL at a release
+# A count of finished things: `12 files are finished`, `12 of 40 finished`, `40% finished`, `finished: 12`, `finished 3 files`
+FINISHED_CLAIM = re.compile(r"(?i)\b\d[\d,.]*\s*%?\s+(?:of\s+\d[\d,]*\s+)?(?:\w+\s+){0,2}finished\b"
+                            r"|\bfinished\b\s*[:=(]?\s*(?:\w+\s*[:=]?\s*)?\d")
 GAME_BLOCK = ("<!-- progress:begin -->", "<!-- progress:end -->")  # the game's own numbers block (kit corpus), allowed
 
 
@@ -440,7 +445,8 @@ def block_lines(lines: list[str], span: tuple[int, int], code: set) -> set[int]:
     each from its begin marker to its end marker. A marker inside a code fence is text, and a begin marker with no end
     marker opens nothing: neither can hide the prose below it."""
     held: set[int] = set()
-    for begin, end in ((marker("progress"), marker("progress", True)), (marker("disc"), marker("disc", True)), GAME_BLOCK):
+    for begin, end in ((marker("progress"), marker("progress", True)), (marker("disc"), marker("disc", True)),
+                       (marker("finished"), marker("finished", True)), GAME_BLOCK):
         i = span[0] + 1
         while i < span[1]:
             if lines[i].strip() == begin and i not in code:
@@ -519,7 +525,29 @@ def render_disc(ctx: Ctx) -> list[str]:
     return out
 
 
-RENDER = {"disc": render_disc, "progress": render_progress}
+FINISHED_LINE = re.compile(r"^DEBT FILES (\d+) C file\(s\): (\d+) finished, (\d+) matched, (\d+) with stubs", re.M)
+
+
+def render_finished(ctx: Ctx) -> list[str]:
+    """The count of finished files, from the floor tool beside this file (`debt --files --public`): the one place of
+    a README where that word stands beside a number. It counts the files that the repository publishes, so the public
+    repository of a game in split mode finds the same count in its own tree."""
+    tool = sibling()
+    r = subprocess.run([sys.executable, "-I", str(tool), "debt", "--files", "--public", "--repo", str(ctx.repo)],
+                       capture_output=True, text=True) if tool.is_file() else None
+    m = FINISHED_LINE.search(r.stdout) if r is not None and r.returncode == 0 else None
+    if m is None:
+        raise RenderError("the finished block needs `%s debt --files`: %s" % (tool.name, "no such tool beside %s" % (
+            pathlib.Path(__file__).name) if r is None else ((r.stdout + r.stderr).strip().splitlines() or ["no output"])[-1]))
+    n, done, matched, stubs = (int(x) for x in m.groups())
+    if not n:
+        return ["*No C source file yet.* The count of finished files appears here with the first one."]
+    return ["**%d of %d** C files are finished: matched, with no readability debt left (`rules/FIN1.md`). %d more %s "
+            "matched and still hold%s debt, and %d still hold%s a function in assembly." % (
+                done, n, matched, "is" if matched == 1 else "are", "s" if matched == 1 else "", stubs, "s" if stubs == 1 else "")]
+
+
+RENDER = {"disc": render_disc, "progress": render_progress, "finished": render_finished}
 
 
 def _blocks(lines: list[str], name: str) -> list[tuple[int, int]]:
@@ -735,6 +763,14 @@ def lint(text: str, ctx: Ctx, release: bool = False) -> list[tuple[str, str, str
                 name, marker(name), marker(name, True), len(b), len(e)))
         elif not inside(b[0], sec):
             add("FAIL", "blocks", "the %s block (line %d) belongs under ## %s" % (name, b[0] + 1, sec))
+    for name, sec in OPTIONAL_BLOCKS.items():
+        b = [i for i, l in enumerate(lines) if l.strip() == marker(name)]
+        e = [i for i, l in enumerate(lines) if l.strip() == marker(name, True)]
+        if (b or e) and (len(b) != 1 or len(e) != 1 or b[0] > e[0]):
+            add("FAIL", "blocks", "the %s block needs one `%s` … `%s` pair (found %d/%d)" % (
+                name, marker(name), marker(name, True), len(b), len(e)))
+        elif b and not inside(b[0], sec):
+            add("FAIL", "blocks", "the %s block (line %d) belongs under ## %s" % (name, b[0] + 1, sec))
     try:
         fresh = render(text, ctx)
     except RenderError as e:
@@ -742,11 +778,21 @@ def lint(text: str, ctx: Ctx, release: bool = False) -> list[tuple[str, str, str
         fresh = text
     if fresh != text:
         flines = fresh.split("\n")
-        for name in BLOCKS:
+        for name in list(BLOCKS) + list(OPTIONAL_BLOCKS):
             a, f = _blocks(lines, name), _blocks(flines, name)
             if a != [(-1, -1)] and [lines[x:y] for x, y in a] != [flines[x:y] for x, y in f]:
-                add("FAIL", "blocks", "the %s block is stale: `python3 tools/psxd_publish.py render README.md "
-                    "--write` regenerates it" % name)
+                # the count of an optional block moves with every source commit: it must be right in what is released
+                add("FAIL" if release or name in BLOCKS else "WARN", "blocks", "the %s block is stale: `python3 "
+                    "tools/psxd_publish.py render README.md --write` regenerates it%s" % (name, " (it would read: %s; a "
+                    "release refuses the stale one)" % " ".join(l for x, y in f for l in flines[x + 1:y])[:160]
+                    if name in OPTIONAL_BLOCKS else ""))
+    # finished is computed, never claimed: the word beside a number stands in the generated block and nowhere else
+    held = block_lines(lines, (-1, n), code)
+    for i, line in enumerate(lines):
+        if i not in held and i not in code and FINISHED_CLAIM.search(re.sub(r"`[^`]*`|\]\([^)]*\)|<[^>]*>", " ", line)):
+            add("FAIL", "finished", "line %d: a count beside the word `finished`: the tool counts the finished files "
+                "(`python3 tools/psxd_floor.py debt --files`), and only the generated block `%s` shows the count" % (
+                    i + 1, marker("finished")))
     # the one published number: no percent or count typed in ## Progress; a second numbers block is said so
     for i, num in typed_numbers(lines, spans.get("Progress", (0, 0)), code):
         add("FAIL", "numbers", "line %d: `%s` is typed in ## Progress: the decomp.dev report is the one published "
@@ -5159,6 +5205,36 @@ def self_test() -> int:
         typed = lambda s: lint(text.replace(end, end + "\n" + s + "\n"), ctx)  # noqa: E731
         nums = lambda s: [(f[0], f[2].split("`")[1]) for f in typed(s) if f[1] == "numbers"]  # noqa: E731
         check("numbers: the note is generated", PROGRESS_NOTE in text and nums("In words only.") == [], nums("In words only."))
+        # finished is computed, never claimed: the word beside a number fails anywhere outside the generated block
+        said = lambda s: [f[2] for f in typed(s) if f[1] == "finished"]  # noqa: E731
+        check("finished: a count beside the word fails", len(said("So far 12 files are finished.")) == 1
+              and len(said("Finished: 40% of the overlay.")) == 1 and "debt --files" in said("We finished 3 files.")[0], said("We finished 3 files."))
+        check("finished: the word alone, a code span and another number pass", said("Matched code is not finished code.") == []
+              and said("`12 finished` is what the tool prints.") == [] and said("The disc holds 3 tracks. A file is finished when it has no debt.") == [])
+        check("finished: outside ## Progress too", any(f[1] == "finished" for f in lint(text.replace("Everyone.", "Everyone. 9 units finished."), ctx)))
+        if sibling().is_file():                    # the block is written by the floor tool beside this file
+            block = "%s\n%s\n" % (marker("finished"), marker("finished", True))
+            (repo / "src").mkdir(exist_ok=True)
+            (repo / "src" / "a.c").write_text("void Done(void) {\n}\n")
+            (repo / "config" / "names.tsv").write_text("kind\timage\tscope\told_name\tnew_name\tdecision\tevidence\treason\n"
+                                                       "function\tmain\t\t\tDone\taccepted\tstring:src/a.c:1\tr\n")
+            _git(repo, "add", "src", "config/names.tsv")
+            with_block = text.replace(end, end + "\n" + block)
+            got = [f for f in lint(with_block, ctx) if f[1] == "blocks"]
+            check("finished: an empty block is stale: a warning", [f[0] for f in got] == ["WARN"] and "the finished block is stale" in got[0][2]
+                  and "it would read: **1 of 1** C files are finished" in got[0][2], got)
+            got = [f for f in lint(with_block, ctx, release=True) if f[1] == "blocks"]
+            check("finished: a stale block fails a release", [f[0] for f in got] == ["FAIL"], got)
+            fresh = render(with_block, ctx)
+            check("finished: the block holds the tool's count, and the lint takes it", "**1 of 1** C files are finished" in fresh
+                  and not [f for f in lint(fresh, ctx) if f[1] in ("blocks", "finished", "numbers")], fresh[-600:])
+            got = [f for f in lint(fresh.replace("**1 of 1**", "**7 of 7**"), ctx, release=True) if f[1] == "blocks"]
+            check("finished: a count typed into the block is stale", [f[0] for f in got] == ["FAIL"], got)
+            got = [f for f in lint(text.replace("## Progress", block + "\n## Progress", 1), ctx) if f[1] == "blocks"]
+            check("finished: the block belongs under ## Progress", any("belongs under ## Progress" in f[2] for f in got), got)
+            _git(repo, "rm", "-q", "-f", "--cached", "src/a.c", "config/names.tsv")
+            (repo / "src" / "a.c").unlink()
+            (repo / "config" / "names.tsv").unlink()
         check("numbers: a typed percent", nums("We are 22.1% done.") == [("FAIL", "22.1%")], nums("We are 22.1% done."))
         check("numbers: a typed count", nums("1,689 of 7,647 functions are in C.") == [("FAIL", "1,689 of 7,647")])
         check("numbers: 100% and N of N are words", nums("The goal is 100% and N of N. See `5 of 9` and [a](x/50%25).") == [])
