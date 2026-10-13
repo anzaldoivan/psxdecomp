@@ -189,14 +189,20 @@ The rule is `rules/NAME1.md`. `python3 tools/psxd_floor.py names` checks two tab
 | File | Columns |
 |---|---|
 | `config/names.tsv` | `kind image scope old_name new_name decision evidence reason` |
-| `config/asm-evidence.tsv` | `image symbol path class evidence date` |
+| `config/asm-evidence.tsv` | `image symbol path class evidence date verified_by` |
 
 - `kind` is `function`, `data`, `type`, `field`, `macro` or `file`.
 - `decision` is `accepted`, `provisional` or `rejected`. Only an accepted row clears `unbased`.
 - `names --init` writes the header line of each file. When `config/names.tsv` exists, each named function with no
   accepted row is `unbased` debt, and `unbased` never rises. Add the rows before the ledger, or in the same commit.
 - `evidence` is `<class>:<path>:<line>`. `rules/NAME1.md` lists the classes.
+- The path is a file of the repository, and the file has that line. A row with other evidence fails.
+- A `refs` row cites a line of a `[[ref]]` table in `config/refs.toml`, or a file under `refs/<name>/`.
+- An accepted name is a name that the source defines as the kind of the row.
 - The `class` of an assembly row is `sdk-object`, `hand-asm` or `data-in-text`.
+- The `evidence` of an assembly row is `<path>:<line>`. `verified_by` names the person who read it.
+- An assembly row of a C file names one function of that file. It clears the assembly of that function only.
+- `names --against <revision>` opens only the rows that are new since that revision. The gate runs it that way.
 - A function that is only hard to match has no class. It stays a stub.
 
 ## Toolchain pins

@@ -24,7 +24,8 @@ psxdecomp also delivers the readability floor: `fin-rule` and `name-rule` (rules
 as `ste-rule` is), `names-ledger` (the header lines of config/names.tsv and config/asm-evidence.tsv, once) and
 `debt-baseline` (config/debt-baseline.txt, once, last, with the starting mode of each debt kind); `debt-recount`
 rewrites a baseline of an earlier psxdecomp in version 2 (the rows of now, a policy line for each kind that has none;
-the game's own lines stay); `floor-public` is the manual line of split mode. A game with `[own] debt` or `[own] names`
+the game's own lines stay); `asm-ledger` adds the `verified_by` column to the header line of an assembly ledger that
+an earlier psxdecomp wrote (the rows stay); `floor-public` is the manual line of split mode. A game with `[own] debt` or `[own] names`
 gets none of the actions that key replaces.
 
 docs/ops/psxdecomp-campaign.md (the campaign templates, owned; nothing with `[own] campaign`) is reference text: no
@@ -501,7 +502,11 @@ def plan(repo: pathlib.Path) -> list[dict]:
         add("psxdecomp", "debt-baseline: write %s, once (the count of readability debt of each tracked source file, "
             "and the starting mode of each kind)" % floor.BASELINE, "`debt` fails when a count is not equal to its row",
             "debt-baseline")
-    elif "debt" not in own and recount_due(repo):
+    if "debt" not in own and asm_header_due(repo):
+        add("psxdecomp", "asm-ledger: add the `verified_by` column to the header line of %s (the rows stay)"
+            % floor.ASM_EVIDENCE, "a new assembly row names who read its evidence, and it names one function of a C "
+            "file", "asm-ledger")
+    if "debt" not in own and (repo / floor.BASELINE).is_file() and recount_due(repo):
         add("psxdecomp", "debt-recount: rewrite %s in version 2 (the rows of now; %s; the lines of the game stay)"
             % (floor.BASELINE, recount_due(repo)),
             "from psxdecomp 0.6.0 the baseline holds a policy line for each kind, and `debt` fails without one",
@@ -761,6 +766,10 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
         w(publish.STYLE_RATCHET_REL, "" if dry else common.first_ratchet(repo))
     if "debt-baseline" in acts:                      # and the debt of the source as the ledgers leave it
         w(floor.BASELINE, "" if dry else floor.first_baseline(repo))
+    if "asm-ledger" in acts:
+        lines = common.read(repo / floor.ASM_EVIDENCE).split("\n")
+        at = next(i for i, l in enumerate(lines) if l.strip() and not l.startswith("#"))
+        w(floor.ASM_EVIDENCE, "\n".join(lines[:at] + ["\t".join(floor.ASM_COLUMNS)] + lines[at + 1:]))
     if "debt-recount" in acts:                       # the same file of an earlier psxdecomp: the tool's own recount
         head = floor._head(repo)
         refused = [d for ck, d in floor.admission(repo, head, floor.Tree(repo))[0] if ck == "debt"] if head else []
@@ -778,6 +787,13 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
     if rec is not None:
         w(install.RECORD, rec)
     return written
+
+
+def asm_header_due(repo: pathlib.Path) -> bool:
+    """The assembly ledger holds the header line of psxdecomp 0.6.0 and earlier, with no `verified_by` column."""
+    f = repo / floor.ASM_EVIDENCE
+    head = next((l for l in common.read(f).split("\n") if l.strip() and not l.startswith("#")), "") if f.is_file() else ""
+    return tuple(c.strip() for c in head.split("\t")) == floor.ASM_COLUMNS_OLD
 
 
 def recount_due(repo: pathlib.Path) -> str | None:
@@ -1323,6 +1339,13 @@ def self_test() -> int:
         base = (repo / floor.BASELINE).read_text()
         ok &= base.endswith("mode struct admit-new\n") and "skip " not in base and base.startswith("# %s: " % floor.BASELINE)
         ok &= "debt-recount" not in keys and recount_due(repo) is None
+        ok &= "asm-ledger" not in keys | keys2
+        (repo / floor.ASM_EVIDENCE).write_text("# ours\n" + "\t".join(floor.ASM_COLUMNS_OLD) + "\nmain\tboot\tsrc/boot.s\thand-asm\td.md:1\t2026-01-02\n")
+        ok &= "asm-ledger" in {x["key"] for x in plan(repo)}
+        apply(repo, False, False)
+        ok &= (repo / floor.ASM_EVIDENCE).read_text() == "# ours\n" + "\t".join(floor.ASM_COLUMNS) + "\nmain\tboot\tsrc/boot.s\thand-asm\td.md:1\t2026-01-02\n"
+        ok &= "asm-ledger" not in {x["key"] for x in plan(repo)}
+        (repo / floor.ASM_EVIDENCE).write_text("\t".join(floor.ASM_COLUMNS) + "\n")
         (repo / floor.BASELINE).write_text("# a note of the game\nmode admit\n")           # the file of psxdecomp 0.6.0
         ok &= "version 1 file in `mode admit`" in next(x["what"] for x in plan(repo) if x["key"] == "debt-recount")
         apply(repo, False, False)

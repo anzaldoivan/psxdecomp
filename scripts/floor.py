@@ -28,6 +28,9 @@
                                           parent, and the head of the range against its base. --push: as --ci, and the
                                           game's own check
     floor.py names [--init] [--repo DIR]  check config/names.tsv and config/asm-evidence.tsv; --init writes their header lines
+    floor.py names [--staged | --rev REV] [--against BASE]
+                                          the ledgers of the index or of a revision; --against: open only the rows that
+                                          are new since the revision BASE
     floor.py toolchain [--repo DIR]       config/toolchain.tsv: each pinned checkout at its pin and clean, each file at its hash
     floor.py guard --hook                 a PreToolUse hook: stdin is the event, config/guard.tsv holds the rules
     floor.py --self-test
@@ -833,28 +836,36 @@ def address_header(repo) -> str:
     return ADDRESS_HEADER
 
 
-def read_tsv(path, columns, tree: Tree | None = None) -> tuple[list[dict] | None, list[str]]:
+class Rows(list):
+    """The rows of a ledger. `old`: its header is an earlier one (`also` of read_tsv), and a column it lacks reads
+    as empty."""
+    old = False
+
+
+def read_tsv(path, columns, tree: Tree | None = None, also=()) -> tuple[list[dict] | None, list[str]]:
     """(the rows, the errors) of a tab-separated file with a header line. None when the file is absent. With a
-    `tree`, `path` is a path of that tree."""
+    `tree`, `path` is a path of that tree. `also`: the earlier headers that are read as well."""
     text = _read(path) if tree is None else tree.read(str(path))
     if text is None:
         return None, []
-    rows, errs, head = [], [], None
+    rows, errs, head = Rows(), [], None
     for n, line in enumerate(text.lstrip("\ufeff").splitlines(), 1):
         if not line.strip() or line.startswith("#"):
             continue
         cells = [c.strip() for c in line.split("\t")]
         if head is None:
             head = cells
-            if tuple(head) != tuple(columns):
+            if tuple(head) in [tuple(a) for a in also]:
+                rows.old = True
+            elif tuple(head) != tuple(columns):
                 errs.append("line %d: the header is not %s" % (n, " ".join(columns)))
                 return rows, errs
             continue
-        cells += [""] * (len(columns) - len(cells))    # an editor trims the tabs of empty last cells
-        if len(cells) != len(columns):
-            errs.append("line %d: %d cell(s), not %d" % (n, len(cells), len(columns)))
+        cells += [""] * (len(head) - len(cells))       # an editor trims the tabs of empty last cells
+        if len(cells) != len(head):
+            errs.append("line %d: %d cell(s), not %d" % (n, len(cells), len(head)))
             continue
-        rows.append(dict(zip(columns, cells), _line=n))
+        rows.append(dict(dict.fromkeys(columns, ""), **dict(zip(head, cells)), _line=n))
     if head is None:
         errs.append("no header line")
     return rows, errs
@@ -871,7 +882,9 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, 
     header = address_header(tree)
     names, _ = read_tsv(NAMES, NAME_COLUMNS, tree)
     based = None if names is None else {r["new_name"] for r in names if r["decision"] == "accepted"}
-    evidence = {r["path"] for r in read_tsv(ASM_EVIDENCE, ASM_COLUMNS, tree)[0] or []}
+    evidence: dict[str, set] = {}                      # {path: the symbols with a row}: a row clears one function, or one file
+    for r in read_tsv(ASM_EVIDENCE, ASM_COLUMNS, tree, also=(ASM_COLUMNS_OLD,))[0] or []:
+        evidence.setdefault(r["path"], set()).add(r["symbol"])
     texts = {p: tree.read(p) for p in files}
     shared: dict[str, str] = {}
     heads = [strip(texts[p]) for p in files if p.endswith(".h") and p != header and texts[p] is not None]
@@ -888,9 +901,9 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, 
             out[p] = {} if p in evidence else {SCOPE: {"asm": 1}}
             continue
         out[p] = file_bodies(p, texts[p], shared, based, header)
-        if p in evidence:
-            for got in out[p].values():
-                got.pop("asm", None)
+        for name in evidence.get(p, ()):
+            if name != SCOPE:
+                out[p].get(name, {}).pop("asm", None)
     tree.memo[("bodies", tuple(skip))] = out
     return out
 
@@ -1387,33 +1400,137 @@ def _cmd_raise(repo, bl: Baseline, raise_, reason) -> int:
 
 
 # ---- the two ledgers: names with their evidence, assembly with its reason ------------------------------------------
+# A row is a claim, so it must point at something that a reader can open: its evidence names a file and a line that
+# the tree holds, an accepted name is one that the source defines as the row's kind, and a `refs` row cites an entry
+# of config/refs.toml. An assembly row names one function of a C file, or one assembly file. The rows that a change
+# adds are the ones that are opened (`base`): a row that an earlier commit brought was checked there.
 NAME_COLUMNS = ("kind", "image", "scope", "old_name", "new_name", "decision", "evidence", "reason")
 NAME_KINDS = ("function", "data", "type", "field", "macro", "file")
 DECISIONS = ("accepted", "provisional", "rejected")
 EVIDENCE = ("psyq-sig", "string", "xref", "loadmap", "exe-header", "prior-art", "debug-symbol", "refs")
-EVIDENCE_RE = re.compile(r"^(%s):[^:\s]+:\d+$" % "|".join(EVIDENCE))
-ASM_COLUMNS = ("image", "symbol", "path", "class", "evidence", "date")
+EVIDENCE_RE = re.compile(r"^(%s):([^:\s]+):(\d+)$" % "|".join(EVIDENCE))
+ASM_COLUMNS = ("image", "symbol", "path", "class", "evidence", "date", "verified_by")
+ASM_COLUMNS_OLD = ASM_COLUMNS[:6]                    # the header of psxdecomp 0.6.0 and earlier: read, and said
 ASM_CLASSES = ("sdk-object", "hand-asm", "data-in-text")
+ASM_EVIDENCE_RE = re.compile(r"^([^:\s]+):(\d+)$")
+REFS = "config/refs.toml"
+DECL_DATA = re.compile(r"^(?:(?:extern|static|const|volatile)\s+)*(?:[A-Za-z_]\w*[\s*]+)+?([A-Za-z_]\w*)\s*"
+                       r"(?:\[[^\]\n]*\]\s*)*(?:=|;)", re.M)
+DECL_TYPE = re.compile(r"\b(?:struct|union|enum)\s+([A-Za-z_]\w*)\s*\{|\}\s*([A-Za-z_]\w*)\s*;"
+                       r"|^typedef\b[^;{}]*?\b([A-Za-z_]\w*)\s*(?:\[[^\]\n]*\]\s*)*;", re.M)
+DECL_FIELD = re.compile(r"^[ \t]+(?:[A-Za-z_]\w*[\s*]+)+?([A-Za-z_]\w*)\s*(?:\[[^\]\n]*\]\s*)*(?::\s*\d+\s*)?;", re.M)
+STUB_NAME = re.compile(r"^[ \t]*INCLUDE_ASM\s*\([^;]*?\b([A-Za-z_]\w*)\s*\)", re.M)
+LABEL = re.compile(r"^\s*(?:glabel|jlabel|dlabel|\.globl|\.global)\s+([A-Za-z_.$][\w.$]*)|^([A-Za-z_.$][\w.$]*):", re.M)
+_SYMBOLS: dict[bytes, dict[str, set]] = {}
 
 
-def names_findings(repo, tree: Tree | None = None) -> list[tuple[str, str]]:
-    """[(FAIL|INFO, detail)] for the two ledgers of a tree (default: the work tree): a FAIL is a malformed file or
-    row."""
+def file_symbols(text: str) -> dict[str, set]:
+    """{kind: the names a C file or header defines as that kind}: functions (a body or an INCLUDE_ASM stub), data at
+    file scope, types, members and macros."""
+    key = hashlib.sha1(text.encode("utf-8", "replace")).digest()
+    if key not in _SYMBOLS:
+        body = strip(text)
+        code = PREPROC.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), body)
+        funcs = {m.group(1) for m in DEF_FUNC.finditer(code)} - NOT_A_NAME | set(STUB_NAME.findall(code))
+        _SYMBOLS[key] = {"function": funcs, "data": set(DECL_DATA.findall(code)) - funcs,
+                         "type": {n for m in DECL_TYPE.finditer(code) for n in m.groups() if n},
+                         "field": set(DECL_FIELD.findall(code)), "macro": {m.group(1) for m in DEFINE.finditer(body)}}
+    return _SYMBOLS[key]
+
+
+def tree_symbols(tree: Tree) -> dict[str, set]:
+    """file_symbols over every C file and header that the debt count reads."""
+    if "symbols" not in tree.memo:
+        out: dict[str, set] = {k: set() for k in NAME_KINDS}
+        for p in tree.paths:
+            if is_source(p) and not p.endswith((".s", ".S")):
+                for kind, names in file_symbols(tree.read(p) or "").items():
+                    out[kind] |= names
+        tree.memo["symbols"] = out
+    return tree.memo["symbols"]
+
+
+def ref_rows(text: str | None) -> list[tuple[str, int, int]]:
+    """[(name, first line, last line)] of the `[[ref]]` tables of a config/refs.toml, read as text."""
+    out, start, name = [], None, ""
+    lines = (text or "").split("\n")
+    for n, line in enumerate(lines + ["[end]"], 1):
+        if re.match(r"\s*\[", line):
+            if start is not None:
+                out.append((name, start, n - 1))
+            start, name = (n, "") if re.match(r"\s*\[\[\s*ref\s*\]\]", line) else (None, "")
+        elif start is not None:
+            m = re.match(r"""\s*name\s*=\s*["']([^"']+)["']""", line)
+            name = m[1] if m else name
+    return out
+
+
+def evidence_problem(tree: Tree, path: str, line: int, refs_class: bool = False) -> str | None:
+    """Why `<path>:<line>` is no evidence in this tree, or None. The path is a file of the tree and the line is one
+    of its lines. A path under a folder of which the tree holds nothing (an ignored folder: asm/, extracted/, refs/)
+    is opened only in the work tree, and only where that folder is there. A `refs` row cites a line of a `[[ref]]`
+    table of config/refs.toml, or a file under refs/<the name of such a table>/."""
+    rows = ref_rows(tree.read(REFS)) if refs_class or path.startswith("refs/") else []
+    if refs_class and path == REFS:
+        return None if any(a <= line <= b for _, a, b in rows) else "line %d of %s is in no `[[ref]]` table" % (line, REFS)
+    if path.startswith("refs/"):
+        name = path.split("/")[1] if path.count("/") else ""
+        if name not in [r[0] for r in rows]:
+            return "%s: %s holds no `[[ref]]` table named %r" % (path, REFS, name)
+    elif refs_class:
+        return "a `refs` row cites %s:<line of the `[[ref]]` table> or refs/<name>/<file>:<line>, not %s" % (REFS, path)
+    if "tops" not in tree.memo:
+        tree.memo["tops"] = {p.split("/")[0] for p in tree.paths}
+    text = tree.read(path) if path in tree.paths else None
+    if text is None and path.split("/")[0] not in tree.memo["tops"] and "/" in path:
+        f = tree.repo / path
+        if tree.source is not None or not (tree.repo / path.split("/")[0]).is_dir():
+            return None                                # not this tree's to open
+        text = _read(f) if f.is_file() else None
+    if text is None:
+        return "%s is no file of this tree" % path
+    return None if 1 <= line <= text.count("\n") + 1 else "%s has no line %d" % (path, line)
+
+
+def names_findings(repo, tree: Tree | None = None, base: Tree | None = None) -> list[tuple[str, str]]:
+    """[(FAIL|INFO, detail)] for the two ledgers of a tree (default: the work tree). A FAIL is a malformed file or
+    row, or a row that points at nothing: its evidence is no file and line of the tree, its accepted name is nothing
+    that the source defines as the row's kind, its assembly row names no function of its C file. `base`: the tree a
+    change starts from. The rows it holds already are not opened again, only their form is read."""
     tree, out = tree or Tree(repo), []
+    seen = {NAMES: set(), ASM_EVIDENCE: set()}
+    for rel in seen if base is not None else ():
+        seen[rel] = set((base.read(rel) or "").split("\n"))
+    raw = {rel: (tree.read(rel) or "").lstrip("﻿").splitlines() for rel in seen}
+    fresh = lambda rel, r: raw[rel][r["_line"] - 1] not in seen[rel]  # noqa: E731
     rows, errs = read_tsv(NAMES, NAME_COLUMNS, tree)
     if rows is None:
         out.append(("INFO", "no %s (`names --init` writes its header line)" % NAMES))
     else:
+        symbols = None
         for r in rows:
             bad = []
             if r["kind"] not in NAME_KINDS:
                 bad.append("kind %r is not one of %s" % (r["kind"], "|".join(NAME_KINDS)))
             if r["decision"] not in DECISIONS:
                 bad.append("decision %r is not one of %s" % (r["decision"], "|".join(DECISIONS)))
-            if not EVIDENCE_RE.match(r["evidence"]):
+            ev = EVIDENCE_RE.match(r["evidence"])
+            if not ev:
                 bad.append("evidence %r is not `<class>:<path>:<line>` with a class of %s" % (r["evidence"], "|".join(EVIDENCE)))
             if not r["new_name"]:
                 bad.append("no new_name")
+            if not bad and r["decision"] != "rejected" and fresh(NAMES, r):
+                why = evidence_problem(tree, ev[2], int(ev[3]), ev[1] == "refs")
+                if why:
+                    bad.append("the evidence of %s points at nothing: %s" % (r["new_name"], why))
+                if r["decision"] == "accepted":
+                    symbols = symbols or tree_symbols(tree)
+                    name, kind = r["new_name"], r["kind"]
+                    held = name in tree.paths or any(p.endswith("/" + name) for p in tree.paths) if kind == "file" else name in symbols[kind]
+                    if not held:
+                        other = [k for k in NAME_KINDS[:5] if name in symbols[k]]
+                        bad.append("%s is %s" % (name, "a %s in the source, not a %s" % (other[0], kind) if other else
+                                                 "accepted as a %s, and the source defines no such %s" % (kind, kind)))
             errs += ["line %d: %s" % (r["_line"], b) for b in bad]
         live: dict[tuple, int] = {}
         for r in rows:
@@ -1425,23 +1542,44 @@ def names_findings(repo, tree: Tree | None = None) -> list[tuple[str, str]]:
         out += [("FAIL", "%s: %s" % (NAMES, e)) for e in errs]
         by = {d: sum(r["decision"] == d for r in rows) for d in DECISIONS}
         out.append(("INFO", "%s: %d row(s): %s" % (NAMES, len(rows), ", ".join("%d %s" % (by[d], d) for d in DECISIONS))))
-    rows, errs = read_tsv(ASM_EVIDENCE, ASM_COLUMNS, tree)
+    rows, errs = read_tsv(ASM_EVIDENCE, ASM_COLUMNS, tree, also=(ASM_COLUMNS_OLD,))
     if rows is None:
         out.append(("INFO", "no %s (`names --init` writes its header line)" % ASM_EVIDENCE))
     else:
         for r in rows:
+            where = "line %d: " % r["_line"]
             if r["class"] not in ASM_CLASSES:
-                errs.append("line %d: class %r is not one of %s" % (r["_line"], r["class"], "|".join(ASM_CLASSES)))
+                errs.append(where + "class %r is not one of %s" % (r["class"], "|".join(ASM_CLASSES)))
             if not re.fullmatch(r"\d{4}-\d\d-\d\d", r["date"]):
-                errs.append("line %d: date %r is not YYYY-MM-DD" % (r["_line"], r["date"]))
+                errs.append(where + "date %r is not YYYY-MM-DD" % r["date"])
             if not r["path"] or not r["evidence"]:
-                errs.append("line %d: no path or no evidence" % r["_line"])
+                errs.append(where + "no path or no evidence")
+                continue
+            if not fresh(ASM_EVIDENCE, r):
+                continue
+            ev = ASM_EVIDENCE_RE.match(r["evidence"])
+            why = evidence_problem(tree, ev[1], int(ev[2])) if ev else "%r is not `<path>:<line>`" % r["evidence"]
+            if why:
+                errs.append(where + "the evidence of %s points at nothing: %s" % (r["path"], why))
+            text = tree.read(r["path"])
+            if text is None:
+                errs.append(where + "%s is no file of this tree" % r["path"])
+            elif r["path"].endswith((".s", ".S")):
+                if r["symbol"] and r["symbol"] not in {a or b for a, b in LABEL.findall(text)}:
+                    errs.append(where + "%s holds no label %s" % (r["path"], r["symbol"]))
+            elif r["symbol"] not in file_symbols(text)["function"]:
+                errs.append(where + "%s defines no function %r: a row of a C file names one function, never the whole "
+                            "file" % (r["path"], r["symbol"]))
+            if not rows.old and not r["verified_by"]:
+                errs.append(where + "no verified_by: who read the evidence of %s" % (r["symbol"] or r["path"]))
         out += [("FAIL", "%s: %s" % (ASM_EVIDENCE, e)) for e in errs]
-        out.append(("INFO", "%s: %d row(s)" % (ASM_EVIDENCE, len(rows))))
+        out.append(("INFO", "%s: %d row(s)%s" % (ASM_EVIDENCE, len(rows), (
+            "; its header is the one of psxdecomp 0.6.0, with no `verified_by` column (/psxdecomp:upgrade adds it)"
+            if rows.old else ""))))
     return out
 
 
-def cmd_names(repo, init=False) -> int:
+def cmd_names(repo, init=False, source: str | None = None, against: str | None = None) -> int:
     repo = pathlib.Path(repo)
     for rel, cols in ((NAMES, NAME_COLUMNS), (ASM_EVIDENCE, ASM_COLUMNS)) if init else ():
         if not (repo / rel).exists():
@@ -1452,19 +1590,25 @@ def cmd_names(repo, init=False) -> int:
                 print("NAMES INFO with %s in place, each named function with no accepted row is `unbased` debt, and "
                       "`unbased` never rises: add the accepted rows of the names the source holds, then run "
                       "`python3 %s debt --update`" % (NAMES, VENDORED))
-    found = names_findings(repo)
+    try:
+        tree = Tree(repo, source)
+        found = names_findings(repo, tree, Tree(repo, against) if against else None)
+    except Fail as e:
+        print("NAMES FAIL %s" % e)
+        return 1
     for level, detail in found:
         print("NAMES %-4s %s" % (level, detail))
-    if not any(f[0] == "FAIL" for f in found) and (repo / NAMES).is_file():
+    if not any(f[0] == "FAIL" for f in found) and tree.has(NAMES):
         try:
-            skip = parse_baseline(_read(repo / BASELINE)).skip
+            skip = parse_baseline(tree.read(BASELINE)).skip
         except Fail as e:
             print("NAMES INFO %s (the `skip` lines are not read)" % e)
             skip = []
-        unbased = sum(n for (kind, _), n in debt_counts(repo, skip).items() if kind == "unbased")
+        unbased = sum(n for (kind, _), n in debt_counts(repo, skip, tree).items() if kind == "unbased")
         print("NAMES INFO %d function(s) defined in src/ with no accepted row" % unbased)
     bad = sum(f[0] == "FAIL" for f in found)
-    print("NAMES %s (%d malformed)" % ("FAIL" if bad else "OK", bad))
+    print("NAMES %s (%d finding(s)%s)" % ("FAIL" if bad else "OK", bad, "; only the rows that are new since %s were "
+                                         "opened" % against if against else ""))
     return 1 if bad else 0
 
 
@@ -1818,11 +1962,12 @@ def transition(repo, bases: list[Tree], head: Tree, online: bool = False, change
     return best if best is not None else ([], [], False)
 
 
-def state(repo, tree: Tree, here: bool = True) -> list[tuple[str, str]]:
-    """[(check, detail)] for a tree as it stands: its baseline, its ledgers, and (`here`: the work tree holds this
-    tree) its plan, its toolchain pins, its README and its category ids."""
+def state(repo, tree: Tree, here: bool = True, base: Tree | None = None) -> list[tuple[str, str]]:
+    """[(check, detail)] for a tree as it stands: its baseline, its ledgers (`base`: the tree the change starts from,
+    whose ledger rows are not opened again), and (`here`: the work tree holds this tree) its plan, its toolchain
+    pins, its README and its category ids."""
     out = [("debt", f) for f in state_findings(repo, tree)[0]]
-    out += [("names", d) for lv, d in names_findings(repo, tree) if lv == "FAIL"]
+    out += [("names", d) for lv, d in names_findings(repo, tree, base) if lv == "FAIL"]
     if not here:
         return out
     out += [("plan", "%s: %s" % (ck, d)) for lv, ck, d in lint_plan(repo) if lv == "FAIL"]
@@ -1898,7 +2043,7 @@ def cmd_gate(repo, mode: str, rng: str | None = None, part: str = "all", range_b
                     head = Tree(repo, None, untracked=True)
             passed = _handover(repo, head, ["--" + mode, "--part", "state"]) if replaced and not fails else None
             if passed is None:
-                fails += state(repo, head)
+                fails += state(repo, head, base=bases[0] if bases else None)
                 if mode == "bank" and not fails:
                     fails += game_check(repo, head)
         else:
@@ -1937,7 +2082,7 @@ def cmd_gate(repo, mode: str, rng: str | None = None, part: str = "all", range_b
                 here = _rev(repo, "HEAD") == tip
                 if not here:
                     infos.append("the work tree is not at %s: its plan, README and category ids are not read" % tip[:10])
-                fails += state(repo, head, here)
+                fails += state(repo, head, here, Tree(repo, first) if first else None)
                 if mode == "push" and not fails:
                     fails += game_check(repo, head)
     except Fail as e:
@@ -2435,7 +2580,11 @@ def self_test_debt(check) -> None:
         (repo / "src" / "walk.c").write_text(C_CLEAN)
         (repo / "src" / "untracked.c").write_text(C_DEBT["goto"][0])        # never added: a count reads tracked files
         check("an untracked file under src/ is not counted", not any(p == "src/untracked.c" for _, p in debt_counts(repo)))
-        (repo / ASM_EVIDENCE).write_text("\t".join(ASM_COLUMNS) + "\nmain\tboot\tsrc/boot.s\thand-asm\tdocs/boot.md:3\t2026-01-02\n")
+        (repo / "src" / "boot.s").write_text("glabel boot\n    nop\n")
+        (repo / "docs").mkdir()
+        (repo / "docs" / "boot.md").write_text("# The boot code\n\nThe vendor wrote it in assembly.\n")
+        _git(repo, "add", "docs")
+        (repo / ASM_EVIDENCE).write_text("\t".join(ASM_COLUMNS) + "\nmain\tboot\tsrc/boot.s\thand-asm\tdocs/boot.md:3\t2026-01-02\tdeveloper\n")
         rc, out = run()
         check("an evidence row clears an assembly file", rc == 1 and "DEBT FAIL stale asm src/boot.s: 0, its row is 1" in out, out)
         (repo / BASELINE).write_text("mode sideways\n")
@@ -2473,18 +2622,81 @@ def self_test_debt(check) -> None:
         (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + row)
         rc, out = _capture(cmd_names, repo)
         check("names: a good row", rc == 0 and "1 row(s): 1 accepted" in out and "NAMES INFO 0 function(s)" in out, out)
-        (repo / NAMES).write_text("\ufeff" + "\t".join(NAME_COLUMNS) + "\n" + row.replace("accepted", "provisional")
+        (repo / REFS).write_text("# the library\n" * 10 + '[[ref]]\nname = "manual"\nurl = "https://example.invalid/manual"\n\n[[trap]]\ntopic = "x"\n')
+        _git(repo, "add", REFS)
+        (repo / NAMES).write_text("﻿" + "\t".join(NAME_COLUMNS) + "\n" + row.replace("accepted", "provisional")
                                   .replace("string:src/clean.c:4\tthe string it prints", "refs:config/refs.toml:12"))
         rc, out = _capture(cmd_names, repo)
         check("names: a provisional name is not based; a refs row is evidence; a trimmed last cell and a BOM are read",
               rc == 0 and "1 provisional" in out and "NAMES INFO 2 function(s)" in out, out)
-        many = "".join("function\tmain\t\tfunc_%08X\tName%d\taccepted\tstring:src/a.c:1\tr\n" % (i, i) for i in range(20000))
-        (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + many + many[:60])
+        many = "".join("function\tmain\t\tfunc_%08X\tName%d\tprovisional\tstring:src/clean.c:1\tr\n" % (i, i) for i in range(20000))
+        (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + many + many[:70])
         import time
         t0 = time.time()
         found = names_findings(repo)
         check("names: two live rows of one name, and 20,000 rows in a second", time.time() - t0 < 2.0
-              and sum("has two rows" in f[1] for f in found) == 1, [f for f in found if f[0] == "FAIL"][:2])
+              and [f[1] for f in found if f[0] == "FAIL"] == ["config/names.tsv: Name0 has two rows that are not rejected"],
+              [f for f in found if f[0] == "FAIL"][:2])
+        # a row points at something: a file and a line of the tree, a name that the source defines as the row's kind
+        (repo / "include" / "types.h").write_text("#define HP_MAX 9\ntypedef struct Pair {\n    s32 first;\n} Pair;\nextern s32 g_Mode;\n")
+        _git(repo, "add", "include/types.h")
+        good = "".join("%s\tmain\t\t\t%s\taccepted\t%s\tr\n" % c for c in (
+            ("function", "Player_Hp", "string:src/clean.c:4"), ("type", "Pair", "xref:include/types.h:2"),
+            ("field", "first", "xref:include/types.h:3"), ("macro", "HP_MAX", "refs:refs/manual/items.txt:40"),
+            ("data", "g_Mode", "loadmap:extracted/map.txt:7"), ("file", "src/clean.c", "refs:config/refs.toml:11")))
+        (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + good)
+        rc, out = _capture(cmd_names, repo)
+        check("names: an accepted row of each kind, with evidence that the tree holds", rc == 0 and "6 accepted" in out, out)
+        for name, cells, want in (
+                ("evidence in a file that the tree lacks", ("function", "Player_Hp", "string:src/gone.c:4"), "src/gone.c is no file of this tree"),
+                ("evidence at a line that the file lacks", ("function", "Player_Hp", "string:src/clean.c:99"), "src/clean.c has no line 99"),
+                ("a refs row that cites no table", ("function", "Player_Hp", "refs:config/refs.toml:3"), "line 3 of config/refs.toml is in no `[[ref]]` table"),
+                ("a refs row that cites another file", ("function", "Player_Hp", "refs:src/clean.c:1"), "a `refs` row cites config/refs.toml"),
+                ("a file of a reference that has no row", ("function", "Player_Hp", "string:refs/wiki/a.txt:1"), "no `[[ref]]` table named 'wiki'"),
+                ("a row of the wrong kind", ("data", "Player_Hp", "string:src/clean.c:4"), "Player_Hp is a function in the source, not a data"),
+                ("a name that the source does not define", ("function", "Player_Mp", "string:src/clean.c:4"),
+                 "Player_Mp is accepted as a function, and the source defines no such function"),
+                ("a file that the tree lacks", ("file", "src/gone.c", "string:src/clean.c:4"), "src/gone.c is accepted as a file")):
+            (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + "%s\tmain\t\t\t%s\taccepted\t%s\tr\n" % cells)
+            rc, out = _capture(cmd_names, repo)
+            check("names: " + name, rc == 1 and want in out and "NAMES FAIL (1 finding(s))" in out, out)
+        _git(repo, "add", "config", "include")
+        _git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet",
+             "-m", "a row that points at nothing")
+        rc, out = _capture(cmd_names, repo, against="HEAD")
+        check("names --against: a row that the base holds is not opened again", rc == 0 and "only the rows that are new since HEAD" in out, out)
+        check("names --rev: the ledger of a revision", _capture(cmd_names, repo, source="HEAD")[0] == 1)
+        (repo / "extracted").mkdir()                   # an ignored folder that this machine has: its files are opened
+        (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + good)
+        rc, out = _capture(cmd_names, repo)
+        check("names: evidence in a folder that git does not hold is opened where the folder is", rc == 1
+              and "extracted/map.txt is no file of this tree" in out, out)
+        (repo / "extracted" / "map.txt").write_text("x\n" * 7)
+        check("names: and it passes when the file is there", _capture(cmd_names, repo)[0] == 0)
+        # an assembly row names one function of a C file, never the file
+        two = 'void A(void) {\n    __asm__("nop");\n}\nvoid B(void) {\n    __asm__("nop");\n}\n'
+        (repo / "src" / "two.c").write_text(two)
+        _git(repo, "add", "src/two.c")
+        asm_row = lambda sym, ev="docs/boot.md:3", who="developer": "\t".join(ASM_COLUMNS) + "\nmain\t%s\tsrc/two.c\thand-asm\t%s\t2026-01-02\t%s\n" % (sym, ev, who)  # noqa: E731
+        (repo / ASM_EVIDENCE).write_text(asm_row("A"))
+        check("an assembly row clears the function it names, and no other", _capture(cmd_names, repo)[0] == 0
+              and debt_bodies(repo)["src/two.c"] == {"A": {"unbased": 1}, "B": {"asm": 1, "unbased": 1}}, debt_bodies(repo)["src/two.c"])
+        for name, text, want in (("a row for a whole C file", asm_row(""), "src/two.c defines no function ''"),
+                                 ("a row for a function that the file lacks", asm_row("C"), "src/two.c defines no function 'C'"),
+                                 ("evidence that is no path and line", asm_row("A", "the vendor said so"), "'the vendor said so' is not `<path>:<line>`"),
+                                 ("evidence in a file that the tree lacks", asm_row("A", "docs/gone.md:1"), "docs/gone.md is no file of this tree"),
+                                 ("no verified_by", asm_row("A", who=""), "no verified_by: who read the evidence of A"),
+                                 ("a label that the assembly file lacks", asm_row("start").replace("src/two.c", "src/boot.s"), "src/boot.s holds no label start")):
+            (repo / ASM_EVIDENCE).write_text(text)
+            rc, out = _capture(cmd_names, repo)
+            check("names: an assembly row: " + name, rc == 1 and want in out, out)
+        (repo / ASM_EVIDENCE).write_text("\t".join(ASM_COLUMNS_OLD) + "\nmain\tA\tsrc/two.c\thand-asm\tdocs/boot.md:3\t2026-01-02\n")
+        rc, out = _capture(cmd_names, repo)
+        check("names: the header of psxdecomp 0.6.0 is read, and said", rc == 0 and "no `verified_by` column (/psxdecomp:upgrade adds it)" in out, out)
+        (repo / "src" / "two.c").unlink()
+        _git(repo, "rm", "-q", "--cached", "src/two.c")
+        (repo / ASM_EVIDENCE).write_text("\t".join(ASM_COLUMNS) + "\n")
+        row = "function\tmain\t\tfunc_80010000\tPlayer_Hp\taccepted\tstring:src/clean.c:4\tthe string it prints\n"
         (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + row.replace("accepted", "sure").replace("string:", "guess:"))
         rc, out = _capture(cmd_names, repo)
         check("names: a bad decision and a bad evidence class", rc == 1 and "decision 'sure'" in out and "evidence 'guess:" in out, out)
@@ -2495,7 +2707,7 @@ def self_test_debt(check) -> None:
         rc, out = _capture(cmd_names, repo)
         check("names: a rejected row bases no name", rc == 0 and "NAMES INFO 2 function(s)" in out, out)
         (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + row)
-        (repo / ASM_EVIDENCE).write_text("\t".join(ASM_COLUMNS) + "\nmain\tboot\tsrc/boot.s\tguess\tdocs/boot.md:3\tyesterday\n")
+        (repo / ASM_EVIDENCE).write_text("\t".join(ASM_COLUMNS) + "\nmain\tboot\tsrc/boot.s\tguess\tdocs/boot.md:3\tyesterday\tdeveloper\n")
         rc, out = _capture(cmd_names, repo)
         check("names: an assembly row with a class that is no class and a date that is no date",
               rc == 1 and "class 'guess'" in out and "date 'yesterday'" in out, out)
@@ -2958,7 +3170,7 @@ def main(argv=None) -> int:
         return cmd_debt(a.repo, update=a.update, down=a.down, source=INDEX if a.staged else a.rev,
                         against=a.against, recount=a.recount, raise_=a.raise_, reason=a.reason)
     if a.cmd == "names":
-        return cmd_names(a.repo, init=a.init)
+        return cmd_names(a.repo, init=a.init, source=INDEX if a.staged else a.rev, against=a.against)
     if a.cmd == "gate":
         modes = [m for m, on in (("staged", a.staged), ("bank", a.bank), ("ci", a.ci), ("push", a.push is not None)) if on]
         if len(modes) != 1:

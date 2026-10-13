@@ -330,6 +330,20 @@ def test_fresh_game_passes_its_gate(game):
         assert r.returncode == 1 and "GATE FAIL debt: rose in total: pin-unmarked is `down`: 0 -> 1" in r.stdout, r.stdout
     finally:
         src.unlink()
+    ledger = game / floor.NAMES                                  # a row that points at nothing fails `names` and the gate
+    head = ledger.read_text()
+    try:
+        ledger.write_text(head + "function\tmain\t\t\tPlayer_Hp\taccepted\tstring:src/gone.c:4\tits string\n")
+        r = run([PY, floor.VENDORED, "names"], cwd=game, check=False)
+        assert r.returncode == 1 and "NAMES FAIL %s: line 2: the evidence of Player_Hp points at nothing: src/gone.c is no " \
+            "file of this tree" % floor.NAMES in r.stdout, r.stdout
+        assert "Player_Hp is accepted as a function, and the source defines no such function" in r.stdout
+        run(["git", "-C", game, "add", floor.NAMES])
+        r = gate("--staged")
+        assert r.returncode == 1 and "GATE FAIL names: %s: line 2: the evidence of Player_Hp points at nothing" % floor.NAMES in r.stdout
+    finally:
+        ledger.write_text(head)
+        run(["git", "-C", game, "add", floor.NAMES])
     assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
 
 
