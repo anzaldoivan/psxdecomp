@@ -2727,16 +2727,19 @@ def _settings(tree: Tree) -> dict:
     return conf if isinstance(conf, dict) else {"_broken": True}
 
 
-def _hook_rows(conf: dict) -> list[tuple[str, str, frozenset]]:
-    """[(event, the hook entry as JSON, the tools of its matcher)] for each hook of a settings file that runs one of
-    psxdecomp's tools."""
+def _hook_rows(conf: dict) -> list[tuple[str, str, frozenset, str]]:
+    """[(event, the hook entry as JSON, the tools of its matcher, the matcher)] for each hook of a settings file that
+    runs one of psxdecomp's tools. The tools: the names that `|` joins. A matcher of any other form (a pattern, a
+    bracket) has no tools here: it holds only as the same text."""
     out = []
     hooks = conf.get("hooks") if isinstance(conf.get("hooks"), dict) else {}
     for event, groups in hooks.items():
         for g in groups if isinstance(groups, list) else ():
             for h in (g.get("hooks") or ()) if isinstance(g, dict) else ():
                 if isinstance(h, dict) and "psxd_" in str(h.get("command", "")):
-                    out.append((event, json.dumps(h, sort_keys=True), frozenset(str(g.get("matcher", "")).split("|"))))
+                    matcher = g.get("matcher", "") if isinstance(g.get("matcher", ""), str) else json.dumps(g.get("matcher"))
+                    names = frozenset(matcher.split("|")) if re.fullmatch(r"\w+(?:\|\w+)*", matcher) else frozenset()
+                    out.append((event, json.dumps(h, sort_keys=True), names, matcher))
     return out
 
 
@@ -2788,10 +2791,13 @@ def protected_findings(base: Tree, head: Tree, online: bool = False) -> tuple[li
         out.append("%s is not a JSON object" % SETTINGS)
     elif not old.get("_broken"):
         have = _hook_rows(new)
-        for event, entry, tools in _hook_rows(old):
-            if not any(e == event and h == entry and tools <= t for e, h, t in have):
+        for event, entry, tools, matcher in _hook_rows(old):
+            if not any(e == event and h == entry and (m == matcher or tools and tools <= t) for e, h, t, m in have):
                 out.append("%s lost a hook of %s (or a tool of its matcher): %s" % (SETTINGS, event, json.loads(entry).get("command")))
-        deny = lambda c: (c.get("permissions") or {}).get("deny") or [] if isinstance(c.get("permissions"), dict) else []  # noqa: E731
+        listed = lambda c: (c.get("permissions") if isinstance(c.get("permissions"), dict) else {}).get("deny")  # noqa: E731
+        deny = lambda c: listed(c) if isinstance(listed(c), list) else []  # noqa: E731
+        if deny(old) and not isinstance(listed(new), list):    # a string or a table that holds the rules' text holds no rule
+            out.append("%s: `permissions.deny` is no list any more, so no deny rule holds" % SETTINGS)
         gone = [r for r in deny(old) if r not in deny(new)]
         if gone:
             out.append("%s lost %d deny rule(s): %s" % (SETTINGS, len(gone), ", ".join(map(str, gone[:3]))))
@@ -2881,9 +2887,12 @@ def developer_acts(base: Tree, head: Tree) -> list[str]:
             had.remove(l)
         else:
             out.append("`%s` in %s" % (l, BASELINE))
-    old = set(lines(base.read(ASM_EVIDENCE)))
-    out += ["the row of %s in %s" % (" ".join(l.split("\t")[1:3]), ASM_EVIDENCE) for l in lines(head.read(ASM_EVIDENCE))[1:]
-            if l.strip() and not l.startswith("#") and l not in old]
+    had = lines(base.read(ASM_EVIDENCE))
+    for l in lines(head.read(ASM_EVIDENCE))[1:]:
+        if l in had:
+            had.remove(l)
+        elif l.strip() and not l.startswith("#"):
+            out.append("the row of %s in %s" % (" ".join(l.split("\t")[1:3]), ASM_EVIDENCE))
     return out
 
 
@@ -3014,7 +3023,8 @@ def cmd_gate(repo, mode: str, rng: str | None = None, part: str = "all", range_b
     try:
         if mode in ("staged", "bank"):
             head = Tree(repo, INDEX) if mode == "staged" else Tree(repo, None, untracked=True)
-            bases = [Tree(repo, r) for r in ("HEAD", "MERGE_HEAD") if _rev(repo, r)]
+            merging = pathlib.Path(repo, _git(repo, "rev-parse", "--git-path", "MERGE_HEAD").stdout.strip() or ".git/MERGE_HEAD")
+            bases = [Tree(repo, r) for r in ["HEAD"] + [l.strip() for l in lines(_read(merging)) if l.strip()] if _rev(repo, r)]
             replaced = False
             if part == "all" and bases:
                 fails, infos, replaced = transition(repo, bases, head)
@@ -4387,6 +4397,19 @@ def self_test_gate(check) -> None:
                     rc, out = -1, "%s: %s" % (type(e).__name__, str(e)[:80])
                 check("gate: %s: a FAIL, never a crash" % name, rc == 1 and "GATE FAIL " in out and out.endswith(" finding(s))\n"), out[-200:])
                 undo()
+            rules = GATE_SETTINGS["permissions"]["deny"]
+            for name, value in (("deny rules as one string", " ".join(rules)), ("deny rules as the keys of a table", dict.fromkeys(rules, False)),
+                                ("deny rules inside another list", [rules])):
+                put(SETTINGS, json.dumps(dict(hooks, permissions={"deny": value})))
+                rc, out = staged()
+                check("gate: %s are no deny rules" % name, rc == 1 and "GATE FAIL protected: " in out and "deny" in out, out[-300:])
+                undo()
+            for name, matcher in (("a matcher that is a character class of the old one", "[^|Bash|Edit|Write|]"),
+                                  ("a matcher with one more token that is no tool name", "NoSuchTool(|Bash|Edit|Write|)")):
+                put(SETTINGS, json.dumps(GATE_SETTINGS).replace('"Bash|Edit|Write"', json.dumps(matcher)))
+                rc, out = staged()
+                check("gate: %s loses the hook" % name, rc == 1 and "lost a hook of PreToolUse" in out, out[-300:])
+                undo()
             put("config/names.basis.tsv", "name\tbasis\nWalk\tthe string it prints\nRun\tits caller\n")
             put(WORKFLOWS + "extra.yml", "name: extra\n")
             put(GUARD, "deny\tpath\tasm/\tasm/ is generated\ndeny\tpath\tbuild/\tthe build writes it\n")
@@ -4590,6 +4613,22 @@ def self_test_judge(check) -> None:
             rc, out = gate("staged")
             check("gate --staged: a merge in progress, the same", rc == 1 and "rose in an existing body: offset src/a.c Run: 1 -> 2" in out, out)
             (repo / ".git" / "MERGE_HEAD").unlink()
+            _git(repo, "reset", "-q", "--hard", right)
+            (repo / ".git" / "MERGE_HEAD").write_text(base + "\n" + left + "\n")   # three parents: the last one holds Run already
+            put("src/a.c", body("Run", 2))
+            rows_of_now()
+            _git(repo, "add", "-A")
+            rc, out = gate("staged")
+            check("gate --staged: each parent of a merge of three", rc == 1 and "rose in an existing body: offset src/a.c Run: 1 -> 2" in out, out)
+            (repo / ".git" / "MERGE_HEAD").unlink()
+            _git(repo, "reset", "-q", "--hard", left)
+            row = "main\tRun\tsrc/a.c\thand-asm\tsrc/a.c:1\t2026-01-02\tdeveloper\n"
+            put(ASM_EVIDENCE, "\t".join(ASM_COLUMNS) + "\n" + row)
+            _commit(repo, "the developer's assembly row")
+            put(ASM_EVIDENCE, "\t".join(ASM_COLUMNS) + "\n" + row + row)
+            _git(repo, "add", "-A")
+            acts = developer_acts(Tree(repo, "HEAD"), Tree(repo, INDEX))
+            check("a second copy of a ledger row is a new act", len(acts) == 1 and "the row of Run src/a.c" in acts[0], acts)
             _git(repo, "reset", "-q", "--hard", left)
             # the developer's acts are read by the reader of the baseline, line for line and one for one
             line = "raise offset 1 2026-01-02 the first one\n"
