@@ -12,7 +12,10 @@ execution:
   append_system_prompt: |
       This session was opened with `claude --agent plain` in a repository that Project Architect installed
       (.claude/pa.json exists). It is a plain session: do the intake here. The developer confirmed every answer at
-      the gate; ask nothing that `.run/bootstrap/answers.txt` already answers.
+      the gate; ask nothing that `.run/bootstrap/answers.txt` already answers. No developer is at the keyboard in
+      this run. For an intake item that the answers do not cover, and at each confirmation gate of the intake, take
+      your own recommended answer, say in one line that you did, and go on until PROJECT_CONTEXT.md is written. If
+      `git` fails by its bare name in this sandbox, use the full path of another git on this machine.
 runs: 1
 graders:
   - name: constitution-written
