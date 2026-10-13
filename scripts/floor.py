@@ -147,7 +147,7 @@ LINKS = ("120000", "160000")                         # a symbolic link and a sub
 class Tree:
     """The files of a repository from one source: the work tree (`source` None), the index (INDEX) or a revision.
     `paths`: the tracked files, sorted (a work tree with `untracked`: the files git neither tracks nor ignores as
-    well). `read`: a file's text with CRLF as LF, or None for a path the source lacks, a symbolic link or a submodule.
+    well). `read`: a file's text with CRLF and a lone CR as LF, or None for a path the source lacks, a symbolic link or a submodule.
     The index and a revision are read through one `git cat-file --batch`, so a check of a commit needs no checkout.
     Outside a git repository the work tree is every file under the folder."""
 
@@ -157,6 +157,7 @@ class Tree:
         self._text: dict[str, str | None] = {}
         self._cat = None
         self.memo: dict = {}                           # what a check derived from this tree, by its own key
+        self._set: set | None = None
         if source is None:
             r = _git(repo, "ls-files", "-z", *(("--cached", "--others", "--exclude-standard") if untracked else ()))
             if r.returncode == 0:
@@ -178,7 +179,10 @@ class Tree:
         self.paths = sorted(self._blob)
 
     def has(self, path: str) -> bool:
-        return path in self._blob if self.source is not None else (self.repo / path).is_file()
+        """The source holds the file: a tracked one, or (a work tree with `untracked`) one that git does not ignore."""
+        if self._set is None:
+            self._set = set(self.paths)
+        return path in self._set
 
     def read(self, path: str) -> str | None:
         if path not in self._text:
@@ -190,7 +194,7 @@ class Tree:
                     data = None
             else:
                 data = self._object(self._blob[path]) if path in self._blob else None
-            self._text[path] = None if data is None else data.decode("utf-8", "replace").replace("\r\n", "\n")
+            self._text[path] = None if data is None else data.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
         return self._text[path]
 
     def raw(self, path: str) -> bytes | None:
@@ -711,6 +715,7 @@ def _uses(names, text: str) -> int:
 
 BRACE = re.compile(r"[{}]")
 STUB_USE = re.compile(r"^[ \t]*INCLUDE_ASM\s*\(", re.M)
+STUB_NAME = re.compile(r"^[ \t]*INCLUDE_ASM\s*\([^;]*?\b([A-Za-z_]\w*)\s*\)", re.M)
 SCOPE = ""                                             # the name of a file's bucket for what no function body holds
 
 
@@ -795,7 +800,13 @@ def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -
                 if m.re is DEF_FUNC and not PLACEHOLDER.match(m.group(1)):
                     funcs.setdefault(m.group(1), m.start())
         hits += [("placeholder", at) for n, at in named.items() if PLACEHOLDER.match(n)]
-    _SCANS[key] = {"hits": hits, "extents": extents(code), "funcs": funcs, "stubs": len(STUB_USE.findall(code)),
+    ext = extents(code)
+    inner: dict[str, str] = {}                         # a body from its first brace on: a rename leaves it as it was
+    for name, a, b in ext:
+        at = code.find("{", a, b)
+        inner[name] = hashlib.sha1((inner.get(name, "") + " ".join(code[at if at >= 0 else a:b].split())).encode()).hexdigest()[:16]
+    _SCANS[key] = {"hits": hits, "extents": ext, "funcs": funcs, "stubs": len(STUB_USE.findall(code)),
+                   "stub_names": STUB_NAME.findall(code), "inner": inner,
                    "crutches": found}
     return _SCANS[key]
 
@@ -919,6 +930,21 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None) -> dict[str, dict[str, 
     return out
 
 
+def tree_stubs(repo, skip=(), tree: Tree | None = None) -> tuple[dict[str, list[str]], dict[tuple[str, str], str]]:
+    """({path: the names of its INCLUDE_ASM lines}, {(path, function): the hash of its body from the first brace on})
+    over the C files that `debt_bodies` reads: what tells a new body from a renamed one."""
+    tree = tree or Tree(repo)
+    if ("stubs", tuple(skip)) not in tree.memo:
+        stubs, inner = {}, {}
+        for p in debt_bodies(repo, skip, tree):
+            if not p.endswith((".s", ".S")):
+                scan = scan_file(p, tree.read(p) or "", address_header=address_header(tree))
+                stubs[p] = list(scan["stub_names"])
+                inner.update({(p, n): h for n, h in scan["inner"].items()})
+        tree.memo[("stubs", tuple(skip))] = (stubs, inner)
+    return tree.memo[("stubs", tuple(skip))]
+
+
 def tree_shape(repo, skip=(), tree: Tree | None = None) -> tuple[int, int]:
     """(the function bodies, the INCLUDE_ASM lines) of the C files that `debt_bodies` reads: what a budget counts."""
     tree = tree or Tree(repo)
@@ -942,7 +968,7 @@ def debt_counts(repo, skip=(), tree: Tree | None = None, bodies=None) -> dict[tu
 
 # ---- the baseline: one row per count, and the policy that judges a change -------------------------------------------
 # A policy line gives each kind its mode. `down`: the kind never rises. `admit-new`: debt may arrive with a new
-# function body, and a body that exists never gets worse. `budget <n>`: as admit-new, and the kind's total may grow by
+# function body, and a body that exists never gets worse. A body is new when it takes an INCLUDE_ASM line away. `budget <n>`: as admit-new, and the kind's total may grow by
 # n for each 100 new bodies since the anchor (`base <count> <bodies> <stubs>`), plus BUDGET_SLACK. A new body is one
 # that takes an INCLUDE_ASM line away: an empty function beside its stub buys nothing. A `raise` line is the
 # developer's act: it lets one change go over by its number. The change itself cannot weaken any of this: `admission`
@@ -992,7 +1018,7 @@ def parse_baseline(text: str | None) -> Baseline:
     if text is None:
         return bl
     bl.version = 2
-    for n, raw in enumerate(text.splitlines(), 1):
+    for n, raw in enumerate(text.lstrip("\ufeff").splitlines(), 1):
         l = raw.strip()
         if not l:
             continue
@@ -1156,19 +1182,25 @@ def policy_findings(old: Baseline, new: Baseline) -> list[str]:
     return out
 
 
-def _rises(old: dict, new: dict) -> tuple[dict[str, int], list[tuple[str, str]], dict[str, int]]:
+def _rises(old: dict, new: dict, was=None, now=None) -> tuple[dict[str, int], list[tuple[str, str]], dict[str, int]]:
     """(the rise of each kind in what is not new, its lines [(kind, text)], {path: its new bodies}) between two
-    results of debt_bodies. A body is new when its file holds more bodies than before. A name that left another file
-    in the same change is that body, moved. The other added names of a file stand for the names it lost (a rename is
-    not a new body): of those, the ones with the most debt count as the new ones."""
+    results of debt_bodies. `was`, `now`: tree_stubs of the two trees. A body that the change adds is, in this order:
+    the body of the same name that left another file (moved); the body with the same text from its first brace on
+    that left under another name (renamed); a new body, when an INCLUDE_ASM line of its name left; a new body, when
+    an INCLUDE_ASM line left its file under another name (a function that is named as it is banked); else it stands
+    in the place of a body that left, and it may hold no more than those did. So an empty function buys nothing: a
+    body is new only when it takes a stub away. Where a file loses a stub under another name and loses a body in the
+    same change, the added bodies with the most debt count as the new ones."""
     rise: dict[str, int] = {}
     lines: list[tuple[str, str]] = []
+    stubs0, inner0 = was or ({}, {})
+    stubs1, inner1 = now or ({}, {})
 
-    def compare(was: dict, now: dict, where: str, why: str) -> None:
+    def compare(before: dict, after: dict, where: str, why: str) -> None:
         for kind in KINDS:
-            if now.get(kind, 0) > was.get(kind, 0):
-                rise[kind] = rise.get(kind, 0) + now[kind] - was.get(kind, 0)
-                lines.append((kind, "%s: %s %s: %d -> %d" % (why, kind, where, was.get(kind, 0), now[kind])))
+            if after.get(kind, 0) > before.get(kind, 0):
+                rise[kind] = rise.get(kind, 0) + after[kind] - before.get(kind, 0)
+                lines.append((kind, "%s: %s %s: %d -> %d" % (why, kind, where, before.get(kind, 0), after[kind])))
 
     def total(sets) -> dict:
         got: dict[str, int] = {}
@@ -1186,22 +1218,56 @@ def _rises(old: dict, new: dict) -> tuple[dict[str, int], list[tuple[str, str]],
     left_by: dict[str, list[str]] = {}
     for p, n in sorted(gone):
         left_by.setdefault(n, []).append(p)
-    fresh: dict[str, list[str]] = {}
-    for p, n in came:
+    rest = []
+    for p, n in came:                                  # the same name, in another file
         if left_by.get(n):
             q = left_by[n].pop(0)
             compare(gone.pop((q, n)), new[p][n], "%s %s (from %s)" % (p, n, q), "rose in a moved body")
         else:
-            fresh.setdefault(p, []).append(n)
+            rest.append((p, n))
+    by_text: dict[str, list] = {}
+    for key in sorted(gone):
+        if inner0.get(key):
+            by_text.setdefault(inner0[key], []).append(key)
+    came, rest = rest, []
+    for p, n in came:                                  # the same text, under another name
+        same = by_text.get(inner1.get((p, n)) or "", [])
+        same = [k for k in same if k in gone]
+        if same:
+            compare(gone.pop(same[0]), new[p][n], "%s %s (it was %s %s)" % (p, n, same[0][0], same[0][1]), "rose in a renamed body")
+        else:
+            rest.append((p, n))
+    lost_stubs: dict[str, list[str]] = {}              # {path: the stub names that left it}
+    for p in set(stubs0) | set(stubs1):
+        left = list(stubs0.get(p, ()))
+        for n in stubs1.get(p, ()):
+            if n in left:
+                left.remove(n)
+        lost_stubs[p] = left
+    anywhere = [n for names in lost_stubs.values() for n in names]
     new_in: dict[str, int] = {}
-    for p, names in sorted(fresh.items()):
-        lost = [c for (q, _), c in gone.items() if q == p]
-        new_in[p] = max(0, len(names) - len(lost))
-        names.sort(key=lambda n: (-sum(new[p][n].values()), n))
-        rest = names[new_in[p]:]
-        if rest:
-            compare(total(lost), total(new[p][n] for n in rest), "%s %s (in the place of a body that left)" % (
-                p, ", ".join(rest)), "rose in a renamed body")
+    came, rest = rest, []
+    for p, n in came:                                  # a new body: the stub of its name left
+        if n in anywhere:
+            anywhere.remove(n)
+            if n in lost_stubs.get(p, ()):
+                lost_stubs[p].remove(n)
+            else:
+                next(names for names in lost_stubs.values() if n in names).remove(n)
+            new_in[p] = new_in.get(p, 0) + 1
+        else:
+            rest.append((p, n))
+    for p in sorted({q for q, _ in rest}):             # a new body under a new name: a stub left its file
+        names = sorted((n for q, n in rest if q == p), key=lambda n: (-sum(new[p][n].values()), n))
+        lost = [c for (q, _), c in sorted(gone.items()) if q == p]
+        slots = max(0, min(len(lost_stubs.get(p, ())), len(names) - len(lost)))
+        new_in[p] = new_in.get(p, 0) + slots
+        if names[slots:]:
+            for (q, n) in [k for k in gone if k[0] == p]:
+                gone.pop((q, n))
+            compare(total(lost), total(new[p][n] for n in names[slots:]), "%s %s (in the place of %s)" % (
+                p, ", ".join(names[slots:]), "a body that left" if lost else "no body that left: no INCLUDE_ASM line left the "
+                "file for it"), "rose in a body that is not new")
     any_new = any(new_in.values())
     for p, by in sorted(new.items()):
         holds_bodies = any(n != SCOPE for n in by) or any(n != SCOPE for n in old.get(p, {}))
@@ -1225,7 +1291,7 @@ def admission(repo, base: Tree | None, head: Tree) -> tuple[list[tuple[str, str]
     fails = [("policy", f) for f in policy_findings(old, new)]
     skip = tuple(e for e in new.skip if e in old.skip) if old.version else tuple(new.skip)
     was, now = debt_bodies(repo, skip, base), debt_bodies(repo, skip, head)
-    rise, lines, new_in = _rises(was, now)
+    rise, lines, new_in = _rises(was, now, tree_stubs(repo, skip, base), tree_stubs(repo, skip, head))
     tot0, tot1 = _kind_totals(debt_counts(repo, bodies=was)), _kind_totals(debt_counts(repo, bodies=now))
     seen = list(old.raises)
     slack: dict[str, int] = {}
@@ -1430,7 +1496,6 @@ DECL_DATA = re.compile(r"^(?:(?:extern|static|const|volatile)\s+)*(?:[A-Za-z_]\w
 DECL_TYPE = re.compile(r"\b(?:struct|union|enum)\s+([A-Za-z_]\w*)\s*\{|\}\s*([A-Za-z_]\w*)\s*;"
                        r"|^typedef\b[^;{}]*?\b([A-Za-z_]\w*)\s*(?:\[[^\]\n]*\]\s*)*;", re.M)
 DECL_FIELD = re.compile(r"^[ \t]+(?:[A-Za-z_]\w*[\s*]+)+?([A-Za-z_]\w*)\s*(?:\[[^\]\n]*\]\s*)*(?::\s*\d+\s*)?;", re.M)
-STUB_NAME = re.compile(r"^[ \t]*INCLUDE_ASM\s*\([^;]*?\b([A-Za-z_]\w*)\s*\)", re.M)
 LABEL = re.compile(r"^\s*(?:glabel|jlabel|dlabel|\.globl|\.global)\s+([A-Za-z_.$][\w.$]*)|^([A-Za-z_.$][\w.$]*):", re.M)
 _SYMBOLS: dict[bytes, dict[str, set]] = {}
 
@@ -1609,7 +1674,7 @@ def cmd_names(repo, init=False, source: str | None = None, against: str | None =
         return 1
     for level, detail in found:
         print("NAMES %-4s %s" % (level, detail))
-    if not any(f[0] == "FAIL" for f in found) and tree.has(NAMES):
+    if not any(f[0] == "FAIL" for f in found) and tree.read(NAMES) is not None:
         try:
             skip = parse_baseline(tree.read(BASELINE)).skip
         except Fail as e:
@@ -2092,7 +2157,7 @@ def cmd_trial(repo, file: str | None, func: str | None = None, recheck: bool = F
                  for c in crutches(rel, text) if c["func"] == name]
     if text != tree.read(rel):
         (repo / rel).write_text(text, encoding="utf-8")
-    if rows != trial_rows(tree)[0] or not tree.has(TRIALS) and bad < len(funcs):
+    if rows != trial_rows(tree)[0] or tree.read(TRIALS) is None and bad < len(funcs):
         _write_trials(repo, rows)
     print("TRIAL %s (%d function(s), %d tried, %d removed, %d kept; %d probe(s))" % (
         "FAIL" if bad else "OK", len(funcs), total["tried"], total["removed"], total["kept"], total["probes"]))
@@ -2231,9 +2296,22 @@ def protected_findings(base: Tree, head: Tree, online: bool = False) -> tuple[li
     out += ["%s lost the row `deny %s %s`" % (GUARD, r[1], r[2]) for r in gone]
     out += ["%s has a new `allow` row (%s %s): the first row that matches decides, so it can open a denied path" % (
         GUARD, r[1], r[2]) for r in rules1 if r[0] == "allow" and r[:3] not in [x[:3] for x in rules0]]
+    env = lambda c: {k: v for k, v in (c.get("env") or {}).items() if k.startswith("CLAUDE")} if isinstance(c.get("env"), dict) else {}  # noqa: E731
+    if not new.get("_broken") and env(new) != env(old):
+        out.append("%s sets %s in `env`: a hook finds the repository by that variable" % (SETTINGS, ", ".join(sorted(env(new)) or sorted(env(old)))))
+    local = SETTINGS.replace(".json", ".local.json")
+    if head.has(local) and head.raw(local) != base.raw(local):
+        out.append("%s is tracked and changed: the settings of one machine are not the repository's" % local)
+    skip = parse_baseline(base.read(BASELINE)).skip if _baseline_ok(base) else []
+    for rel in sorted(set(base.paths) | set(head.paths)) if skip else ():
+        if any(entry_match(e, rel) for e in skip) and base.raw(rel) != head.raw(rel):
+            out.append("%s changed, and a `skip` line covers it: a file that the checker does not read keeps its bytes" % rel)
     named: list[str] = []
     for table in RECORD_TABLES:
         vals0, vals1 = record_table(base, table), record_table(head, table)
+        if base.has(RECORD) and not replaced:
+            out += ["%s [%s] %s is new (%r): a key of this table changes what a check reads" % (RECORD, table, key, vals1[key])
+                    for key in sorted(vals1) if key not in vals0]
         for key, val in sorted(vals0.items()):
             if vals1.get(key) != val:
                 out.append("%s [%s] %s changed (it was %r)" % (RECORD, table, key, val))
@@ -2250,6 +2328,26 @@ def protected_findings(base: Tree, head: Tree, online: bool = False) -> tuple[li
         elif was != now:
             out.append("%s changed (the record names it: a check of the game's own keeps its bytes)" % rel)
     return out, infos, replaced
+
+
+def _baseline_ok(tree: Tree) -> bool:
+    try:
+        parse_baseline(tree.read(BASELINE))
+        return True
+    except Fail:
+        return False
+
+
+def developer_acts(base: Tree, head: Tree) -> list[str]:
+    """What only the developer adds, and a change added: a `raise` line of the baseline (also `raise protected`), a
+    row of the assembly ledger. Each one lets a count rise or clears one, on a person's word."""
+    lines = lambda t, rel: (t.read(rel) or "").lstrip("\ufeff").split("\n")  # noqa: E731
+    out = ["`%s` in %s" % (l.strip(), BASELINE) for l in lines(head, BASELINE)
+           if l.strip().startswith("raise ") and l not in lines(base, BASELINE)]
+    old = set(lines(base, ASM_EVIDENCE))
+    out += ["the row of %s in %s" % (" ".join(l.split("\t")[1:3]), ASM_EVIDENCE) for l in lines(head, ASM_EVIDENCE)[1:]
+            if l.strip() and not l.startswith("#") and l not in old]
+    return out
 
 
 def _sibling_run(repo, *args) -> tuple[int, list[str]]:
@@ -2355,8 +2453,10 @@ def cmd_gate(repo, mode: str, rng: str | None = None, part: str = "all", range_b
         os.environ["GIT_INDEX_FILE"] = os.path.abspath(index)
     for k in GIT_LOCATION_ENV:                         # git exports these to a hook, and they win over `-C`
         os.environ.pop(k, None)
+    os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"       # a replaced object is not the history that was pushed
     fails: list[tuple[str, str]] = []
     infos: list[str] = []
+    warns: list[str] = []
     passed, what = None, mode
     try:
         if mode in ("staged", "bank"):
@@ -2365,6 +2465,11 @@ def cmd_gate(repo, mode: str, rng: str | None = None, part: str = "all", range_b
             replaced = False
             if part == "all" and bases:
                 fails, infos, replaced = transition(repo, bases, head)
+                acts = developer_acts(bases[0], head)
+                if acts and os.environ.get("CLAUDECODE"):
+                    fails += [("raise", "%s is new, and this is an agent session (CLAUDECODE is set): the developer adds it and "
+                               "commits it from a terminal" % a) for a in acts]
+                infos += ["the developer's act, new in this change: %s" % a for a in acts]
             elif part == "all":
                 infos.append("no commit yet: nothing to judge the change against")
             if mode == "bank" and not fails:
@@ -2380,11 +2485,16 @@ def cmd_gate(repo, mode: str, rng: str | None = None, part: str = "all", range_b
                 if mode == "bank" and not fails:
                     fails += game_check(repo, head)
         else:
-            base, _, tip = (rng or "").partition("..")
+            named, _, tip = (rng or "").partition("..")
             tip = _rev(repo, tip or "HEAD")
             if tip is None:
                 raise Fail("%s names no commit: `gate --%s <base>..<head>`" % (rng, mode))
-            base = _rev(repo, base) if base and set(base) != {"0"} else None
+            base = _rev(repo, named) if named and set(named) != {"0"} else None
+            if named and set(named) != {"0"} and base is None:
+                raise Fail("the base %s names no commit of this repository: nothing would judge the change" % named)
+            if _git(repo, "rev-parse", "--is-shallow-repository").stdout.strip() == "true":
+                raise Fail("a shallow repository: the parents of its oldest commits are missing, so those commits would "
+                           "be judged against nothing (fetch the full history)")
             if base is None and mode == "push" and not rng:
                 base = _rev(repo, "@{upstream}")
             commits = _git(repo, "rev-list", "--reverse", tip, *(["^" + base] if base else ["--max-count=0"])).stdout.split()
@@ -2392,14 +2502,18 @@ def cmd_gate(repo, mode: str, rng: str | None = None, part: str = "all", range_b
             head = Tree(repo, tip)
             for n, c in enumerate(commits if part == "all" else ()):
                 parents = _git(repo, "rev-list", "--parents", "-n", "1", c).stdout.split()[1:]
-                if not parents:
+                if not parents and not (range_base or base):
                     continue
+                if not parents:                        # a commit with no parent, beside a history: the base judges it
+                    parents = [range_base or base]
+                    infos.append("%s has no parent: it is judged against the base %s" % (c[:10], parents[0][:10]))
                 changed = set()
                 for p in parents:
                     changed |= {x for x in _git(repo, "diff-tree", "-r", "--name-only", "--no-commit-id", "-z", p, c).stdout.split("\0") if x}
                 found, more, replaced = transition(repo, [Tree(repo, p) for p in parents], Tree(repo, c), mode == "push" or mode == "ci", changed)
                 fails += [(ck, "%s: %s" % (c[:10], d)) for ck, d in found]
                 infos += ["%s: %s" % (c[:10], i) for i in more]
+                warns += ["%s: the developer's act, new in this commit: %s" % (c[:10], a) for a in developer_acts(Tree(repo, parents[0]), Tree(repo, c))]
                 if replaced and not found:
                     passed = _handover(repo, Tree(repo, c), ["--" + mode, "%s..%s" % (c, tip)] + (
                         ["--range-base", range_base or base] if (range_base or base) else []))
@@ -2408,7 +2522,8 @@ def cmd_gate(repo, mode: str, rng: str | None = None, part: str = "all", range_b
                         break
             if passed is None:
                 first = range_base or base
-                if part == "all" and first and (len(commits) > 1 or range_base):
+                direct = len(commits) == 1 and _git(repo, "rev-list", "--parents", "-n", "1", tip).stdout.split()[1:] == [first]
+                if part == "all" and first and commits and not direct:
                     found, more, _ = transition(repo, [Tree(repo, first)], head, True)
                     fails += [(ck, "%s..%s: %s" % (first[:10], tip[:10], d)) for ck, d in found if (ck, d) not in
                               [(k, x.split(": ", 1)[-1]) for k, x in fails]]
@@ -2422,6 +2537,8 @@ def cmd_gate(repo, mode: str, rng: str | None = None, part: str = "all", range_b
         fails.append(("gate", str(e)))
     for check, detail in fails:
         print("GATE FAIL %s: %s" % (check, detail))
+    for text in warns:
+        print("GATE WARN %s" % text)
     for text in infos:
         print("GATE INFO %s" % text)
     rc = 1 if fails else 0
@@ -2705,6 +2822,9 @@ def self_test_debt(check) -> None:
         (repo / "config").mkdir()
         (repo / "src" / "clean.c").write_text(C_CLEAN)
         (repo / "src" / "walk.c").write_text(C_DEBT["goto"][0])
+        stub = lambda *names: (repo / "src" / "stubs.c").write_text("".join(  # noqa: E731
+            'INCLUDE_ASM("asm/nonmatchings/a", %s);\n' % n for n in names) or "// every function is in C\n")
+        stub("Run", "Jump")                            # a new body is one that takes its stub away
         (repo / "src" / "boot.s").write_text("nop\n")
         (repo / "include" / "include_asm.h").write_text("#define INCLUDE_ASM(d, n) __asm__(\".include \\\"n\\\"\");\n")
         _git(repo, "add", "src", "include")
@@ -2719,12 +2839,12 @@ def self_test_debt(check) -> None:
         text = first_baseline(repo)
         check("the first baseline: a policy line per kind, the stub header skipped, the rows", text.startswith(
             "# config/debt-baseline.txt: ") and text.endswith(
-            "budget pin 30 base 0 2 0\nmode pin-unmarked down\nbudget goto 12 base 1 2 0\nmode offset admit-new\n"
+            "budget pin 30 base 0 2 2\nmode pin-unmarked down\nbudget goto 12 base 1 2 2\nmode offset admit-new\n"
             "mode address admit-new\nmode macro admit-new\nmode asm down\nmode placeholder admit-new\nmode unbased down\n"
             "mode struct admit-new\nskip include/include_asm.h\n1 asm src/boot.s\n1 goto src/walk.c\n"), text)
         rc, out = run(recount=True)
         check("--recount writes it", rc == 0 and base_file.read_text() == text and "DEBT RECOUNT written" in out
-              and "DEBT INFO policy written: pin: budget 30 0 2 0\n" in out, out)
+              and "DEBT INFO policy written: pin: budget 30 0 2 2\n" in out, out)
         rc, out = run()
         check("an equal baseline passes", rc == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); down: pin-unmarked, asm, "
               "unbased; budget: pin 30, goto 12; admit-new: offset, address, macro, placeholder, struct)" in out, out)
@@ -2756,26 +2876,47 @@ def self_test_debt(check) -> None:
         more = C_DEBT["goto"][0] + C_DEBT["goto"][0].replace("Walk", "Run")
         walk.write_text(more)
         rc, out = run(update=True)
+        check("--update refuses the debt of a body that takes no stub away", rc == 1 and "DEBT FAIL debt: rose in a body that is not "
+              "new: goto src/walk.c Run (in the place of no body that left: no INCLUDE_ASM line left the file for it): 0 -> 1" in out, out)
+        stub("Jump")
+        rc, out = run(update=True)
         check("--update takes the debt of a new body", rc == 0 and "DEBT INFO admitted with a new body: goto src/walk.c: 1 -> 2\n" in out
               and "2 goto src/walk.c\n" in base_file.read_text() and run()[0] == 0 and not judge("HEAD"), out)
         base_file.write_text(text)
+        stub("Run", "Jump")
+        walk.write_text("void Pad(void) {\n}\n" + C_DEBT["goto"][0].replace("Walk", "Stroll").replace("goto loop;", "goto loop;\n    goto loop;"))
+        check("an empty body beside a renamed one buys nothing", [f[1] for f in judge("HEAD")] == [
+            "rose in a body that is not new: goto src/walk.c Stroll, Pad (in the place of a body that left): 1 -> 2"], judge("HEAD"))
         walk.write_text(C_DEBT["goto"][0] + C_DEBT["struct"][0].split("s32 Walk")[0])
         check("a rise outside a function with no new body", [f[1] for f in judge("HEAD")] == [
             "rose outside a function with no new body: struct src/walk.c (file scope): 0 -> 1"], judge("HEAD"))
         walk.write_text(more + C_DEBT["struct"][0].split("s32 Walk")[0])
+        stub("Jump")
         check("a rise outside a function beside a new body", not judge("HEAD"), judge("HEAD"))
+        stub("Run", "Jump")
         walk.write_text(C_DEBT["goto"][0])
         (repo / "include" / "m.h").write_text("#define SWAP(a, b) { s32 t = a; a = b; b = t; }\n")
         _git(repo, "add", "include/m.h")
         check("a header's debt needs a new body somewhere", "macro include/m.h (file scope): 0 -> 1" in str(judge("HEAD")), judge("HEAD"))
         walk.write_text(C_DEBT["goto"][0] + "void Run(void) {\n}\n")
+        check("a header's debt beside a body that takes no stub away", len(judge("HEAD")) == 1, judge("HEAD"))
+        stub("Jump")
         check("a header's debt beside a new body", not judge("HEAD"), judge("HEAD"))
+        stub("Run", "Jump")
         _git(repo, "rm", "-q", "-f", "--cached", "include/m.h")
         (repo / "include" / "m.h").unlink()
         # a renamed and a moved body are the body they were
         walk.write_text(C_DEBT["goto"][0].replace("Walk", "Stroll").replace("goto loop;", "goto loop;\n    goto loop;"))
         check("a renamed body is no new body", [f[1] for f in judge("HEAD")] == [
-            "rose in a renamed body: goto src/walk.c Stroll (in the place of a body that left): 1 -> 2"], judge("HEAD"))
+            "rose in a body that is not new: goto src/walk.c Stroll (in the place of a body that left): 1 -> 2"], judge("HEAD"))
+        (repo / "src" / "far.c").write_text(C_DEBT["goto"][0].replace("Walk", "Stroll").replace("goto loop;", "goto loop;\n    goto loop;"))
+        walk.write_text("s32 g_Walk;\n")
+        _git(repo, "add", "src/far.c")
+        check("a body renamed and moved at once is no new body", [f[1] for f in judge("HEAD")] == [
+            "rose in a body that is not new: goto src/far.c Stroll (in the place of no body that left: no INCLUDE_ASM line left the "
+            "file for it): 0 -> 2"], judge("HEAD"))
+        (repo / "src" / "far.c").write_text(C_DEBT["goto"][0].replace("s32 n", "s32 n, s32 pad").replace("Walk", "Stroll"))
+        check("a body renamed with its text as it was is the body it was", not judge("HEAD"), judge("HEAD"))
         walk.write_text("s32 g_Walk;\n")
         (repo / "src" / "far.c").write_text(C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;"))
         _git(repo, "add", "src/far.c")
@@ -2787,6 +2928,7 @@ def self_test_debt(check) -> None:
         (repo / "src" / "far.c").unlink()
         # a `down` kind never rises, also with a new body; a `raise` line is the developer's
         walk.write_text(C_DEBT["goto"][0] + C_DEBT["pin-unmarked"][0].replace("Walk", "Run"))
+        stub("Jump")
         check("a `down` kind in a new body", [f[1] for f in judge("HEAD")] == [
             "rose in total: pin-unmarked is `down`: 0 -> 1"], judge("HEAD"))
         os.environ["CLAUDECODE"] = "1"
@@ -2804,7 +2946,9 @@ def self_test_debt(check) -> None:
         _git(repo, "add", "-u")
         _commit(repo, "a raise")
         walk.write_text(walk.read_text() + C_DEBT["pin-unmarked"][0].replace("Walk", "Jump"))
+        stub()
         check("a `raise` line admits one change, not the next", len(judge("HEAD")) == 1, judge("HEAD"))
+        stub("Jump")
         walk.write_text(C_DEBT["goto"][0] + C_DEBT["pin-unmarked"][0].replace("Walk", "Run"))
         # the policy that judges a change is the one it starts from
         mine = base_file.read_text()
@@ -2815,8 +2959,8 @@ def self_test_debt(check) -> None:
                 ("a budget in the place of `down`", mine.replace("mode asm down", "budget asm 5 base 1 3 0"),
                  "asm went from down to budget: a mode only gets stronger"),
                 ("a higher budget", mine.replace("budget goto 12 ", "budget goto 50 "), "the budget of goto went from 12 to 50"),
-                ("a moved anchor", mine.replace("budget goto 12 base 1 2 0", "budget goto 12 base 9 2 9"),
-                 "the anchor of the goto budget changed (base 9 2 9, was 1 2 0)"),
+                ("a moved anchor", mine.replace("budget goto 12 base 1 2 2", "budget goto 12 base 9 2 9"),
+                 "the anchor of the goto budget changed (base 9 2 9, was 1 2 2)"),
                 ("a new skip line", mine.replace("skip include/", "skip src/\nskip include/"), "a new `skip` line (src/)")):
             base_file.write_text(text2)
             got = judge("HEAD")
@@ -2851,7 +2995,7 @@ def self_test_debt(check) -> None:
         rc, out = run(recount=True)
         new = base_file.read_text()
         check("--recount makes it version 2 and keeps the game's own lines", rc == 0 and "# a note of the game\n" in new
-              and "budget goto 12 base 1 2 10\n" in new and "skip include/include_asm.h\n" in new and "mode admit\n" not in new
+              and "budget goto 12 base 1 2 11\n" in new and "skip include/include_asm.h\n" in new and "mode admit\n" not in new
               and new.count("# ") == len(BASELINE_HEAD) + 1 and run()[0] == 0, out + new)
         _git(repo, "add", "-A")
         _commit(repo, "version 2")
@@ -2863,8 +3007,8 @@ def self_test_debt(check) -> None:
         check("the budget: ten new bodies and four gotos", not judge("HEAD"), judge("HEAD"))
         (repo / "src" / "many.c").write_text(stubs + "".join(body(i + 16, int(i < 4)) for i in range(10)))
         got = judge("HEAD")
-        check("the budget: a body beside its stub buys nothing", len(got) == 1 and "the budget allows 3 " in got[0][1]
-              and "0 new since the anchor" in got[0][1], got)
+        check("a body beside its stub is no new body", any(f[1].startswith("rose in a body that is not new: goto src/many.c") for f in got)
+              and not any("over its budget" in f[1] for f in got), got)
         # one body, taken out in one commit and put back worse in the next: each commit passes, the range does not
         (repo / "src" / "many.c").write_text(stubs)
         walk.write_text('INCLUDE_ASM("asm/nonmatchings/a", Walk);\n')
@@ -3280,12 +3424,16 @@ def self_test_gate(check) -> None:
             put(TOOLS[1], sibling().read_text(encoding="utf-8") if sibling().is_file() else "VERSION = \"0.6.0\"\n")
             put(SETTINGS, json.dumps(GATE_SETTINGS, indent=2) + "\n")
             put(GUARD, "deny\tpath\tasm/\tasm/ is generated\n")
-            put(RECORD, '[psxdecomp]\nversion = "0.6.0"\n\n[own]\nnames = "config/names.basis.tsv"\ndebt = "python3 tools/scan.py --all"\n')
+            put(RECORD, '[psxdecomp]\nversion = "0.6.0"\n\n[own]\nnames = "config/names.basis.tsv"\ndebt = "python3 tools/scan.py --all"\n'
+                '\n[floor]\ngate = "sh tools/check.sh"\n')
+            put("tools/check.sh", 'test -z "$PSXD_SELF_RED" || { echo the build is red; exit 3; }\n')
+            put("src/vendor/lib.c", "void Lib(void) {\n}\n")
             put("config/names.basis.tsv", "name\tbasis\nWalk\tthe string it prints\n")
             put("tools/scan.py", "print('SCAN OK')\n")
+            put("src/stubs.c", 'INCLUDE_ASM("asm/nonmatchings/a", Run);\n')
             put(WORKFLOWS + "no-rom.yml", "name: no-rom\n")
             _git(repo, "add", "-A")
-            put(BASELINE, first_baseline(repo))
+            put(BASELINE, first_baseline(repo) + "skip src/vendor/\n")
             _git(repo, "add", "-A")
             rc, out = gate("staged")
             check("gate --staged before the first commit: the tree as it stands", rc == 0 and "no commit yet" in out
@@ -3341,7 +3489,17 @@ def self_test_gate(check) -> None:
                     ("the game's own ledger, a row changed", lambda: put("config/names.basis.tsv", "name\tbasis\nWalk\tnone\n"),
                      "config/names.basis.tsv lost or changed 1 line(s)"),
                     ("the record's own check, replaced", lambda: put(RECORD, (repo / RECORD).read_text().replace("python3 tools/scan.py --all", "true")),
-                     "config/psxdecomp.toml [own] debt changed")):
+                     "config/psxdecomp.toml [own] debt changed"),
+                    ("a new key that moves what a check reads", lambda: put(RECORD, (repo / RECORD).read_text() + '\n[debt]\naddress_header = "src/walk.c"\n'),
+                     "config/psxdecomp.toml [debt] address_header is new ('src/walk.c')"),
+                    ("a file that a skip line covers", lambda: put("src/vendor/lib.c", C_DEBT["goto"][0]),
+                     "src/vendor/lib.c changed, and a `skip` line covers it"),
+                    ("a new file under a skip line", lambda: put("src/vendor/more.c", C_DEBT["goto"][0]), "src/vendor/more.c changed, and a `skip` line"),
+                    ("the settings of one machine, tracked", lambda: (put(SETTINGS.replace(".json", ".local.json"), '{"disableAllHooks": true}\n'),
+                                                                      _git(repo, "add", "-f", SETTINGS.replace(".json", ".local.json"))),
+                     ".claude/settings.local.json is tracked and changed"),
+                    ("the project folder of the hooks, moved", lambda: put(SETTINGS, json.dumps(dict(hooks, env={"CLAUDE_PROJECT_DIR": "/nowhere"}))),
+                     "sets CLAUDE_PROJECT_DIR in `env`")):
                 change()
                 rc, out = staged()
                 check("gate: " + name, rc == 1 and "GATE FAIL protected: " in out and want in out, out)
@@ -3358,7 +3516,19 @@ def self_test_gate(check) -> None:
                 else base_text.replace("1 goto src/walk.c", "raise protected 1 2026-01-02 the runner changed\n1 goto src/walk.c"))
             rc, out = staged()
             check("gate: a `raise protected` line of the developer allows one such change", rc == 0 and
-                  "GATE INFO protected, and a `raise protected` line of the change allows it: .github/workflows/no-rom.yml changed" in out, out)
+                  "GATE INFO protected, and a `raise protected` line of the change allows it: .github/workflows/no-rom.yml changed" in out
+                  and "GATE INFO the developer's act, new in this change: `raise protected 1 2026-01-02 the runner changed`" in out, out)
+            os.environ["CLAUDECODE"] = "1"
+            rc, out = staged()
+            check("gate: a `raise` line in an agent session is refused", rc == 1 and "GATE FAIL raise: `raise protected 1 2026-01-02 the "
+                  "runner changed` in config/debt-baseline.txt is new, and this is an agent session" in out, out)
+            undo()
+            put(ASM_EVIDENCE, "\t".join(ASM_COLUMNS) + "\nmain\tWalk\tsrc/walk.c\thand-asm\tsrc/walk.c:1\t2026-01-02\tdeveloper\n")
+            rc, out = staged()
+            check("gate: a new assembly row in an agent session is refused", rc == 1 and "GATE FAIL raise: the row of Walk src/walk.c in "
+                  "config/asm-evidence.tsv is new" in out, out)
+            del os.environ["CLAUDECODE"]
+            check("gate: and it is the developer's to add", staged()[0] == 0)
             undo()
             # a tool of a later version judges the tree, after the tool of HEAD accepted the change
             later = mine.replace('VERSION = "%s"' % VERSION, 'VERSION = "99.0.0"').replace('"GATE %s (%s%s)"', '"GATE %s by the later tool (%s%s)"')
@@ -3374,6 +3544,9 @@ def self_test_gate(check) -> None:
             # the bank: the files git does not track yet count, and the rows of an admitted change are written
             put("src/new.c", C_DEBT["goto"][0].replace("Walk", "Run"))
             rc, out = gate("bank")
+            check("gate --bank refuses the debt of a body that takes no stub away", rc == 1 and "rose in a body that is not new" in out, out)
+            put("src/stubs.c", "// every function is in C\n")
+            rc, out = gate("bank")
             check("gate --bank admits a new body and writes its rows", rc == 0 and "1 goto src/new.c\n" in (repo / BASELINE).read_text()
                   and "GATE INFO config/debt-baseline.txt: the rows of now written (1 rose with a new body, 0 fell)" in out
                   and out.endswith("GATE OK (bank)\n"), out)
@@ -3383,14 +3556,13 @@ def self_test_gate(check) -> None:
             check("gate --bank refuses an unmarked pin in a file that is not tracked yet", rc == 1 and
                   "GATE FAIL debt: rose in total: pin-unmarked is `down`: 0 -> 1" in out and (repo / BASELINE).read_text() == before, out)
             put("src/new.c", C_DEBT["goto"][0].replace("Walk", "Run"))
-            put(RECORD, (repo / RECORD).read_text() + '\n[floor]\ngate = "echo the build is red; exit 3"\n')
+            os.environ["PSXD_SELF_RED"] = "1"
             rc, out = gate("bank")
-            check("gate --bank runs the game's own check", rc == 1 and "GATE FAIL game: `echo the build is red; exit 3` exited 3: "
+            check("gate --bank runs the game's own check", rc == 1 and "GATE FAIL game: `sh tools/check.sh` exited 3: "
                   "the build is red" in out, out)
             os.environ[GATE_ENV] = "1"
             check("a gate inside the game's own check does not run it again", gate("bank")[0] == 0)
-            del os.environ[GATE_ENV]
-            put(RECORD, (repo / RECORD).read_text().replace("echo the build is red; exit 3", "exit 0"))
+            del os.environ[GATE_ENV], os.environ["PSXD_SELF_RED"]
             _git(repo, "add", "-A")
             _commit(repo, "a bank")
             # CI: each commit against its parent, and the range against its base
@@ -3420,8 +3592,22 @@ def self_test_gate(check) -> None:
             check("gate --ci with no base: the tree of the head", rc == 0 and "no base: the tree of the head only" in out, out)
             rc, out = gate("ci", "HEAD..nowhere")
             check("gate --ci: a range that names no commit", rc == 1 and "GATE FAIL gate: HEAD..nowhere names no commit" in out, out)
+            rc, out = gate("ci", "nowhere..HEAD")
+            check("gate --ci: a base that names no commit judges nothing, so it fails", rc == 1 and "GATE FAIL gate: the base nowhere "
+                  "names no commit of this repository" in out, out)
             rc, out = gate("push", "HEAD~1..HEAD")
             check("gate --push: the range, as --ci", rc == 1 and "rose in an existing body" in out, out)
+            # a commit with no parent, put in the place of the history: the base judges it
+            undo()
+            good = _rev(repo, "HEAD~1")
+            _git(repo, "checkout", "-q", "--orphan", "fresh", good)
+            put("src/walk.c", C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;\n    goto loop;\n    goto loop;"))
+            put(BASELINE, (repo / BASELINE).read_text().replace("2 goto src/walk.c", "4 goto src/walk.c").replace("mode asm down", "mode asm admit-new"))
+            _git(repo, "add", "-A")
+            _commit(repo, "a history of one commit")
+            rc, out = gate("ci", "%s..HEAD" % good)
+            check("gate --ci: a commit with no parent is judged against the base", rc == 1 and "has no parent: it is judged against the base"
+                  in out and "rose in an existing body: goto src/walk.c Walk: 2 -> 4" in out and "GATE FAIL policy: " in out, out)
     finally:
         _sibling_run = keep
 

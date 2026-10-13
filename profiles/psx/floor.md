@@ -126,6 +126,8 @@ A game has one command that proves a change. The default is `make verify`.
 - `protected` covers the files that carry the floor. The first are the two tools and the workflows.
 - It also covers the hooks and the deny rules of `.claude/settings.json`, and the `deny` rows of `config/guard.tsv`.
 - It also covers each check that the record names in `[own]`, `[trial]`, `[floor]` or `[debt]`.
+- A new key in one of those four tables is a protected change. A file that a `skip` line covers keeps its bytes.
+- `--ci` judges a commit with no parent against the base of the range. A base that names no commit fails.
 - A tool changes only to a later version. The new tool then judges the tree.
 - The developer allows one protected change with `debt --raise protected <n> --reason <text>`.
 
@@ -174,12 +176,15 @@ The baseline holds one policy line for each kind. `debt --recount` writes the st
 - A body that exists never gets worse. That holds for a renamed body and for a body that moved to another file.
 - Debt outside a function rises only in a file that gets a new body.
 - A file that holds no function needs a new body somewhere in the same change.
-- For a budget, a new body is one that takes an `INCLUDE_ASM` line away. An empty body beside its stub counts for nothing.
+- A body is new when it takes an `INCLUDE_ASM` line away. An empty body beside its stub is not new.
+- A body that is not new holds no more debt than the bodies that left its file.
 - The anchor of a budget is the tree at the time of `debt --recount`.
 - `debt --against <revision>` judges a change by the policy of the revision that it starts from.
 - A change cannot weaken a mode, raise a budget, move an anchor, add a `skip` line or delete the baseline.
 - `debt --down <kind>` switches a kind to `down`. The switch is one way.
 - `debt --raise <kind> <n> --reason <text>` writes a `raise` line. Only the developer runs it.
+- The gate refuses a new `raise` line in an agent session. The developer commits it from a terminal.
+- The gate refuses a new row of `config/asm-evidence.tsv` in an agent session in the same way.
 - `debt --bodies` prints the counts of each function body.
 
 ## Trials

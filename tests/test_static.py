@@ -996,10 +996,16 @@ def test_debt_bodies(tmp_path):
     assert "DEBT BODIES 1 file(s), 1 function bodies, 0 with debt" in _floor("debt", "--bodies", "--repo", repo).stdout
 
 
+def _stubs(*names):
+    """A C file of INCLUDE_ASM lines: a function body is new when it takes the line of its name away."""
+    return "".join('INCLUDE_ASM("asm/nonmatchings/a", %s);\n' % n for n in names) or "// every function is in C\n"
+
+
 def _gate_repo(tmp_path):
     """A committed game with the two vendored tools, a version 2 baseline, one prose file and a commit hook that runs
     `gate --staged` with this checkout's floor.py."""
-    repo = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], "docs/a.md": "Clean.\n", "tools/x": "x\n"})
+    repo = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], "docs/a.md": "Clean.\n", "tools/x": "x\n",
+                                  "src/stubs.c": _stubs("Run"), "src/more.c": _stubs("Jump")})
     for src, dst in (("scripts/floor.py", floor.VENDORED), ("scripts/publish.py", publish.VENDORED)):
         (repo / dst).write_bytes((ROOT / src).read_bytes())
     assert _floor("debt", "--recount", "--repo", repo).returncode == 0
@@ -1039,12 +1045,14 @@ def test_gate_modes(tmp_path):
     assert r.returncode != 0 and "rose in an existing body" in r.stdout + r.stderr, r.stdout + r.stderr
     git("checkout", "--", "src/a.c", cwd=side)
     (side / "src/b.c").write_text(floor.C_DEBT["goto"][0].replace("Walk", "Run"))
+    (side / "src/stubs.c").write_text(_stubs())
     git("add", "-A", cwd=side)
     r = _floor("gate", "--bank", "--repo", side)                                 # the bank writes the rows of the new body
     assert r.returncode == 0 and "1 goto src/b.c\n" in (side / floor.BASELINE).read_text(), r.stdout
     git("commit", "-qam", "a new body on the side", cwd=side)
     # a merge: both sides added a body and a row
     (repo / "src/c.c").write_text(floor.C_DEBT["goto"][0].replace("Walk", "Jump"))
+    (repo / "src/more.c").write_text(_stubs())
     assert _floor("gate", "--bank", "--repo", repo).returncode == 0
     git("add", "-A")
     git("commit", "-qm", "a new body on main")
@@ -1164,7 +1172,7 @@ def test_debt_baseline_command(tmp_path):
     a body that exists, and takes the debt of a new body. A deleted baseline exits 1. A row written by hand passes
     the row check and fails `--against`. A weaker mode, a new `skip` line and a missing policy line fail as `policy`.
     `--raise` is refused in an agent session. `--down` is one way."""
-    repo = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0]})
+    repo = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], "src/stubs.c": _stubs("Run")})
     debt = lambda *a, **kw: _floor("debt", "--repo", repo, *a, **kw)  # noqa: E731
     base, more = repo / floor.BASELINE, floor.C_DEBT["goto"][0].replace("goto loop;", "goto loop;\n    goto loop;")
     r = debt()
@@ -1173,7 +1181,7 @@ def test_debt_baseline_command(tmp_path):
     r = debt("--recount")
     assert r.returncode == 0 and "DEBT RECOUNT written" in r.stdout and base.read_text().endswith("1 goto src/a.c\n")
     first = base.read_text()
-    assert "mode pin-unmarked down\n" in first and "budget pin 30 base 0 1 0\n" in first and "budget goto 12 base 1 1 0\n" in first
+    assert "mode pin-unmarked down\n" in first and "budget pin 30 base 0 1 1\n" in first and "budget goto 12 base 1 1 1\n" in first
     assert debt().returncode == 0
     run(["git", "-C", repo, "add", "-A"])
     run(["git", "-C", repo, "-c", "commit.gpgsign=false", "commit", "-qm", "the baseline"])
@@ -1200,6 +1208,9 @@ def test_debt_baseline_command(tmp_path):
     assert r.returncode == 1 and "DEBT FAIL policy: %s is gone" % floor.BASELINE in r.stdout, r.stdout
     base.write_text(first)
     (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0] + floor.C_DEBT["goto"][0].replace("Walk", "Run"))
+    r = debt("--update")                                                        # a body that takes no stub away is not new
+    assert r.returncode == 1 and "DEBT FAIL debt: rose in a body that is not new: goto src/a.c Run" in r.stdout, r.stdout
+    (repo / "src/stubs.c").write_text(_stubs())
     r = debt("--update")                                                        # debt that arrives with a new body
     assert r.returncode == 0 and "DEBT INFO admitted with a new body: goto src/a.c: 1 -> 2\n" in r.stdout, r.stdout
     assert debt("--against", "HEAD").returncode == 0

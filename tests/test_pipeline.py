@@ -327,7 +327,7 @@ def test_fresh_game_passes_its_gate(game):
         src.parent.mkdir(exist_ok=True)
         src.write_text(floor.C_DEBT["pin-unmarked"][0])
         r = gate("--bank")
-        assert r.returncode == 1 and "GATE FAIL debt: rose in total: pin-unmarked is `down`: 0 -> 1" in r.stdout, r.stdout
+        assert r.returncode == 1 and "GATE FAIL debt: rose in a body that is not new: pin-unmarked src/probe.c Walk" in r.stdout, r.stdout
     finally:
         src.unlink()
     ledger = game / floor.NAMES                                  # a row that points at nothing fails `names` and the gate
