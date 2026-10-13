@@ -25,7 +25,8 @@ as `ste-rule` is), `names-ledger` (the header lines of config/names.tsv and conf
 `debt-baseline` (config/debt-baseline.txt, once, last, with the starting mode of each debt kind); `debt-recount`
 rewrites a baseline of an earlier psxdecomp in version 2 (the rows of now, a policy line for each kind that has none;
 the game's own lines stay); `asm-ledger` adds the `verified_by` column to the header line of an assembly ledger that
-an earlier psxdecomp wrote (the rows stay); `floor-public` is the manual line of split mode. A game with `[own] names` gets none of the
+an earlier psxdecomp wrote (the rows stay); `floor-public` is the manual line of split mode, and
+`floor-cpp` the manual line for the preprocess command of the record (`[floor] cpp`). A game with `[own] names` gets none of the
 actions that key replaces. `[own] debt` is additive: the game's scanner runs beside psxdecomp's count, so the baseline
 and the two ledgers of the count are delivered all the same, and only the rule text (`fin-rule`) is withheld.
 
@@ -517,6 +518,13 @@ def plan(repo: pathlib.Path) -> list[dict]:
     if other:
         add("manual", "git-hooks: another hook stands at %s: merge psxdecomp's into it by hand (`python3 %s hook` shows "
             "the paths)" % (", ".join(other), publish.VENDORED), "the gate runs at a commit and at a push", "git-hooks-manual")
+    if floor.cpp_probe(repo)[0] == "NONE" and any(floor.is_source(p) and floor.is_c(p) for p in floor.Tree(repo).paths):
+        add("manual", "floor-cpp: add `cpp = \"<the build's preprocess command> {file}\"` under `[floor]` in %s by hand (the "
+            "command of the game's makefile, with no `-P`; the host's `cc -E` with the same flags reads the same text). A new "
+            "key of that table is a protected change: `python3 %s debt --raise protected 1 --reason <text>`, then `debt "
+            "--update`" % (install.RECORD, floor.VENDORED),
+            "pin, goto, barrier and asm are then read in the text that the compiler gets; without it they are read in the raw "
+            "text, where a macro can hide one", "floor-cpp")
     if (repo / floor.BASELINE).is_file() and recount_due(repo):
         add("psxdecomp", "debt-recount: rewrite %s in version 2 (the rows of now; %s; the lines of the game stay)"
             % (floor.BASELINE, recount_due(repo)),

@@ -2621,7 +2621,7 @@ def record_table(tree: Tree, table: str) -> dict[str, str]:
 def _settings(tree: Tree) -> dict:
     try:
         conf = json.loads(tree.read(SETTINGS) or "{}")
-    except ValueError:
+    except (ValueError, RecursionError):               # no JSON, or JSON nested deeper than the reader goes
         return {"_broken": True}
     return conf if isinstance(conf, dict) else {"_broken": True}
 
@@ -2634,7 +2634,7 @@ def _hook_rows(conf: dict) -> list[tuple[str, str, frozenset, str]]:
     hooks = conf.get("hooks") if isinstance(conf.get("hooks"), dict) else {}
     for event, groups in hooks.items():
         for g in groups if isinstance(groups, list) else ():
-            for h in (g.get("hooks") or ()) if isinstance(g, dict) else ():
+            for h in g["hooks"] if isinstance(g, dict) and isinstance(g.get("hooks"), list) else ():
                 if isinstance(h, dict) and "psxd_" in str(h.get("command", "")):
                     matcher = g.get("matcher", "") if isinstance(g.get("matcher", ""), str) else json.dumps(g.get("matcher"))
                     names = frozenset(matcher.split("|")) if re.fullmatch(r"\w+(?:\|\w+)*", matcher) else frozenset()

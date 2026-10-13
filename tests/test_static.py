@@ -1117,6 +1117,86 @@ def test_gate_modes(tmp_path):
     assert r.returncode == 2 and "one of --staged, --bank" in r.stderr
 
 
+HONEST_FORMS = {
+    # each is a change that an honest bank makes and that an earlier build of the floor refused (the ids are those of
+    # the attack reports of 2026-10-13): {path: text, or None to delete}
+    "a helper folded into its caller, with its marked goto (f-01, a160)": {
+        "src/a.c": "s32 Walk(s32 n) {\nloop:\n    // !FAKE: the loop of the original\n    if (--n) goto loop;\nagain:\n"
+                   "    // !FAKE: the helper's loop\n    if (n > 4) goto again;\n    return n;\n}\n"},
+    "a version conditional around an `if (...) {` (f-02, p2-60e)": {
+        "src/b.c": "s32 Run(s32 n) {\n#ifdef VERSION_JP\n    if (n > 2) {\n#else\n    if (n > 3) {\n#endif\n        n--;\n    }\n    return n;\n}\n",
+        "src/stubs.c": "// every function is in C\n"},
+    "a header with the `extern \"C\" {` guard (f-03)": {
+        "include/api.h": "#ifdef __cplusplus\nextern \"C\" {\n#endif\ns32 Run(s32 n);\n#ifdef __cplusplus\n}\n#endif\n"},
+    "a stub banked under a new name into another file that exists, with an offset (f-04, a162)": {
+        "src/a.c": floor.C_DEBT["goto"][0] + "s32 InitHeap(s32 *p) {\n    return *(s32 *)(p + 4);\n}\n", "src/stubs.c": "// every function is in C\n"},
+    "a NON_MATCHING body beside its stub (f-05, f-13)": {
+        "src/stubs.c": "#ifndef NON_MATCHING\nINCLUDE_ASM(\"asm/nonmatchings/a\", Run);\n#else\ns32 Run(s32 *p) {\nx:\n    if (*(s32 *)(p + 4)) goto x;\n"
+                       "    return 0;\n}\n#endif\n"},
+    "a function that returns a function pointer (f-08, p2-60b)": {
+        "src/pick.c": "s32 Step(s32 n);\ns32 (*PickStep(s32 kind))(s32) {\n    if (kind) {\n        return Step;\n    }\n    return 0;\n}\n"},
+    "a `static inline` helper with debt in a new header (f-12)": {
+        "include/heap.h": "static inline s32 HeapWord(s32 *p) {\n    return *(s32 *)(p + 4);\n}\n"},
+    "a new C file with a body beside an unrelated body that left (a161)": {
+        "src/a.c": "s32 g_Walk;\n", "src/carved.c": "s32 func_80012344(s32 *p) {\n    return *(s32 *)(p + 8) + D_800A1234;\n}\n"},
+    "a decompiled function named main (p2-60a)": {"src/main.c": "s32 main(void) {\n    return 0;\n}\n"},
+    "plain lines that a pattern reads as debt (p2-60c)": {
+        "src/a.c": floor.C_DEBT["goto"][0] + "s32 Bits(s32 n, Obj *o) {\n    n &= 0xA0000000;\n    return (sizeof(s32) & 3) + o->field_a + n;\n}\n"},
+    "the stub macro's header, included (p2-60d)": {
+        "include/include_asm.h": "#define INCLUDE_ASM(FOLDER, NAME) __asm__(\".section .text\\n\\t.include \\\"\" FOLDER \"/\" #NAME \".s\\\"\\n\")\n",
+        "src/stubs.c": "#include \"include_asm.h\"\nINCLUDE_ASM(\"asm/nonmatchings/a\", Run);\n"},
+    "a bank with a pin and a goto that the match needs, each with its reason": {
+        "src/b.c": "s32 Run(s32 n) {\n    // !FAKE: the counter must stay in $16\n    register s32 i asm(\"$16\") = n;\nx:\n"
+                   "    if (--i) goto x; // !FAKE: the loop of the original\n    return i;\n}\n", "src/stubs.c": "// every function is in C\n"},
+    "an address name, a guessed name and a provisional row (the owner's rule of 2026-10-13)": {
+        "src/names.c": "s32 func_80012344(s32 n) {\n    return n + 1;\n}\ns32 Enemy_Think(s32 n) {\n    return n + 2;\n}\ns32 Enemy_Walk(s32 n) {\n    return n + 3;\n}\n",
+        floor.NAMES: "\t".join(floor.NAME_COLUMNS) + "\nfunction\tmain\t\tfunc_80012400\tEnemy_Walk\tprovisional\thuman:src/names.c:7\tone source\n"},
+}
+
+
+DRAFT = "a NON_MATCHING body beside its stub (f-05, f-13)"      # its goto is in a branch that the compiler does not get
+
+
+@pytest.mark.parametrize("view", ["raw", "cpp"])
+def test_honest_forms_pass_the_gate(tmp_path, view):
+    """Each honest form of a decompilation commit passes the commit hook once its rows are written: a file split, a
+    carved function, a folded helper, a conditional, a NON_MATCHING attempt, any name. Once in raw text and once in
+    the view of a real preprocessor (`[floor] cpp`, where the machine has `cc`). The raw text also reads the branch
+    of a conditional that is not compiled, so there an unmarked goto of a NON_MATCHING draft is refused: the limit of
+    the view with no `[floor] cpp`. The control is one unmarked goto in compiled code, which the same hook refuses."""
+    if view == "cpp" and not shutil.which("cc"):
+        pytest.skip("no cc on this machine")
+    repo = _gate_repo(tmp_path)
+    git = lambda *a, check=True: run(["git", "-C", repo, "-c", "commit.gpgsign=false", *a], check=check)  # noqa: E731
+    if view == "cpp":
+        (repo / floor.RECORD).parent.mkdir(exist_ok=True)
+        (repo / floor.RECORD).write_text("[psxdecomp]\nversion = \"0.6.0\"\n\n[floor]\ncpp = \"cc -E -nostdinc -undef -Iinclude {file}\"\n")
+        git("add", "-A")
+        git("commit", "-qm", "the preprocess command of the game", "--no-verify")
+    start = git("rev-parse", "HEAD").stdout.strip()
+    for name, files in HONEST_FORMS.items():
+        for rel, text in files.items():
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text(text)
+        git("add", "-A")
+        r = _floor("debt", "--update", "--repo", repo)
+        if view == "raw" and name == DRAFT:
+            assert r.returncode == 1 and "goto-unmarked is `down` and its total rose: 0 -> 1 (src/stubs.c 0 -> 1)" in r.stdout, r.stdout
+        else:
+            assert r.returncode == 0, (name, r.stdout)
+            r = git("commit", "-qam", name, check=False)
+            assert r.returncode == 0 and "GATE FAIL" not in r.stdout + r.stderr, (name, r.stdout + r.stderr)
+            r = _floor("gate", "--ci", "%s..HEAD" % start, "--repo", repo)
+            assert r.returncode == 0 and r.stdout.endswith("GATE OK (ci; 1 commit(s))\n"), (name, r.stdout)
+        git("reset", "-q", "--hard", start)
+        git("clean", "-q", "-fd")
+    (repo / "src/a.c").write_text(floor.C_DEBT["goto-unmarked"][0])
+    git("add", "-A")
+    assert _floor("debt", "--update", "--repo", repo).returncode == 1
+    r = git("commit", "-qam", "the control: a goto with no reason", check=False)
+    assert r.returncode != 0 and "goto-unmarked is `down` and its total rose: 0 -> 1" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
 def test_debt_against_rev(tmp_path):
     """The tree reader: the work tree, the index and a revision give one count, on an LF checkout and on a CRLF one.
     `debt --against` prints what differs from a revision. `style --against` judges the prose by the ratchet, the
