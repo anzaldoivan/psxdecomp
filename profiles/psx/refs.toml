@@ -260,7 +260,16 @@ class    = "link"
 licence  = "none (no licence file, read 2026-10-12 at commit 3b1bd5db): ideas only, no text and no code"
 topics   = ["exemplar", "guard-hooks", "give-up-report", "agent-workflow"]
 covers   = "practice on an N64 project (seen 2026-10-12): hooks that refuse an edit of assembly and hash files, a fixed report when an agent gives up on a function"
-used_by  = "psxdecomp 0.6.0 (2026-10-12): the guard hook and its default rules, the give-up report of the campaign templates"
+used_by  = "psxdecomp 0.6.0 (2026-10-12): the guard hook and its default rules, the give-up report of the campaign templates; (2026-10-13, its history) the rules that keep a session from a commit with no hook, and cleanup and names as separate work after the match"
+
+[[ref]]
+name     = "ff7-decomp"
+url      = "https://github.com/Xeeynamo/ff7-decomp"
+class    = "link"
+licence  = "none stated (read 2026-10-13 at commit ae7d9d45): ideas only, no text and no code"
+topics   = ["exemplar", "preprocessed-lint", "naming-rule"]
+covers   = "practice on a PS1 project with no AI contributions (seen 2026-10-13): a linter that runs the game's own preprocessor before it scans and takes the file of a finding from the line markers, clang-tidy with no tolerated finding, the rule that a name is not required as part of decompiling code and that a wrong name is debt"
+used_by  = "psxdecomp 0.6.0 (2026-10-13): the `[floor] cpp` view of the debt count (pin, goto, barrier, asm), and the rule of rules/NAME1.md that no check asks for a name"
 
 # ---- which source wins, per topic ---------------------------------------------------------------------------------
 

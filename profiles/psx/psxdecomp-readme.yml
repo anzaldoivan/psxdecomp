@@ -1,5 +1,5 @@
 # .github/workflows/psxdecomp-readme.yml — the gate of the floor: the README standard, the writing style of the public
-# prose files, the readability debt of the source with its trial rows and ledgers, and the frozen category ids
+# prose files, the readability debt of the source with its ledgers, and the frozen category ids
 # (written by psxdecomp's S10 and /psxdecomp:upgrade, which own this file; the standard is psxdecomp's docs/PUBLISHING.md, and `python3 tools/psxd_floor.py --help` lists the debt kinds). No
 # game data needed: it reads README.md, the public prose files (every published `.md` file), the tracked source,
 # config/style-ratchet.txt, config/debt-baseline.txt, config/names.tsv, config/asm-evidence.tsv,

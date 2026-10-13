@@ -210,7 +210,7 @@ psxdecomp builds on:
   [PCSX-Redux](https://github.com/grumpycoders/pcsx-redux), [psx-spx](https://github.com/psx-spx/psx-spx.github.io),
   [decomp.me](https://decomp.me), [decomp.dev](https://decomp.dev) and [Redump](http://redump.org/).
 
-- Three projects whose practice shaped the roadmap and readability checks of version 0.6.0. psxdecomp took ideas
+- Four projects whose practice shaped the roadmap and readability checks of version 0.6.0. psxdecomp took ideas
   and wrote each file fresh:
   - [parasite-eve-decomp](https://github.com/khasinski/parasite-eve-decomp) by khasinski. A debt baseline that must
     equal the tree, and one `verify` gate. An evidence record for each assembly function. A pinned toolchain that
@@ -218,7 +218,11 @@ psxdecomp builds on:
   - [kings-field-decomp](https://github.com/sushi-shi/kings-field-decomp) and its sibling projects by sushi-shi. The
     naming ledger with evidence and a decision. The bank ledger, the two budgets and the triage order.
   - [snowboardkids2-decomp](https://github.com/cdlewis/snowboardkids2-decomp) by cdlewis: hooks that refuse an edit
-    of assembly and hash files, and a fixed report when an agent gives up on a function.
+    of assembly and hash files, and a fixed report when an agent gives up on a function. A commit hook that an
+    agent cannot skip. Cleanup and names as separate work after the match.
+  - [ff7-decomp](https://github.com/Xeeynamo/ff7-decomp) by Xeeynamo: a linter that reads the output of the game's
+    own preprocessor. Its rule for names: a name is not required, and a wrong name is debt. The `!FAKE` comment is
+    a convention of sotn-decomp and of [zeldaret/mm](https://github.com/zeldaret/mm).
 
 [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md) records the commit each was checked at.
 

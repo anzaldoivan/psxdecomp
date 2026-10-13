@@ -1,7 +1,7 @@
 A name is a claim about what the code does. A byte-identical build proves the behaviour of the code. It proves no name.
 
 1. Keep the placeholder name until there is evidence. An unnamed function is better than a wrong name. A function
-   that matches is banked and pushed under the name it has: no check asks for a name.
+   that matches is banked and pushed under the name it has: no check asks for a name. A wrong name is debt.
 2. Record the name in `config/names.tsv` in the commit that uses it. `python3 tools/psxd_floor.py names` checks the file.
 3. Give the evidence as `<class>:<path>:<line>`. The line must show the fact to a reader who opens the file.
 4. Use `provisional` for a name that one source supports. Use `accepted` when a person or a second source agrees.
