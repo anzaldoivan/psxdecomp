@@ -631,13 +631,15 @@ def s10_handoff(c: Ctx) -> str:
     import oracle                                 # the oracle-build question: the disc scan, the hashes of a given copy
     if not c.dry and "oracle" not in upgrade.record_tables(c.target):
         got, line = oracle.record(c.target, (medium or {}).get("debug_artifacts"),
-                                  ans.get("PSXDECOMP_BYO_ORACLE_PATH") or None, ans.get("DUMP_PATH") or None)
+                                  ans.get("PSXDECOMP_BYO_ORACLE_PATH") or None, ans.get("DUMP_PATH") or None,
+                                  expect=ans.get("PSXDECOMP_BYO_ORACLE_SHA1", "").split())
         c.written += got
         print("     oracle %s" % line)
     paths += [oracle.HASHES, common.FIREWALL]
     pa_src = c.boot("prior-art.md")
     if pa_src.is_file() and not c.p("docs/prior-art.md").exists():
         c.write("docs/prior-art.md", common.read(pa_src))
+    if pa_src.is_file():                          # always: a run that S10 refused left the table staged
         paths.append("docs/prior-art.md")
     readme_policy(c)                              # S8 did it; a repo whose S8 predates it gets it here
     for d in upgrade.DELIVERY:                    # every owned file: the two vendored tools, the workflow, the floor's doc
@@ -700,6 +702,10 @@ def s10_handoff(c: Ctx) -> str:
     if bad:
         raise common.Fail("doctor: %s" % "; ".join("%s: %s" % (r[0], r[2]) for r in bad))
     card_check(c)
+    named = items_named(c)                        # an archive.org item is named in the gate's question, never in a commit
+    if named:
+        raise common.Fail("%s names an archive.org item of a build (%s lists it): take the identifier out. The row "
+                          "keeps the build's date, its page and its hashes" % (", ".join(named), BUILDS))
     sha = c.commit(paths, "psxdecomp handoff: the bootstrap record (pins, profile, host recipe), the prior-art table, "
                           "the README standard's lint and its CI, the writing rule of the public files (STE1, "
                           "its hook, the first ratchet), and the floor (its tool, its reference, the guard, the two "
@@ -708,6 +714,21 @@ def s10_handoff(c: Ctx) -> str:
            "The steps after it: %s." % upgrade.FLOOR_DOC
            + (" Phase 1.2 leads: %s." % (BOOT + "/seeds.txt") if seeds.is_file() else ""))
     return "record %s, commit %s. %s" % (RECORD, sha, nxt)
+
+
+BUILDS = BOOT + "/research/builds.md"
+
+
+def items_named(c: Ctx) -> list[str]:
+    """The tracked or staged files that hold a build identifier of the scout's builds report (docs/REFS.md, "Oracle
+    builds"). The report itself lies under the ignored .run/."""
+    import oracle
+    report = c.p(BUILDS)
+    items = oracle.build_items(common.read(report)) if report.is_file() else []
+    if not items:
+        return []
+    r = c.git("grep", "--cached", "-l", "-I", "-F", *sum((["-e", i] for i in items), []), check=False)
+    return sorted(set(r.stdout.split("\n")) - {""})
 
 
 def pa_upgrade(c: Ctx) -> str:
@@ -953,6 +974,22 @@ def self_test() -> int:
         st = common.State(td)
         st.mark("S0", "done")
         ok &= st.first_open() == "S1"
+    with tempfile.TemporaryDirectory() as td:       # S10's last refusal: a staged file that names a build's item
+        repo = pathlib.Path(td).resolve()
+        common.git(repo, "init", "--quiet")
+        c = Ctx(argparse.Namespace(target=str(repo), dry_run=False))
+        row = "| L3 | Oracle build: Jan 1, 1999 prototype | the page | lead | %s |\n"
+        common.write(repo / "docs/prior-art.md", row % "ExampleQuestJan011999prototype")
+        common.write(repo / "notes.md", "example-quest-manual\n")
+        c.git("add", "--", "docs/prior-art.md", "notes.md")
+        ok &= items_named(c) == []                                                      # no report: nothing to hold
+        common.write(repo / BUILDS, "## archive.org items\n| identifier | kind | confirmed by | file | SHA-1 |\n|---|---|---|---|---|\n"
+                                    "| ExampleQuestJan011999prototype | build | hash | a.jpg | x |\n"
+                                    "| example-quest-manual | document | link | m.pdf | y |\n")
+        ok &= items_named(c) == ["docs/prior-art.md"]                                   # the document item may be a row
+        common.write(repo / "docs/prior-art.md", row % "sha1 0f0f")
+        c.git("add", "--", "docs/prior-art.md")
+        ok &= items_named(c) == []
     fw = "purge: disks/\nglob:  SCPH*.BIN\n"         # S9's firewall block: both lines, once, whatever the file held
     blocked = common.with_firewall_debug(fw)
     ok &= blocked == fw + "\n" + common.FIREWALL_DEBUG and common.with_firewall_debug(blocked) == blocked

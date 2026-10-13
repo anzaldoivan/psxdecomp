@@ -48,36 +48,54 @@ firewall purges `tools/psyq/`). Only the answers file under `.run/` holds it.
 
 ## The oracle-build question (in the first round, when a build was named)
 
-An oracle build is another build of this program that carries more than the target: symbols, a link map, source file
-names. Two places name one: `medium.json` `debug_artifacts` (the developer's own disc) and the **builds** leads of
-the report. When either place has a row, the first round is the prior-art group, the answers group, the PsyQ question
-and this question. The reference-library group then moves to the second round. Ask for the best-ranked build:
+An oracle build is another build of this program that tells more than the target does. A build with symbols gives
+names. A build without them (a prototype, a review build, another revision) gives lineage: what changed and what
+stayed. Two places name one: `medium.json` `debug_artifacts` (the developer's own disc) and the **builds** leads of
+the report.
 
-> A build with symbols exists: `<id>` (`<source>`). It carries `<what>`. Do you have your own copy?
+When either place has a row, the first round is the prior-art group, the answers group, the PsyQ question
+and this question. The reference-library group then moves to the second round. Ask for one build, the best-ranked by
+the class table of `investigate.md`:
+
+> Another build of this program exists: `<id>` (`<page>`). It carries `<what>`. Do you have your own copy?
 
 Options: `none`, `I'll paste a path`, `not using it` (the developer types the reason in the notes).
 
 - The id is a serial or a build date. For a leftover on the developer's own disc, word the question from the probe
   row: the file's path, kind and size. `I'll paste a path` then takes the dump's own path.
+- `<what>` is what the build's page states: "symbols", "a debug menu, no symbols", "the code of nine days before the
+  master". Promise no names from a build whose page states none.
 - A probe row without the PsyQ SYM magic is a lead by its extension only. Say so: a `.MAP` or a `.LIB` is often game
   data.
+- When `.run/bootstrap/research/builds.md` lists a checked archive.org item for this build, add one sentence. It
+  names the item and the hash that confirmed it, and it says who downloads:
+
+  > archive.org holds it as `<identifier>`: the SHA-1 of `<file>` there equals the one on the build's page. I do not
+  > download it. You do, and you paste the path.
+- Never fetch a build. Name only a checked item, and only in this question. No file that S10 commits holds the
+  identifier or a download link.
+- One build is asked for. The others get one line and no question:
+  "Also found: `<id>`, `<id>`. For a copy of one later: `psxd oracle record --repo . --byo <path> --expect <sha1>`."
 - A path must lie outside this folder. It is never fetched and never committed. Only the answers file under `.run/`
   holds it.
-- Never give a download link for a build, and never offer to fetch one.
+- With a path, write the SHA-1 values that the build's page states into `PSXDECOMP_BYO_ORACLE_SHA1`, separated by
+  spaces. S10 hashes the copy before anything else reads it, and it refuses a copy where no file has a stated hash.
+  A page that states no hash: leave the key out, and say so in the row.
 - Write the answer into the lead's row of `prior-art.md`: `byo path given`, `no copy`, or `rejected` with the reason.
+  The row holds the build's id, its page and the stated hashes.
 - S10 records the answer (`config/psxdecomp.toml` `[oracle]`). For a path it also writes `config/oracle.sha1`: the
   SHA-1 of each file of the copy. The audit then refuses a tracked copy of one.
 
 When neither place has a row, ask nothing. Say it in one line, with the searches that ran:
 
-> No other build with symbols found: `<n>` searches (`<the seeds>`), and the disc scan found no debug file.
+> No other build found: `<n>` searches (`<the seeds>`), and the disc scan found no debug file.
 
 ## Writes (only after every group is confirmed)
 
 - `.run/bootstrap/answers.txt` — the confirmed 13 keys plus the extras, in the shape `"$PSXD" answers template` prints.
   The extras: `PSXDECOMP_CONSOLE: psx`, `PSXDECOMP_PROJECT_NAME`, `PSXDECOMP_REGION_VERSION`, and
   `PSXDECOMP_BYO_PSYQ_PATH` when the PsyQ question got a path, and `PSXDECOMP_BYO_ORACLE_PATH` when the oracle-build
-  question got one.
+  question got one. `PSXDECOMP_BYO_ORACLE_SHA1` goes beside that path when the build's page states a hash.
   Check it with `"$PSXD" answers check .run/bootstrap/answers.txt`. Write
   `COMPILER_FAMILY` bare: the installer adds its dated `Candidate (S4 …)` label (`answers.scope_candidate`).
 - `.run/bootstrap/refs.toml` — the confirmed rows; check with

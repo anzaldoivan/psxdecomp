@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """oracle.py — the record of the oracle-build question: the disc scan, and the hashes of a supplied copy.
 
-    oracle.py record --repo R [--dump CUE | --medium FILE] (--byo PATH | --no-copy) [--dry-run]
+    oracle.py record --repo R [--dump CUE | --medium FILE] (--byo PATH [--expect SHA1]... | --no-copy) [--dry-run]
     oracle.py --self-test
 
 An oracle build is another build of the game's program that carries more than the target: symbols, a link map
 (docs/REFS.md, "Oracle builds"). `record` writes into a game repository and commits nothing:
 
 - `[oracle]` in config/psxdecomp.toml: `checked` (the day), `disc_debug_files` and `disc_psyq_sym` (the counts of the
-  disc scan), and `byo` ("none", "own disc", or "<n> file(s) hashed").
+  disc scan), `byo` ("none", "own disc", or "<n> file(s) hashed"), and `byo_checked` for the last copy recorded
+  ("<n> stated hash(es) matched", or "no stated hash").
 - config/oracle.sha1 (sha1sum format, base names, merged with the file's lines and sorted): one SHA-1 per file of the
   copy that `--byo` names. A file gives one, a folder one per file. A disc image (.cue, .bin, .iso, .img) also gives
   one per file of its ISO 9660 volume, because a file taken out of the image is what a commit would hold. An empty
@@ -20,6 +21,11 @@ The disc facts come from `--dump` (read in place, as identify.py reads it) or fr
 JSON file that holds its `debug_artifacts` alone (the scan of a dump on another machine). With neither, the facts of
 an earlier record stay. `--byo` refuses a path inside the repository and writes nothing. The dump's own path gives no
 hash: the retail manifest covers the developer's own disc. No byte and no path of a build is written anywhere.
+
+`--expect` gives a SHA-1 that the build's page states (docs/REFS.md, the check-out rule). It may repeat. Before any
+other read, each file of the copy is hashed, of any size. A copy where no file has a stated hash is refused, and
+nothing is written. `build_items` reads the `build` identifiers of a scout report's table `## archive.org items`:
+S10 refuses to commit a file that holds one.
 tools/audit_public.py runs afterwards: exit 1 when it fails.
 """
 from __future__ import annotations
@@ -29,6 +35,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import struct
 import sys
 import tempfile
@@ -46,6 +53,8 @@ HEAD = ("# %s: the SHA-1 of each file of another build that the developer suppli
 CAP = 50 << 20                                   # the audit refuses a tracked file over 50 MiB whatever it holds
 IMAGE_EXT = (".cue", ".bin", ".iso", ".img")
 COMMAND = "psxd oracle record --repo . --dump <your dump> --no-copy"
+SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
+ITEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{4,}$")       # an archive.org identifier; the header row is not one
 
 
 def inside(path: pathlib.Path, repo: pathlib.Path) -> bool:
@@ -79,6 +88,47 @@ def image_hashes(path: pathlib.Path, probe) -> tuple[list[tuple[str, str]], set[
     finally:
         trk.close()
     return out, {t["file"] for t in tracks if t.get("file")} if cue else set()
+
+
+def copy_files(byo: pathlib.Path, probe) -> list[pathlib.Path]:
+    """The files of a supplied copy on disk: the file, or each file of the folder, and the track files of a CUE sheet
+    among them."""
+    files = [byo] if byo.is_file() else sorted(p for p in byo.rglob("*") if p.is_file()
+                                              and not set(p.relative_to(byo).parts) & common.SKIP_NAMES)
+    for p in [f for f in files if f.suffix.lower() == ".cue"]:
+        try:
+            tracks = [pathlib.Path(x["file"]) for x in probe.parse_cue(str(p)) if x.get("file")]
+        except (ValueError, OSError, KeyError, TypeError):
+            continue
+        files += [x for x in tracks if x.is_file() and x not in files]
+    return files
+
+
+def stated(byo: pathlib.Path, expect) -> int:
+    """How many files of the copy have a SHA-1 that the build's page states. Each file is hashed, of any size. Raises
+    Fail on a value that is no SHA-1, and when no file matches."""
+    want = {str(e).strip().lower() for e in expect}
+    bad = sorted(e for e in want if not SHA1_RE.match(e))
+    if bad:
+        raise common.Fail("--expect %s is not a SHA-1 (40 hex digits). Nothing was written" % bad[0])
+    files = copy_files(byo, identify.load_probe("psx")[1])
+    n = sum(sha1_file(p) in want for p in files)
+    if not n:
+        raise common.Fail("no file of the copy has a stated hash (%d file(s) hashed, %d hash(es) stated): this is not "
+                          "the build that the page describes, or not its image. Nothing was written"
+                          % (len(files), len(want)))
+    return n
+
+
+def build_items(text: str) -> list[str]:
+    """The identifiers of the `build` rows of a scout report's table `## archive.org items` (agents/scout-web.md)."""
+    m = re.search(r"(?m)^## archive\.org items[ \t]*\n(.*?)(?=^## |\Z)", text, re.S)
+    out = []
+    for line in (m.group(1).splitlines() if m else ()):
+        cells = [c.strip().strip("`").strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) >= 2 and cells[1].lower().startswith("build") and ITEM_RE.match(cells[0]) and cells[0] not in out:
+            out.append(cells[0])
+    return out
 
 
 def copy_hashes(byo: pathlib.Path) -> list[tuple[str, str]]:
@@ -119,24 +169,30 @@ def load_debug(path) -> dict:
     return debug
 
 
-def record(repo, debug: dict | None, byo: str | None, dump: str | None = None, dry: bool = False) -> tuple[list[str], str]:
+def record(repo, debug: dict | None, byo: str | None, dump: str | None = None, dry: bool = False,
+           expect=()) -> tuple[list[str], str]:
     """Write the record (module docstring). Returns (one `created|changed <path>` line per file, the summary line).
-    Every refusal comes before the first write."""
+    Every refusal comes before the first write. `expect`: the SHA-1 values that the build's page states."""
     import upgrade
     repo = pathlib.Path(repo).resolve()
     if not (repo / RECORD).is_file() or not (repo / common.FIREWALL).is_file():
         raise common.Fail("%s has no %s or no %s: bootstrap or adopt the repository first (/psxdecomp:upgrade)"
                           % (repo, RECORD, common.FIREWALL))
     have = upgrade.record_tables(repo).get("oracle") or {}
-    own, fresh = False, []
+    own, fresh, checked = False, [], None
+    if expect and not byo:
+        raise common.Fail("--expect goes with --byo: it checks a supplied copy. Nothing was written")
     if byo:
         path = pathlib.Path(os.path.expanduser(byo)).resolve()
         if inside(path, repo):
             raise common.Fail("the copy lies inside the repository (firewall): keep it outside. Nothing was written")
         if not path.exists():
             raise common.Fail("%s does not exist. Nothing was written" % path)
+        if expect:                                # first: is this the build that the page describes?
+            checked = "%d stated hash(es) matched" % stated(path, expect)
         own = bool(dump) and path == pathlib.Path(os.path.expanduser(dump)).resolve()
         if not own:
+            checked = checked or "no stated hash"
             fresh = copy_hashes(path)
             if not fresh:
                 raise common.Fail("%s holds no file to hash (empty, or over %d MiB each). Nothing was written"
@@ -155,6 +211,8 @@ def record(repo, debug: dict | None, byo: str | None, dump: str | None = None, d
         text = upgrade.record_set(text, "oracle", "disc_debug_files", int(debug["count"]))
         text = upgrade.record_set(text, "oracle", "disc_psyq_sym", int(debug["psyq_sym"]))
     text = upgrade.record_set(text, "oracle", "byo", said)
+    if checked:
+        text = upgrade.record_set(text, "oracle", "byo_checked", checked)
     written = []
 
     def w(rel, body):
@@ -168,7 +226,9 @@ def record(repo, debug: dict | None, byo: str | None, dump: str | None = None, d
     if merged and HASHES not in common.firewall_lines(fw, "required"):
         w(common.FIREWALL, fw.rstrip("\n") + "\n\n" + REQUIRED)
     w(RECORD, text)
-    return written, "%s; byo: %s%s" % (scan_line(common.load_toml_str(text)["oracle"]), said, " (%d new)" % (len(merged) - len(old)) if fresh else "")
+    return written, "%s; byo: %s%s%s" % (scan_line(common.load_toml_str(text)["oracle"]), said,
+                                         " (%d new)" % (len(merged) - len(old)) if fresh else "",
+                                         ", %s" % checked if checked else "")
 
 
 def scan_line(table: dict) -> str:
@@ -196,6 +256,8 @@ def main(argv=None) -> int:
     copy = ap.add_mutually_exclusive_group()
     copy.add_argument("--byo")
     copy.add_argument("--no-copy", action="store_true")
+    ap.add_argument("--expect", action="append", default=[], metavar="SHA1",
+                    help="a SHA-1 that the build's page states (repeatable): the copy must hold a file with one")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args(argv)
@@ -217,7 +279,7 @@ def main(argv=None) -> int:
             debug = load_debug(a.medium)
         elif "disc_debug_files" not in (__import__("upgrade").record_tables(repo).get("oracle") or {}):
             raise common.Fail("no disc scan yet: give --dump <your dump>, or --medium <a medium.json>")
-        written, line = record(repo, debug, a.byo, a.dump, a.dry_run)
+        written, line = record(repo, debug, a.byo, a.dump, a.dry_run, a.expect)
     except common.Fail as e:
         print("FAIL %s" % e)
         return 1
@@ -291,7 +353,8 @@ def self_test() -> int:
         ok &= common.read(repo / HASHES) == HEAD + "%s  PROTO.SYM\n" % want
         ok &= common.firewall_lines(common.read(repo / common.FIREWALL), "required") == [HASHES]
         ok &= table(repo)["byo"] == "1 file(s) hashed" and table(repo)["disc_debug_files"] == 2
-        ok &= line.endswith("byo: 1 file(s) hashed (1 new)") and str(out) not in common.read(repo / RECORD)
+        ok &= line.endswith("byo: 1 file(s) hashed (1 new), no stated hash") and str(out) not in common.read(repo / RECORD)
+        ok &= table(repo)["byo_checked"] == "no stated hash"
         ok &= record(repo, None, str(sym))[0] == []                                     # idempotent
         # a folder: one per file, merged and sorted by name; the empty file and the cache folder give none
         d = out / "build"
@@ -325,6 +388,38 @@ def self_test() -> int:
         ok &= parse_hashes(common.read(img / HASHES)) == got
         ok &= "disc_debug_files" not in table(img) and scan_line(table(img)) == "disc: not scanned"
         print("  a disc image: %d hashes (%s)" % (len(got), ", ".join(sorted(set(got.values())))))
+        # --expect: a stated hash matches a file of the copy, or the copy is refused before any write
+        chk, proto2 = fresh(td, "check"), out / "REVIEW.SYM"
+        proto2.write_bytes(b"MND\x01review")
+        good, wrong = hashlib.sha1(b"MND\x01review").hexdigest(), "0" * 40
+        before = common.read(chk / RECORD)
+        ok &= refused(chk, debug, str(proto2), None, False, [wrong]) and refused(chk, debug, str(proto2), None, False, ["xyz"])
+        ok &= refused(chk, debug, None, None, False, [good])                            # a hash and no copy
+        ok &= common.read(chk / RECORD) == before and not (chk / HASHES).exists()
+        written, line = record(chk, debug, str(proto2), expect=[wrong, good.upper()])
+        ok &= table(chk)["byo_checked"] == "1 stated hash(es) matched" and line.endswith(", 1 stated hash(es) matched")
+        record(chk, debug, None)                                                        # a later scan keeps the line
+        ok &= table(chk)["byo_checked"] == "1 stated hash(es) matched"
+        # a file over the cap is hashed for the check and gives no line: the page states the hash of a whole image
+        big, cap = fresh(td, "big"), globals()["CAP"]
+        track = pathlib.Path(paths["cue"]).parent / "HOMEBREW (Track 1).bin"
+        globals()["CAP"] = 1024
+        try:
+            ok &= track.stat().st_size > CAP and refused(big, None, paths["cue"], None, False, [wrong])
+            record(big, None, paths["cue"], expect=[sha1_file(track)])                  # the sheet alone: its track counts
+            names = set(parse_hashes(common.read(big / HASHES)).values())
+            ok &= table(big)["byo_checked"] == "1 stated hash(es) matched" and "SYSTEM.CNF" in names and track.name not in names
+        finally:
+            globals()["CAP"] = cap
+        print("  --expect over the cap: %s" % ", ".join(sorted(names)))
+        # the identifiers of a report's table: the build rows only, with or without code marks
+        report = ("# builds\n## Leads\n| a | b |\n## archive.org items\n"
+                  "| identifier | kind (build or document) | confirmed by | file | SHA-1 |\n|---|---|---|---|---|\n"
+                  "| `ExampleQuestJan011999prototype` | build | the page's hash | 00preview.jpg | %s |\n"
+                  "| example-quest-manual | document | the page's link | manual.pdf | %s |\n"
+                  "| ExampleQuestJan011999prototype | build | the page's link | x.7z | %s |\n"
+                  "## Dead ends\n| other-item-name | build | x | y | z |\n" % (good, good, good))
+        ok &= build_items(report) == ["ExampleQuestJan011999prototype"] and build_items("# builds\n## Leads\n") == []
         # the two shapes of --medium; a file that is neither
         common.write(out / "medium.json", json.dumps({"debug_artifacts": debug, "serial": "X"}))
         common.write(out / "debug.json", json.dumps(debug))
@@ -344,9 +439,12 @@ def self_test() -> int:
             ok &= table(cli) is None
             ok &= main(["record", "--repo", str(cli), "--dump", paths["cue"], "--no-copy"]) == 0
             ok &= table(cli) == {"checked": common.today(), "disc_debug_files": 1, "disc_psyq_sym": 1, "byo": "none"}
-            ok &= main(["record", "--repo", str(cli), "--byo", str(sym)]) == 0 and table(cli)["byo"] == "1 file(s) hashed"
+            ok &= main(["record", "--repo", str(cli), "--byo", str(sym), "--expect", "0" * 40]) == 1
+            ok &= table(cli)["byo"] == "none" and not (cli / HASHES).exists()
+            ok &= main(["record", "--repo", str(cli), "--byo", str(sym), "--expect", want]) == 0
+            ok &= table(cli)["byo"] == "1 file(s) hashed" and table(cli)["byo_checked"] == "1 stated hash(es) matched"
         ok &= "FAIL no disc scan yet" in buf.getvalue() and "NEXT commit %s %s %s" % (HASHES, common.FIREWALL, RECORD) in buf.getvalue()
-        ok &= "AUDIT not run" in buf.getvalue()
+        ok &= "AUDIT not run" in buf.getvalue() and "FAIL no file of the copy has a stated hash" in buf.getvalue()
     return common.self_test_banner("oracle", ok)
 
 

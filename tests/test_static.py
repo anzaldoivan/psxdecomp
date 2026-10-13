@@ -417,7 +417,18 @@ def test_builds_question_reaches_the_gate():
     seeds = tomllib.loads((ROOT / "profiles/psx/profile.toml").read_text())["research"]["search_seeds"]
     assert sum("hiddenpalace.org" in x or "datacrystal" in x or '".SYM"' in x for x in seeds) == 3, seeds
     assert all(w in gate for w in ("`debug_artifacts`", "`PSXDECOMP_BYO_ORACLE_PATH`", "Do you have your own copy?",
-                                   "`none`, `I'll paste a path`, `not using it`", "No other build with symbols found"))
+                                   "`none`, `I'll paste a path`, `not using it`", "No other build found"))
+    # any checked build, one at the gate: the wording, the sentence for a checked item, the hashes beside the path
+    assert "> Another build of this program exists: `<id>` (`<page>`). It carries `<what>`." in gate
+    assert "A build with symbols exists" not in gate and "Never give a download link" not in gate
+    assert all(w in gate for w in ("`PSXDECOMP_BYO_ORACLE_SHA1`", "I do not\n  > download it", "Never fetch a build",
+                                   "only in this question", "`psxd oracle record --repo . --byo <path> --expect <sha1>`"))
+    assert all(w in builds for w in ("archive.org/advancedsearch.php", "archive.org/metadata/<identifier>",
+                                     "`## archive.org items`", "It holds no identifier", "tcrf.net refuses every agent"))
+    scout = (ROOT / "agents/scout-web.md").read_text()
+    assert all(w in scout for w in ("**Never fetch tcrf.net.**", "archive.org/wayback/available?url=", "untrusted",
+                                    "use no other tool", "## archive.org items\n| identifier | kind (build or document) | "
+                                    "confirmed by | file | SHA-1 |", "Never fetch an item's file"))
     # a headless run shows the first round only, so the question is in it and the references group gives its slot
     ask = gate.split("## The oracle-build question (in the first round, when a build was named)", 1)[1].split("\n## ", 1)[0]
     assert "the first round is the prior-art group, the answers group, the PsyQ question\nand this question" in ask
@@ -440,9 +451,13 @@ def test_builds_question_reaches_the_gate():
                        ("skills/doctor/SKILL.md", ("| `oracle` |", "oracle record --repo ."))):
         assert all(w in (ROOT / rel).read_text() for w in words), rel
     assert "PSXDECOMP_BYO_ORACLE_PATH" in answers.EXTRAS and "PSXDECOMP_BYO_ORACLE_PATH" not in answers.KEY_NAMES
+    assert "PSXDECOMP_BYO_ORACLE_SHA1" in answers.EXTRAS and "PSXDECOMP_BYO_ORACLE_SHA1" not in answers.KEY_NAMES
     doc = fetch_refs.load_doc(ROOT / "profiles/psx/refs.toml")
     rows = {r["name"]: r for r in doc["rows"]}
     assert rows["oracle-build"]["class"] == "byo" and not rows["oracle-build"]["url"]
+    assert "A person reads the live page" in rows["tcrf"]["note"] and "no agent fetches tcrf.net" in rows["tcrf"]["note"]
+    profile = (ROOT / "profiles/psx/profile.toml").read_text()
+    assert "a person reads the live page\n" in profile.split('tcrf prototype"')[0]
     assert rows["nfshs-psx-decomp"]["class"] == rows["hidden-palace"]["class"] == rows["psxdatacenter"]["class"] == "link"
     assert rows["psx-mnd-sym"]["tier"] == "optional" and "ghidra_scripts" in rows["ghidra-psx-ldr"]["paths"]
     assert [a["order"] for a in doc["authority"] if "is called" in a["topic"] and "PsyQ" not in a["topic"]] == [["oracle-build"]]
@@ -450,6 +465,12 @@ def test_builds_question_reaches_the_gate():
     policy = (ROOT / "docs/REFS.md").read_text().split("## Oracle builds", 1)[1].split("\n## ", 1)[0]
     assert all(w in policy for w in ("`PSXDECOMP_BYO_ORACLE_PATH`", "no disc image", "leaked source code", "byte check",
                                      "`config/oracle.sha1`", "`glob:`"))
+    # the check-out rule's five points, where an item is named, and a site that refuses agents
+    assert all(w in policy for w in ("a second source confirms it", "A ROM set, a Redump mirror and a retail image never",
+                                     "The developer downloads", "before anything else reads it", "becomes a `link` row"))
+    assert "No committed file holds a download URL" in policy and "No file holds a download URL" not in policy
+    assert all(w in policy for w in ("the ignored `.run/`", "never fetched live", "archive.org/wayback/available?url=",
+                                     "No other tool takes its place", "--expect <sha1>"))
     assert "debug_artifacts" in (ROOT / "profiles/SCHEMA.md").read_text()
     for rel in ("agents/scout-web.md", "skills/new/reference/report-template.md"):
         assert "For a person to read" in (ROOT / rel).read_text(), rel

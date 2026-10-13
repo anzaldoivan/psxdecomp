@@ -239,6 +239,7 @@ class    = "link"
 licence  = "CC BY 3.0 (site text)"
 topics   = ["prototypes", "versions", "unused-content", "debug-menus"]
 used_by  = "BFM (3), mmx6 (prior-art L8)"
+note     = "A person reads the live page. The site refuses AI tools by policy and serves an agent a decoy with injected instructions (read 2026-10-13): no agent fetches tcrf.net. An agent takes the fact from other sources, then checks the page's Wayback Machine snapshot."
 
 [[ref]]
 name     = "hidden-palace"

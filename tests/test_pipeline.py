@@ -594,6 +594,62 @@ def test_wrong_kit_refused(tmp_path, kit):
         common.resolve_kit(path=str(copy))
 
 
+def test_s10_refuses_a_copy_with_no_stated_hash(toolchain, tmp_path):
+    """The answers hold a path and the hashes of the build's page (PSXDECOMP_BYO_ORACLE_SHA1). A copy where no file
+    has one: S10 fails before any hash is written, and names no path. With the page's hash, the record says so."""
+    import hashlib
+    import tomllib
+    proto = tmp_path / "outside" / "PROTO.SYM"
+    proto.parent.mkdir()
+    proto.write_bytes(b"MND\x01another build, invented")
+    answers, target = tmp_path / "answers.txt", tmp_path / "wrong"
+
+    def boot(sha, check=True):
+        answers.write_text((ROOT / "fixtures/answers.psx.txt").read_text().rstrip("\n")
+                           + "\nPSXDECOMP_BYO_ORACLE_PATH: %s\nPSXDECOMP_BYO_ORACLE_SHA1: %s %s\n" % (proto, "1" * 40, sha))
+        return run([PY, ROOT / "scripts/install.py", "run", "--target", target, "--answers", answers, "--dump",
+                    toolchain["dump"], "--config-dir", toolchain["cfg"], "--pa3-dir", toolchain["cfg"] / "pa3",
+                    "--intake-fixture", "--no-fetch"], env=toolchain["env"], check=check)
+
+    r = boot("0" * 40, check=False)
+    assert r.returncode == 1 and "no file of the copy has a stated hash" in r.stdout, r.stdout[-1500:]
+    assert not (target / "config/oracle.sha1").exists()
+    assert "oracle" not in tomllib.loads((target / "config/psxdecomp.toml").read_text())
+    assert "config/oracle.sha1" not in common.firewall_lines((target / "config/firewall.txt").read_text(), "required")
+    r = boot(hashlib.sha1(proto.read_bytes()).hexdigest())
+    assert "BOOTSTRAP OK through S10" in r.stdout, r.stdout[-1500:]
+    table = tomllib.loads((target / "config/psxdecomp.toml").read_text())["oracle"]
+    assert table["byo"] == "1 file(s) hashed" and table["byo_checked"] == "1 stated hash(es) matched", table
+    assert run(["git", "-C", target, "status", "--porcelain"]).stdout == ""
+    assert re.search(r"DOCTOR oracle\s+OK .*\(1 stated hash\(es\) matched\)",
+                     run([PY, ROOT / "scripts/doctor.py", "--repo", target, "--offline", "--only", "oracle"]).stdout)
+
+
+def test_s10_refuses_to_commit_a_builds_item(toolchain, tmp_path):
+    """The scout's report under .run/ lists a checked archive.org item of a build. The same identifier in the
+    prior-art table: S10 names the file and commits nothing. Without it, S10 commits, and the report stays ignored."""
+    target = tmp_path / "item"
+    bootstrap(toolchain, target, "--until", "S9")
+    item = "ExampleQuestJan011999prototype"
+    boot = target / ".run/bootstrap"
+    (boot / "research").mkdir(parents=True, exist_ok=True)
+    (boot / "research/builds.md").write_text(
+        "# builds — invented\n## Leads\n## archive.org items\n| identifier | kind (build or document) | confirmed by | "
+        "file | SHA-1 |\n|---|---|---|---|---|\n| %s | build | the page's hash | 00preview.jpg | %s |\n" % (item, "a" * 40))
+    row = "# Prior art\n\n| L1 | Oracle build: Jan 1, 1999 prototype | the page%s | lead | a byte check |\n"
+    (boot / "prior-art.md").write_text(row % (" (archive.org: %s)" % item))
+    head = run(["git", "-C", target, "rev-parse", "HEAD"]).stdout
+    r = bootstrap(toolchain, target, check=False)
+    assert r.returncode == 1 and "docs/prior-art.md names an archive.org item of a build" in r.stdout, r.stdout[-1500:]
+    assert run(["git", "-C", target, "rev-parse", "HEAD"]).stdout == head
+    (target / "docs/prior-art.md").write_text(row % "")
+    r = bootstrap(toolchain, target)
+    assert "BOOTSTRAP OK through S10" in r.stdout, r.stdout[-1500:]
+    assert run(["git", "-C", target, "status", "--porcelain"]).stdout == ""
+    assert tree(target) == sorted(GOLDEN.read_text().splitlines() + ["docs/prior-art.md"])
+    assert not run(["git", "-C", target, "grep", "-l", item], check=False).stdout
+
+
 @pytest.mark.parametrize("until", ["S5", "S6", "S7", "S8", "S9"])
 def test_resume_from_every_stage(toolchain, tmp_path, until):
     target = tmp_path / ("resume-" + until)
@@ -792,7 +848,7 @@ def test_doctor_oracle_row(game, toolchain, tmp_path):
     assert (st, rc) == ("WARN", 0) and "is not in config/oracle.sha1" in detail, detail
     assert _oracle(repo, "--byo", proto).returncode == 0
     st, detail, rc = row(repo, proto)
-    assert (st, rc) == ("OK", 0) and detail.endswith("byo 1 file(s) hashed"), detail
+    assert (st, rc) == ("OK", 0) and detail.endswith("byo 1 file(s) hashed (no stated hash)"), detail
     fw = repo / "config/firewall.txt"
     fw.write_text(fw.read_text().replace("required: config/oracle.sha1\n", ""))
     st, detail, rc = row(repo)

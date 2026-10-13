@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -49,11 +50,14 @@ EXTRAS = {
     "PSXDECOMP_BYO_PSYQ_PATH": "optional local folder of your own PsyQ SDK (never fetched, never committed)",
     "PSXDECOMP_BYO_ORACLE_PATH": "optional local path of your own copy of another build of this program that carries "
                                  "more than the target (symbols, a link map); never fetched, never committed",
+    "PSXDECOMP_BYO_ORACLE_SHA1": "optional, with the path above: the SHA-1 values that the build's page states (40 hex "
+                                 "digits each, space separated); the copy must hold a file with one",
     "PSXDECOMP_BACKTEST_EXCLUDE": "backtests only: the replayed project's own repositories (OWNER/REPO, space separated), "
                                   "which S3 must not read",
 }
 
 
+SHA1_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 CANDIDATE = "Candidate (S4 %s; superseded by the pinned toolchain triple once phase 1.4 pins it): "
 
 
@@ -124,6 +128,11 @@ def check(values: dict, allow_no_dump: bool = False) -> list[str]:
     oracle = values.get("PSXDECOMP_BYO_ORACLE_PATH", "")
     if oracle and not os.path.isabs(os.path.expanduser(oracle)):
         errs.append("PSXDECOMP_BYO_ORACLE_PATH must be an absolute path outside the repository")
+    stated = values.get("PSXDECOMP_BYO_ORACLE_SHA1", "").split()
+    if stated and not oracle:
+        errs.append("PSXDECOMP_BYO_ORACLE_SHA1 goes with PSXDECOMP_BYO_ORACLE_PATH: it checks that copy")
+    if any(not SHA1_RE.match(s) for s in stated):
+        errs.append("PSXDECOMP_BYO_ORACLE_SHA1 holds SHA-1 values only (40 hex digits each, space separated)")
     unknown = [k for k in values if k not in KEY_NAMES and k not in EXTRAS and k not in OPTIONAL]
     errs += ["unknown key %s" % k for k in unknown]
     con = values.get("PSXDECOMP_CONSOLE", "psx")
@@ -209,6 +218,11 @@ def self_test() -> int:
     ok &= check(byo, True) == [] and parse(render(byo, note, extras=True))[0] == byo
     ok &= "PSXDECOMP_BYO_ORACLE_PATH" in split(byo)[1] and "PSXDECOMP_BYO_ORACLE_PATH" not in split(byo)[0]
     ok &= any("ORACLE_PATH must be an absolute" in e for e in check(dict(v, PSXDECOMP_BYO_ORACLE_PATH="GAME.SYM"), True))
+    sha = dict(byo, PSXDECOMP_BYO_ORACLE_SHA1="%s %s" % ("a" * 40, "0F" * 20))
+    ok &= check(sha, True) == [] and parse(render(sha, note, extras=True))[0] == sha
+    ok &= "PSXDECOMP_BYO_ORACLE_SHA1" in split(sha)[1] and "PSXDECOMP_BYO_ORACLE_SHA1" not in split(sha)[0]
+    ok &= any("40 hex digits" in e for e in check(dict(sha, PSXDECOMP_BYO_ORACLE_SHA1="a" * 39), True))
+    ok &= any("goes with PSXDECOMP_BYO_ORACLE_PATH" in e for e in check(dict(v, PSXDECOMP_BYO_ORACLE_SHA1="a" * 40), True))
     once = scope_candidate(v, "2026-10-01")
     ok &= once["COMPILER_FAMILY"] == CANDIDATE % "2026-10-01" + v["COMPILER_FAMILY"]
     ok &= scope_candidate(once, "2027-01-01") == once and scope_candidate({}) == {} and v == parse(text)[0]

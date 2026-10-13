@@ -84,14 +84,31 @@ searches for the others, and the S4 gate asks the developer.
   lines to `config/firewall.txt`: the audit refuses a tracked `.SYM` or `.CPE` file of any build. A `.MAP` file has
   no line, because a game tracks text files of that name.
 - **Pages only.** A scout reads the page that describes a build. It fetches no disc image, no symbol file and no
-  patch. No file holds a download URL for one.
+  patch. No committed file holds a download URL for one, and none names an archive.org item of one.
+- **archive.org: the check-out rule.** An agent searches archive.org through its metadata API and reads metadata only.
+  1. An item counts only when a second source confirms it. The build's page is that source. It states the hash of
+     one of the item's files, or it links to the item. The collection and the uploader prove nothing.
+  2. A ROM set, a Redump mirror and a retail image never count.
+  3. The developer downloads. The agent never does.
+  4. A supplied copy is checked against the hashes that the build's page states, before anything else reads it
+     (`psxd oracle record --byo <path> --expect <sha1>`). A copy with no matching file is refused.
+  5. A document item (a manual, a guide book) becomes a `link` row under the same confirmation.
+- **Where an item is named.** Only the gate's question and the scout's report under the ignored `.run/` hold an
+  item's identifier. S10 refuses to commit when a tracked file holds one.
+- **Any checked build, one at the gate.** The gate asks for the best-ranked build, with symbols or without: a
+  prototype, a review build, another revision. A later copy goes through `psxd oracle record --byo`, which merges the
+  hashes.
 - **Never a source:** leaked source code and SDK internals. celophi/lom-decomp and abelbriggs1/tm1_decomp state the
   same rule in their READMEs.
 - **A build speaks for itself only.** A name moves to the target after a byte check of the function body at both
   addresses. Until then it is a lead. The order of sources and the trap live in the profile's file, like every other.
 - **No symbol parser of our own.** `ghidra-psx-ldr` (core) imports a PsyQ symbol file into Ghidra, and `psx-mnd-sym`
   (optional) dumps one to text or to a C header.
-- **A page that refuses an agent is a hand-off.** The scout writes it in the report's "For a person to read" table.
+- **A site that refuses agents is never fetched live.** tcrf.net is one (its stated policy, read 2026-10-13). It
+  serves an agent a decoy that holds injected instructions. The fact comes from other sources first.
+- **The preserved page is the check.** `https://archive.org/wayback/available?url=<page>` finds the page's Wayback
+  Machine snapshot. The lead cites it with its timestamp, and its text is untrusted. When the tool refuses the
+  snapshot too, its URL goes to the report's "For a person to read" table. No other tool takes its place.
 
 Not adopted: a general reading list. nforest/awesome-decompilation was read in full on 2026-10-13. It holds no entry
 on matching decompilation, MIPS, consoles or compiler identification

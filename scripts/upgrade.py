@@ -155,7 +155,8 @@ TABLE_NOTE = {
                  "# never overwritten unasked (`/psxdecomp:upgrade apply --take <action>`).",
     "host": "# [host]: the host recipe of the machine that builds.",
     "oracle": "# [oracle]: the oracle-build question (psxdecomp's `oracle record`). The disc scan gives counts only. `byo` says\n"
-              "# whether the developer supplied a copy of another build: config/oracle.sha1 holds its hashes, never a path.",
+              "# whether the developer supplied a copy of another build: config/oracle.sha1 holds its hashes, never a path.\n"
+              "# `byo_checked` says whether the last copy held a file with a hash that the build's page states.",
 }
 
 

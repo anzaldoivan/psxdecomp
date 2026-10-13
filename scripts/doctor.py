@@ -654,6 +654,8 @@ def oracle_row(table: dict | None, repo: pathlib.Path, byo: str | None) -> tuple
     if not isinstance(table, dict):
         return "WARN", "no [oracle] in the record: run `%s`" % oracle.COMMAND
     what = "%s, checked %s; byo %s" % (oracle.scan_line(table), table.get("checked", "?"), table.get("byo", "?"))
+    if table.get("byo_checked"):
+        what += " (%s)" % table["byo_checked"]
     if "disc_debug_files" not in table:
         return "WARN", what + ": run `%s`" % oracle.COMMAND
     if path and table.get("byo") != "own disc":
@@ -1181,11 +1183,12 @@ def self_test() -> int:
         common.write(repo / oracle.HASHES, "%s  copy.sym\n" % oracle.sha1_file(out))
         cases += [(oracle_row(t, repo, None), "FAIL")]                    # the hash file, and no `required:` line
         common.write(repo / common.FIREWALL, "purge: disks/\n" + oracle.REQUIRED)
-        cases += [(oracle_row(dict(t, byo="1 file(s) hashed"), repo, str(out)), "OK")]
+        cases += [(oracle_row(dict(t, byo="1 file(s) hashed", byo_checked="1 stated hash(es) matched"), repo, str(out)), "OK")]
         out.unlink()
         for got, want in cases:
             ok &= got[0] == want
         ok &= oracle.COMMAND in cases[0][0][1] and "not in %s" % oracle.HASHES in cases[5][0][1]
+        ok &= cases[-1][0][1].endswith("byo 1 file(s) hashed (1 stated hash(es) matched)")
         print("  oracle row: %s" % cases[-1][0][1])
     with tempfile.TemporaryDirectory() as td:                           # hygiene: clean tree OK, one planted line WARN
         repo = pathlib.Path(td).resolve()

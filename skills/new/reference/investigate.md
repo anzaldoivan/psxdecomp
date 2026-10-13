@@ -29,7 +29,7 @@ Inputs: the title, region/version and serial (from `.run/bootstrap/interview.jso
      Then fetch `https://archive.org/metadata/<identifier>` for items whose title names a hack, patch, project or
      documentation. Read only text and workbook files, never a disc image, ROM set or patch archive.
 4. **ports** — recompilation or port projects (psxrecomp-based, PC ports): facts plus their licence.
-5. **versions** — releases, revisions and prototypes (TCRF, Redump): which release to target and why.
+5. **versions** — releases, revisions and prototypes (Redump, Hidden Palace): which release to target and why.
    A build that carries symbols can be the better first target. Weigh it against the release the developer owns.
 6. **sdk** — for the detected SDK stamp (`medium.json psyq.version`). Start from its rows in
    `profiles/psx/psyq.toml`. Then find the matching triples (compiler + aspsx + flags) it lacks, and where each was
@@ -47,10 +47,20 @@ Inputs: the title, region/version and serial (from `.run/bootstrap/interview.jso
    - A lead records what the build carries: names, function boundaries, file layout, types.
    - Its `how to verify` is a byte check. N function bodies are byte-identical at the mapped addresses of both builds.
    - The agent reads pages only. It fetches no disc image, no symbol file and no patch, and it writes no download URL.
+   - The agent also searches archive.org, by metadata calls only. The search is
+     `https://archive.org/advancedsearch.php?q=<title>+prototype&fl[]=identifier&fl[]=title&fl[]=mediatype&rows=25&output=json`.
+     `https://archive.org/metadata/<identifier>` then gives an item's files, their sizes and their SHA-1 values.
+   - An item is checked when the build's page confirms it: the page states one of its SHA-1 values, or links to it.
+     Skip every ROM set, Redump mirror and retail image. The rule: [docs/REFS.md](../../../docs/REFS.md), "Oracle
+     builds".
+   - A checked item goes to the report's table `## archive.org items`, with the hash that confirmed it. A document
+     item (a manual, a guide book) becomes a `link` row.
+   - A lead's row holds the build's date, its page and the hashes that the page states. It holds no identifier.
    - Leaked source code and SDK internals are never a source. Such a find is one line under Dead ends, with that reason.
    - A build is never a `[[ref]]` row of its own. The profile's `oracle-build` row covers it. The page that describes
      it becomes a `link` row.
    - A page that refuses the agent goes to the report's "For a person to read" table.
+   - tcrf.net refuses every agent: its live pages are never fetched.
 
 **GitHub search.** Right after the decomp.dev lookup, run
 `"$PSXD" ghsearch --title "<title>" --serial "<serial>" --exe <TARGET_BINARY>`. Add `--exclude "<value>"` (quoted)

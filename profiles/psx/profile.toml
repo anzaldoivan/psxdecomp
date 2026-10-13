@@ -44,6 +44,7 @@ search_seeds = [
   "\"{title}\" decompilation github",
   "\"{title}\" disassembly OR symbols OR \"ram map\"",
   "\"{serial}\" decomp OR recomp",
+  # tcrf.net refuses AI tools (read 2026-10-13): the two TCRF seeds are search seeds, and a person reads the live page
   "\"{title}\" tcrf prototype",
   "\"{title}\" randomizer OR archipelago OR practice hack",
   "site:decomp.dev \"{title}\"",
