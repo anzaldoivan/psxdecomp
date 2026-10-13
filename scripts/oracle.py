@@ -78,7 +78,7 @@ BUILDS_HEAD = ("# %s: the other builds of this game that a developer supplied (p
                "# the build's page states. `image`: the file that doctor looks for in a registered copy. No byte and no path\n"
                "# of a build is here: a path lies in the git directory of each clone (`psxd oracle list`).\n" % BUILDS)
 BUILD_KEYS = ("id", "class", "carries", "page", "expect", "checked", "files", "matched", "image", "image_size")
-CLASSES = ("region", "prototype", "review", "debug", "demo", "port", "revision", "sibling", "unstated")
+CLASSES = ("region", "prototype", "review", "debug", "demo", "port", "revision", "sibling")
 CAP = 50 << 20                                   # the audit refuses a tracked file over 50 MiB whatever it holds
 IMAGE_EXT = (".cue", ".bin", ".iso", ".img")
 COMMAND = "psxd oracle record --repo . --dump <your dump>"
@@ -510,8 +510,8 @@ def main(argv=None) -> int:
                 debug = identify.identify(dump)[0]["debug_artifacts"]
             elif a.medium:
                 debug = load_debug(a.medium)
-            elif "disc_debug_files" not in (__import__("upgrade").record_tables(repo).get("oracle") or {}):
-                raise common.Fail("no disc scan yet: give --dump <your dump>, or --medium <a medium.json>")
+            else:
+                raise common.Fail("`record` writes a disc scan: give --dump <your dump>, or --medium <a medium.json>")
             written, line = record(repo, debug, a.dump, a.dry_run)
     except common.Fail as e:
         print("FAIL %s" % e)
@@ -737,7 +737,7 @@ def self_test() -> int:
             ok = False
         except common.Fail:
             pass
-        # the command line: a scan is needed once, a refusal exits 1, `locate` prints the path alone
+        # the command line: `record` needs a scan, a refusal exits 1, `locate` prints the path alone
         cli = fresh(td, "cli")
         buf, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
@@ -745,12 +745,13 @@ def self_test() -> int:
             ok &= main(["record", "--repo", str(cli), "--dump", str(cli / "notes" / "x.cue")]) == 1
             ok &= main(["record", "--repo", str(cli), "--dump", paths["cue"]]) == 0
             ok &= table(cli) == {"checked": common.today(), "disc_debug_files": 1, "disc_psyq_sym": 1}
+            ok &= main(["record", "--repo", str(cli)]) == 1                             # a scan exists: still no source
             ok &= main(["add", "--repo", str(cli), "--id", "proto-a", "--path", str(sym), "--expect", "0" * 40]) == 1
             ok &= builds(cli) == [] and main(["locate", "--repo", str(cli), "--id", "proto-a"]) == 1
             ok &= main(["locate", "--repo", str(fresh(td, "nodump")), "--id", RETAIL]) == 1
             ok &= main(["add", "--repo", str(cli), "--id", "proto-a", "--path", str(sym), "--expect", want, "--class", "prototype"]) == 0
             ok &= build(cli, "proto-a")["matched"] == [want] and main(["list", "--repo", str(cli)]) == 0
-        ok &= "FAIL no disc scan yet" in buf.getvalue() and "FAIL the dump lies inside the repository" in buf.getvalue()
+        ok &= "FAIL `record` writes a disc scan" in buf.getvalue() and "FAIL the dump lies inside the repository" in buf.getvalue()
         ok &= "NEXT commit %s %s %s" % (HASHES % "proto-a", common.FIREWALL, BUILDS) in buf.getvalue()
         ok &= "AUDIT not run" in buf.getvalue() and "FAIL no file of the copy has a stated hash" in buf.getvalue()
         ok &= "ORACLE 1 build(s), 1 on this machine" in buf.getvalue() and "`proto-a` is not on this machine" in err.getvalue()

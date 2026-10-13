@@ -77,9 +77,9 @@ edits a file. The hook reads `config/guard.tsv`. psxdecomp writes that file once
 - The hook reads the rules of the checkout that the call changes. A linked worktree is guarded by its own copy.
 - The `guard` row of the doctor fails on a `bash` pattern that matches the empty command. Such a pattern refuses
   every command.
-- The default rows refuse an edit of `asm/`, of the hash files, of the two baselines and of the record of the other
-  builds.
+- The default rows refuse an edit of `asm/`, of the hash files and of the two baselines.
 - `.claude/settings.json` also holds an `Edit(...)` deny rule for each of those paths. It stops a shell redirection too.
+- A new game also has two rows for `config/oracle.toml` and `config/oracle.*.sha1`. Add them to an older game by hand.
 - Add a row when a session must not run a command raw, such as a new split. The file holds two examples.
 
 ## The tooling rows
@@ -124,8 +124,8 @@ A game has one command that proves a change. The default is `make verify`.
 - `--bank` writes the rows of the baseline when the change is admitted. A bank tool calls it before the commit.
 - `--bank` and `--push` also run the check of the game, `[floor] gate` or `[own] gate`.
 - The checks are `policy`, `debt`, `trials`, `protected`, `style`, `names`, `symdump`, `own-debt`, `plan`, `toolchain`, `readme` and `categories`.
-- `symdump` reads each tracked text file. It fails on 64 lines in a row with the shape of a PsyQ symbol dump or of
-  a link map's name table. A short quote passes.
+- `symdump` reads each tracked text file. It fails on 64 lines in a row with the shape of a PsyQ symbol dump. A
+  short quote passes.
 - `protected` covers the files that carry the floor. The first are the two tools and the workflows.
 - It also covers the hooks and the deny rules of `.claude/settings.json`, and the `deny` rows of `config/guard.tsv`.
 - It also covers each check that the record names in `[own]`, `[trial]`, `[floor]` or `[debt]`.
@@ -279,9 +279,8 @@ The rule is `rules/NAME1.md`. `python3 tools/psxd_floor.py names` checks two tab
 
 ## Other builds of the game
 
-A prototype, a debug build or another revision can tell more than the target does. The game keeps a record of each
-build that a developer supplies. It keeps no byte of one. `psxd` is the launcher of the psxdecomp plugin
-(`scripts/psxd`).
+A prototype, a debug build or another revision can tell more than the target does. The game keeps one table and one
+checksum file for each such build that a developer supplies. It keeps no byte of one.
 
 | Where | What it holds | Tracked |
 |---|---|---|
@@ -291,28 +290,29 @@ build that a developer supplies. It keeps no byte of one. `psxd` is the launcher
 | `config/oracle.<id>.sha1` | the SHA-1 of each file of the build | yes |
 | the git directory of your clone | the path of your copy | no |
 
-- An id is the date of the build or its serial: `proto-2001-10-30`, `slpm-86959`. `retail` is the id of your dump.
-- Record a build once for the project. The page of the build states a hash, and the command checks your copy first:
+`psxd` is the launcher of the psxdecomp plugin. The game does not hold it.
+
+- An id is the date of the build or its serial: `proto-2001-10-30`, `slpm-86959`. `retail` is the id of your disc.
+- Add a build once for the project. The command checks your copy against the hash that the page of the build states:
 
       psxd oracle add --repo . --id <id> --path <your copy> --expect <sha1> --page <the page>
 
   Commit the files that it names. It also registers your path for this clone.
-- A build that another developer recorded needs only your path:
+- A build that another developer added needs only your path:
 
       psxd oracle link --repo . --id <id> --path <your copy>
 
-- List the builds, and get the path of one in a makefile or a tool:
+- List the builds. Print the path of one:
 
       psxd oracle list --repo .
       psxd oracle locate --repo . --id <id>
 
-- Each worktree of the clone finds the same paths. There is no `.env` file, and no tracked file holds a path of your
-  machine.
+- Each worktree of the clone finds the same paths. No tracked file holds a path of your machine.
 - A build that you do not have is no fault. The doctor's `oracle` row counts the builds on this machine.
 - The audit refuses a tracked copy of a file of a build, under any name. It also refuses a tracked `.SYM`, `.CPE`,
   `.PDB` or `.DBG` file, and a listing of 64 lines.
-- Never commit a symbol dump or a link map of a build as text. Keep the dump in `disks/builds/<id>/`. The gate's
-  `symdump` check refuses it.
+- Never commit the text of a symbol file. The gate's `symdump` check refuses it. Keep the text in
+  `disks/builds/<id>/`.
 - A name from another build is a lead. It moves to the target after a byte check of the function at both addresses.
 
 ## A tool of the game's own

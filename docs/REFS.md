@@ -76,39 +76,32 @@ file names. Of the PS1 projects read on 2026-10-13, the ones with such a build t
 types from it. S2 scans the developer's own disc for one (`medium.json` `debug_artifacts`). S3's **builds** question
 searches for the others, and the S4 gate asks the developer.
 
-- **Instructions only.** A build is the publisher's and never distributed. Its class is `byo` (the `oracle-build`
-  row). The developer supplies a copy (`PSXDECOMP_BYO_ORACLE_PATH`), and no tracked file holds its path.
-- **The home of a build.** A copy lies in the game's ignored `disks/builds/<id>/`, or outside the repository. The
-  kit ignores and purges `disks/`. Any other path inside the repository is refused. Six projects read on 2026-10-13
-  do the same: the image is ignored, and only a checksum file is committed. They are zeldaret/oot and mm,
-  Xeeynamo/sotn-decomp, celophi/lom-decomp, sushi-shi/kings-field-2-decomp and TOMB5/TOMB5.
-- **An id for each build.** An id is a slug of the build's date or its serial: `proto-2001-10-30`, `slpm-86959`,
-  `pc-2003-02-07`. `retail` is the dump's id. `psxd oracle add` writes one checksum file for each id,
-  `config/oracle.<id>.sha1`, and one `[[build]]` table in `config/oracle.toml`. Both are public in split mode.
-- **A hash record, and the firewall lines.** The checksum file holds the SHA-1 of each file of the copy. The line
-  `required: config/oracle.*.sha1` makes the game's audit refuse a tracked copy under any name. S9 adds four `glob:`
-  lines to `config/firewall.txt`: the audit refuses a tracked `.SYM`, `.CPE`, `.PDB` or `.DBG` file of any build. A
-  `.MAP` file has no line, because a game tracks text files of that name.
-- **The path is local.** `psxd oracle add` and `link` write the path of a copy to
-  `<git-common-dir>/psxdecomp/local.toml`. Git cannot track that file, and each worktree of the clone reads it.
-  `psxd oracle locate --id <id>` prints the path for a makefile. There is no `.env` file. A path with a space or a
-  parenthesis breaks Make and a sourced shell file, and no tool here reads one.
-- **No symbol dump as text.** A dump of a symbol file and a link map are files of the build, whatever tool wrote
-  the text. The gate's `symdump` check (`tools/psxd_floor.py`) refuses a tracked text file that holds a long run of
-  such lines. The game's `docs/ops/psxdecomp-floor.md` states the limit. The audit's own rule refuses a listing of 64
-  lines. A hash and a path rule see neither. diabpsx/psx_decomp commits such a dump (`rom/DIABPSX-SYM.txt`,
-  read 2026-10-13), and we do not follow it.
-- **A file derived from a build** (a dump, a listing, an extracted file, a C header from `psx-mnd-sym`) lies beside
-  the build in `disks/builds/<id>/`. A Ghidra database lies in the ignored `ghidra/`.
+- **Instructions only.** A build is the publisher's and never distributed. Its reference class is `byo` (the
+  `oracle-build` row). The developer supplies a copy (`PSXDECOMP_BYO_ORACLE_PATH`), and no tracked file holds its path.
+- **Ignored image, committed checksums.** A copy lies in the game's ignored `disks/builds/<id>/`, or outside the
+  repository. Git ignores the image, and the project commits only a checksum file for each build id. Six projects
+  read on 2026-10-13 do the same: zeldaret/oot and mm, Xeeynamo/sotn-decomp, celophi/lom-decomp,
+  sushi-shi/kings-field-2-decomp and TOMB5/TOMB5. In split mode the developer adds the checksum files to
+  `config/public-paths.txt`.
+- **Where the rest is written.** The id, the checksum file and the commands: `scripts/oracle.py` (its docstring),
+  and "Other builds of the game" in the game's `docs/ops/psxdecomp-floor.md`. The firewall's lines for a debug file:
+  `common.FIREWALL_DEBUG`.
+- **A local path, and no `.env` file.** The path of a copy lies in the git directory of the clone
+  (`psxdecomp/local.toml`). A path with a space breaks Make and a sourced shell file, and no tool here reads a
+  `.env` file.
+- **No symbol dump as text.** The text of a symbol file is a file of the build, whatever tool wrote it. A hash and
+  a path rule do not see it. The gate's `symdump` check refuses it (`tools/psxd_floor.py`). diabpsx/psx_decomp
+  commits such a text (`rom/DIABPSX-SYM.txt`, read 2026-10-13), and we do not follow it. A link map as text has no
+  check yet ([ECOSYSTEM.md](ECOSYSTEM.md), K35).
 - **Pages only.** A scout reads the page that describes a build. It fetches no disc image, no symbol file and no
-  patch. No committed file holds a download URL for one, and none names an archive.org item of one.
+  patch. No committed file holds a download URL for one.
 - **archive.org: the check-out rule.** An agent searches archive.org through its metadata API and reads metadata only.
   1. An item counts only when a second source confirms it. The build's page is that source. It states the hash of
      one of the item's files, or it links to the item. The collection and the uploader prove nothing.
   2. A ROM set, a Redump mirror and a retail image never count.
   3. The developer downloads. The agent never does.
-  4. A supplied copy is checked against the hashes that the build's page states, before anything else reads it
-     (`psxd oracle add --id <id> --path <path> --expect <sha1>`). A copy with no matching file is refused.
+  4. `psxd oracle add --id <id> --path <path> --expect <sha1>` checks a supplied copy against the hashes that the
+     build's page states, before anything else reads it. It refuses a copy with no matching file.
   5. A document item (a manual, a guide book) becomes a `link` row under the same confirmation.
 - **Where an item is named.** Only the gate's question and the scout's report under the ignored `.run/` hold an
   item's identifier. S10 refuses to commit when a tracked file holds one.
@@ -125,10 +118,6 @@ searches for the others, and the S4 gate asks the developer.
 - **The preserved page is the check.** `https://archive.org/wayback/available?url=<page>` finds the page's Wayback
   Machine snapshot. The lead cites it with its timestamp, and its text is untrusted. When the tool refuses the
   snapshot too, its URL goes to the report's "For a person to read" table. No other tool takes its place.
-
-Not adopted: a general reading list. nforest/awesome-decompilation was read in full on 2026-10-13. It holds no entry
-on matching decompilation, MIPS, consoles or compiler identification
-([ECOSYSTEM.md](ECOSYSTEM.md)).
 
 ## Classes
 

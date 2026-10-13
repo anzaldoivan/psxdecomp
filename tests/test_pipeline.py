@@ -776,7 +776,7 @@ def test_gate_refuses_a_staged_symbol_dump(game, tmp_path):
     (repo / "docs/proto-symbols.txt").write_text(dump(70))
     r = gate()
     assert r.returncode == 1 and "GATE FAIL symdump: docs/proto-symbols.txt: 70 lines in a row have the shape of a PsyQ symbol " \
-        "dump or link map (cap 64)" in r.stdout, r.stdout + r.stderr
+        "dump (cap 64)" in r.stdout, r.stdout + r.stderr
     assert _audit(repo).returncode == 0                                          # what the audit alone lets through
     (repo / "docs/proto-symbols.txt").write_text(dump(60))
     assert "symdump" not in gate().stdout
@@ -833,8 +833,6 @@ def test_oracle_add_refuses_a_tracked_copy(game, tmp_path):
     assert (repo / "config/oracle.proto-1999-01-01.sha1").read_text() == held
     assert "GAME.SYM" in (repo / "config/oracle.slpm-00000.sha1").read_text() and "PROTO.SYM" not in (repo / "config/oracle.slpm-00000.sha1").read_text()
     assert "disks" not in run(["git", "-C", repo, "status", "--porcelain"]).stdout     # git sees no file of the home
-    r = _oracle(repo, "list")
-    assert re.search(r"(?m)^proto-1999-01-01 +prototype +1 file\(s\) +here$", r.stdout) and "ORACLE 2 build(s), 2 on this machine" in r.stdout, r.stdout
     # a second worktree of the clone: the same local record, and no path in a commit
     run(["git", "-C", repo, "add", "config"])
     run(["git", "-C", repo, "commit", "-q", "--no-verify", "-m", "two builds"])
@@ -844,13 +842,6 @@ def test_oracle_add_refuses_a_tracked_copy(game, tmp_path):
     assert _oracle(other, "locate", "--id", "slpm-00000").stdout == "%s\n" % home
     assert pathlib.Path(_oracle(other, "locate", "--id", "retail").stdout.strip()).is_file()
     assert run(["git", "-C", repo, "grep", "-l", "-F", str(tmp_path), "HEAD"], check=False).stdout == ""
-    moved = tmp_path / "elsewhere" / "RENAMED.SYM"                               # another machine's copy, under another name
-    moved.parent.mkdir()
-    shutil.copyfile(proto, moved)
-    r = _oracle(other, "link", "--id", "slpm-00000", "--path", moved)
-    assert r.returncode == 1 and "this is not the build `slpm-00000`" in r.stdout, r.stdout
-    assert _oracle(other, "link", "--id", "proto-1999-01-01", "--path", moved).returncode == 0
-    assert _oracle(repo, "locate", "--id", "proto-1999-01-01").stdout == "%s\n" % moved
     # the audit refuses a tracked copy of a file of a build, under another name and with no debug extension
     shutil.copyfile(proto, inside)
     run(["git", "-C", repo, "add", "-f", "docs/taken.txt"])
@@ -863,8 +854,7 @@ def test_oracle_add_refuses_a_tracked_copy(game, tmp_path):
 
 def test_upgrade_adds_the_firewall_block_and_asks_for_the_record(game, tmp_path):
     """A game of an earlier psxdecomp (no block, no [oracle]): the plan lists `firewall-debug` as psxdecomp's and
-    `record-oracle` as the developer's. Apply restores the block, and the next plan holds no psxdecomp action. A game
-    with the block of two lines gains the two it lacks."""
+    `record-oracle` as the developer's. Apply restores the block, and the next plan holds no psxdecomp action."""
     import tomllib
 
     import upgrade
@@ -888,11 +878,6 @@ def test_upgrade_adds_the_firewall_block_and_asks_for_the_record(game, tmp_path)
     assert "psxdecomp" not in again.values() and again.get("record-oracle") == "manual", again
     r = _oracle(repo, "record", "--dump", tmp_path / "nope.cue")
     assert r.returncode == 1 and r.stdout.startswith("FAIL "), r.stdout
-    earlier = "".join(l for l in whole.splitlines(True) if l.strip() not in ("glob:  *.[Pp][Dd][Bb]", "glob:  *.[Dd][Bb][Gg]"))
-    fw.write_text(earlier)                                                       # the block as psxdecomp first wrote it
-    assert earlier != whole and next(x for x in upgrade.plan(repo) if x["key"] == "firewall-debug")["owner"] == "psxdecomp"
-    run([PY, ROOT / "scripts/upgrade.py", "apply", "--repo", repo])
-    assert fw.read_text() == whole
     (repo / "docs/GAME.SYM").write_text("a note\n")                              # with such a file tracked: no write
     run(["git", "-C", repo, "add", "-f", "docs/GAME.SYM"])
     fw.write_text(whole.replace("\n" + common.FIREWALL_DEBUG, ""))
@@ -901,10 +886,9 @@ def test_upgrade_adds_the_firewall_block_and_asks_for_the_record(game, tmp_path)
 
 
 def test_doctor_oracle_row(game, toolchain, tmp_path):
-    """doctor's `oracle` row in each state: the record of S10 (OK), no [oracle] (WARN with the command), a build on
-    this machine (OK, counted), its image changed in size (WARN), a registered path inside the repository (FAIL), no
-    copy on this machine (OK, no warning), and a checksum file that the firewall does not read (FAIL). The row reads
-    no environment variable."""
+    """doctor's `oracle` row on a real S10 tree: the record of S10 (OK), no [oracle] (WARN with the command, which
+    writes the table S10 wrote), a build on this machine (OK, counted). The row reads no environment variable. The
+    other states: doctor.py's self-test."""
     def row(repo):
         r = run([PY, ROOT / "scripts/doctor.py", "--repo", repo, "--offline", "--only", "oracle"],
                 env={"PSXDECOMP_BYO_ORACLE_PATH": str(repo / "tools")}, check=False)
@@ -930,20 +914,6 @@ def test_doctor_oracle_row(game, toolchain, tmp_path):
     assert _oracle(repo, "add", "--id", "proto-1999-01-01", "--path", proto).returncode == 0
     st, detail, rc = row(repo)
     assert (st, rc) == ("OK", 0) and detail == scan + "; 1 build(s): 1 on this machine", detail
-    proto.write_bytes(b"MND\x01invented, and edited")
-    st, detail, rc = row(repo)
-    assert (st, rc) == ("WARN", 0) and "the copy of `proto-1999-01-01` its `PROTO.SYM` has 24 bytes" in detail, detail
-    (repo / "tools" / "PROTO.SYM").write_bytes(b"MND\x01invented")
-    common.local_set(repo, "builds", "proto-1999-01-01", str(repo / "tools" / "PROTO.SYM"))
-    st, detail, rc = row(repo)
-    assert (st, rc) == ("FAIL", 1) and "is refused (firewall)" in detail and "psxd oracle link --id proto-1999-01-01" in detail, detail
-    common.local_set(repo, "builds", "proto-1999-01-01", None)
-    st, detail, rc = row(repo)
-    assert (st, rc) == ("OK", 0) and detail == scan + "; 1 build(s): 0 on this machine", detail
-    fw = repo / "config/firewall.txt"
-    fw.write_text(fw.read_text().replace("required: %s\n" % oracle.HASH_GLOB, ""))
-    st, detail, rc = row(repo)
-    assert (st, rc) == ("FAIL", 1) and "config/oracle.proto-1999-01-01.sha1 exists" in detail and "`required: config/oracle.*.sha1`" in detail, detail
 
 
 def test_s10_records_the_build_the_gate_was_given(toolchain, tmp_path):

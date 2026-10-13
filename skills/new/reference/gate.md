@@ -1,5 +1,7 @@
 # S4 — the gate
 
+Contents: the view, the PsyQ question, the oracle-build question, the writes.
+
 Nothing installs before this stage ends. Present, in this order, compactly:
 
 1. **The medium**, one line: `medium.json`'s boot exe, serial, PsyQ version, stamp count, track 01 SHA-1, Redump
@@ -61,8 +63,8 @@ the class table of `investigate.md`:
 
 Options: `none`, `I'll paste a path`, `not using it` (the developer types the reason in the notes).
 
-- The id is a slug of a serial or a build date, as the lead gives it (`slpm-86959`, `proto-2001-10-30`). For a leftover on the developer's own disc, word the question from the probe
-  row: the file's path, kind and size. `I'll paste a path` then takes the dump's own path.
+- `<id>` is the lead's id. For a leftover on the developer's own disc, word the question from the probe row: the
+  file's path, kind and size. `I'll paste a path` then takes the dump's own path.
 - `<what>` is what the build's page states: "symbols", "a debug menu, no symbols", "the code of nine days before the
   master". Promise no names from a build whose page states none.
 - A probe row without the PsyQ SYM magic is a lead by its extension only. Say so: a `.MAP` or a `.LIB` is often game
@@ -78,18 +80,14 @@ Options: `none`, `I'll paste a path`, `not using it` (the developer types the re
   "Also found: `<id>`, `<id>`. For a copy of one later: `psxd oracle add --repo . --id <id> --path <path> --expect <sha1>`."
 - A path lies outside this folder, or in its ignored `disks/builds/<id>/`. It is never fetched and never committed.
   The answers file under `.run/` holds it, and S10 registers it in the git directory of the clone.
-- With a path, write the lead's id into `PSXDECOMP_BYO_ORACLE_ID`: a slug of the build's date or its serial, as
-  `proto-2001-10-30` or `slpm-86959`. Write its class into `PSXDECOMP_BYO_ORACLE_CLASS` (`region`, `prototype`,
-  `review`, `debug`, `demo`, `port`, `revision` or `sibling`) and its page into `PSXDECOMP_BYO_ORACLE_PAGE`. The
-  dump's own path needs none of the three.
+- With a path, write the lead's id into `PSXDECOMP_BYO_ORACLE_ID`. Write its page into `PSXDECOMP_BYO_ORACLE_PAGE`.
+  Write its class into `PSXDECOMP_BYO_ORACLE_CLASS`: `region`, `prototype`, `review`, `debug`, `demo`, `port`,
+  `revision` or `sibling`. The dump's own path needs none of the three.
 - With a path, write the SHA-1 values that the build's page states into `PSXDECOMP_BYO_ORACLE_SHA1`, separated by
   spaces. S10 hashes the copy before anything else reads it, and it refuses a copy where no file has a stated hash.
   A page that states no hash: leave the key out, and say so in the row.
 - Write the answer into the lead's row of `prior-art.md`: `byo path given`, `no copy`, or `rejected` with the reason.
   The row holds the build's id, its page and the stated hashes.
-- S10 records the disc scan (`config/psxdecomp.toml` `[oracle]`). For a path it also writes the build's table in
-  `config/oracle.toml` and `config/oracle.<id>.sha1`: the SHA-1 of each file of the copy. The audit then refuses a
-  tracked copy of one.
 
 When neither place has a row, ask nothing. Say it in one line, with the searches that ran:
 
@@ -98,10 +96,9 @@ When neither place has a row, ask nothing. Say it in one line, with the searches
 ## Writes (only after every group is confirmed)
 
 - `.run/bootstrap/answers.txt` — the confirmed 13 keys plus the extras, in the shape `"$PSXD" answers template` prints.
-  The extras: `PSXDECOMP_CONSOLE: psx`, `PSXDECOMP_PROJECT_NAME`, `PSXDECOMP_REGION_VERSION`, and
-  `PSXDECOMP_BYO_PSYQ_PATH` when the PsyQ question got a path, and `PSXDECOMP_BYO_ORACLE_PATH` when the oracle-build
-  question got one. `PSXDECOMP_BYO_ORACLE_ID` goes beside that path, with `PSXDECOMP_BYO_ORACLE_CLASS` and
-  `PSXDECOMP_BYO_ORACLE_PAGE`, and `PSXDECOMP_BYO_ORACLE_SHA1` when the build's page states a hash.
+  The extras: `PSXDECOMP_CONSOLE: psx`, `PSXDECOMP_PROJECT_NAME`, `PSXDECOMP_REGION_VERSION`,
+  `PSXDECOMP_BYO_PSYQ_PATH` when the PsyQ question got a path, and the `PSXDECOMP_BYO_ORACLE_*` keys of the
+  oracle-build question (`PSXDECOMP_BYO_ORACLE_PATH` first).
   Check it with `"$PSXD" answers check .run/bootstrap/answers.txt`. Write
   `COMPILER_FAMILY` bare: the installer adds its dated `Candidate (S4 …)` label (`answers.scope_candidate`).
 - `.run/bootstrap/refs.toml` — the confirmed rows; check with

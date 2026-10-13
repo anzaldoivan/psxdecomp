@@ -59,8 +59,8 @@ equivalent of a delivery records it in the record's [own] (`own` action for the 
 that lacks it; [kit] and [psyq] in an adopted record are `manual`.
 
 The oracle-build question (docs/REFS.md) has three actions. `firewall-debug` adds the `glob:` lines of a debug file of
-any build to config/firewall.txt (common.FIREWALL_DEBUG), and a block of an earlier version gains the lines it lacks;
-it is `manual`, with the file names, while a tracked file has such an extension. `record-oracle` is always `manual`:
+any build to config/firewall.txt (common.FIREWALL_DEBUG); it is `manual`, with the file names, while a tracked file
+has such an extension. `record-oracle` is always `manual`:
 a record without [oracle] needs `psxd oracle record`, which reads the developer's dump. `oracle-public` is the manual
 line of split mode: the public list must hold config/oracle.toml and config/oracle.*.sha1 once a build is recorded,
 because the public firewall names the checksum files as a `required:` source.
@@ -1533,12 +1533,6 @@ def self_test() -> int:
         ok &= common.FIREWALL in written_paths(apply(repo, False, False))
         ok &= (repo / common.FIREWALL).read_text() == "purge: disks/\n\n" + common.FIREWALL_DEBUG
         ok &= "firewall-debug" not in {x["key"] for x in plan(repo)}
-        before = "purge: disks/\n\n" + "".join(common.FIREWALL_DEBUG.splitlines(True)[:5]).replace(
-            common.FIREWALL_DEBUG_NOTE[1], common.FIREWALL_DEBUG_NOTE_OLD) + "\nrequired: x.sha1\n"
-        (repo / common.FIREWALL).write_text(before)                        # the block of an earlier version: two lines
-        ok &= next(x for x in plan(repo) if x["key"] == "firewall-debug")["owner"] == "psxdecomp"
-        apply(repo, False, False)
-        ok &= (repo / common.FIREWALL).read_text() == "purge: disks/\n\n" + common.FIREWALL_DEBUG + "\nrequired: x.sha1\n"
         (repo / install.RECORD).write_text(
             (repo / install.RECORD).read_text() + '\n[oracle]\nchecked = "2026-10-13"\n')
         ok &= "record-oracle" not in {x["key"] for x in plan(repo)}

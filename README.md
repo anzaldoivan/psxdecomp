@@ -36,7 +36,7 @@ Each backtest replays a real bootstrap with its community leads blanked; the res
   dump is copied.
 - **Research.** Parallel agents look for existing decompilations (decomp.dev's listing first), sibling games and their
   toolchains, symbol maps, ports and releases. They also look for another build of the game that carries symbols,
-  and you are asked whether you own a copy. Findings stay leads until a later phase verifies them, and nothing is
+  and the gate asks whether you own a copy. Findings stay leads until a later phase verifies them, and nothing is
   installed before you confirm the report.
 - **Repository.** The ROM firewall is the first commit, after its negative control. Project Architect and the kit
   follow, each at a pinned version checked by hash ([compat.toml](compat.toml)).

@@ -64,8 +64,6 @@ EXTRAS = {
 
 
 SHA1_RE = re.compile(r"^[0-9a-fA-F]{40}$")
-BUILD_ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")                # oracle.ID_RE: test_static compares the two
-BUILD_CLASSES = ("region", "prototype", "review", "debug", "demo", "port", "revision", "sibling")
 CANDIDATE = "Candidate (S4 %s; superseded by the pinned toolchain triple once phase 1.4 pins it): "
 
 
@@ -133,23 +131,28 @@ def check(values: dict, allow_no_dump: bool = False) -> list[str]:
                 errs.append("DUMP_PATH must be an absolute path outside the repository")
         elif not v:
             errs.append("%s is empty" % k)
-    oracle = values.get("PSXDECOMP_BYO_ORACLE_PATH", "")
-    if oracle and not os.path.isabs(os.path.expanduser(oracle)):
+    oracle_path = values.get("PSXDECOMP_BYO_ORACLE_PATH", "")
+    if oracle_path and not os.path.isabs(os.path.expanduser(oracle_path)):
         errs.append("PSXDECOMP_BYO_ORACLE_PATH must be an absolute path: outside the repository, or its ignored "
                     "disks/builds/<id>/")
     stated = values.get("PSXDECOMP_BYO_ORACLE_SHA1", "").split()
     for k in ("ID", "SHA1", "CLASS", "PAGE"):
-        if values.get("PSXDECOMP_BYO_ORACLE_" + k) and not oracle:
+        if values.get("PSXDECOMP_BYO_ORACLE_" + k) and not oracle_path:
             errs.append("PSXDECOMP_BYO_ORACLE_%s goes with PSXDECOMP_BYO_ORACLE_PATH: it describes that copy" % k)
     if any(not SHA1_RE.match(s) for s in stated):
         errs.append("PSXDECOMP_BYO_ORACLE_SHA1 holds SHA-1 values only (40 hex digits each, space separated)")
+    import oracle                                  # the id and the classes have one home
+    real = lambda p: os.path.realpath(os.path.expanduser(p))  # noqa: E731
     bid = values.get("PSXDECOMP_BYO_ORACLE_ID", "")
-    if oracle and not bid and oracle != values.get("DUMP_PATH", ""):
+    if oracle_path and not bid and real(oracle_path) != real(values.get("DUMP_PATH") or "/"):
         errs.append("PSXDECOMP_BYO_ORACLE_ID is empty: the copy needs the build's id (`proto-2001-10-30`, `slpm-86959`)")
-    if bid and (not BUILD_ID_RE.match(bid) or bid == "retail" or len(bid) > 40):
-        errs.append("PSXDECOMP_BYO_ORACLE_ID is a slug: lower-case letters, digits and single hyphens; `retail` is the dump's")
-    if values.get("PSXDECOMP_BYO_ORACLE_CLASS", "") not in ("",) + BUILD_CLASSES:
-        errs.append("PSXDECOMP_BYO_ORACLE_CLASS is one of %s" % ", ".join(BUILD_CLASSES))
+    if bid:
+        try:
+            oracle.check_id(bid)
+        except common.Fail:
+            errs.append("PSXDECOMP_BYO_ORACLE_ID is a slug: lower-case letters, digits and single hyphens; `retail` is the dump's")
+    if values.get("PSXDECOMP_BYO_ORACLE_CLASS", "") not in ("",) + oracle.CLASSES:
+        errs.append("PSXDECOMP_BYO_ORACLE_CLASS is one of %s" % ", ".join(oracle.CLASSES))
     unknown = [k for k in values if k not in KEY_NAMES and k not in EXTRAS and k not in OPTIONAL]
     errs += ["unknown key %s" % k for k in unknown]
     con = values.get("PSXDECOMP_CONSOLE", "psx")

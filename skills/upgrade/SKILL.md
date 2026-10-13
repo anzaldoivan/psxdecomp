@@ -17,11 +17,8 @@ psxrecomp's migrate shape: **audit → plan → apply --dry-run → apply**. `PS
    actions: `ai-policy`, `ste-rule`, `style-hook` and `style-ratchet`. `style-public` is always `[manual]`: the
    developer adds `config/style-ratchet.txt` to `config/public-paths.txt`.
 
-   The oracle-build question is three actions. `firewall-debug` adds the `glob:` lines that `config/firewall.txt`
-   lacks. The audit then refuses a tracked `.SYM`, `.CPE`, `.PDB` or `.DBG` file. `record-oracle` is always
-   `[manual]`. The developer runs `"$PSXD" oracle record` with the dump, because the upgrade reads no dump.
-   `oracle-public` is `[manual]` too, in split mode: the developer adds `config/oracle.toml` and
-   `config/oracle.*.sha1` to `config/public-paths.txt`, because the public firewall names the checksum files.
+   Three actions cover the other builds of a game. `firewall-debug` is the script's. `record-oracle` and
+   `oracle-public` are `[manual]`: give the command of the plan line.
 3. `"$PSXD" upgrade apply --dry-run --repo <repo>` — the exact writes.
 4. Stop here when `--dry-run` was given. Otherwise ask (AskUserQuestion: `Apply` recommended / `Stop`), then
    `"$PSXD" upgrade apply --repo <repo>` (add `--fetch` to clone `refs/` too).

@@ -426,9 +426,9 @@ def test_builds_question_reaches_the_gate():
                                    "only in this question", "`psxd oracle add --repo . --id <id> --path <path> --expect <sha1>`"))
     # a build has an id from the lead on: the scout writes it, the gate passes it, S10 records under it
     assert all(w in gate for w in ("`PSXDECOMP_BYO_ORACLE_ID`", "`PSXDECOMP_BYO_ORACLE_CLASS`", "`PSXDECOMP_BYO_ORACLE_PAGE`",
-                                   "`disks/builds/<id>/`", "`proto-2001-10-30`"))
-    assert "`proto-2001-10-30`" in builds and "`retail`\n     is the dump's id" in builds
-    assert "oracle record --byo" not in gate + inv and "--no-copy" not in gate + inv
+                                   "`disks/builds/<id>/`", "`PSXDECOMP_BYO_ORACLE_*`"))
+    assert all("`%s`" % c in gate for c in oracle.CLASSES)                         # the gate lists the values it may write
+    assert "in the form that the scout's file gives" in builds and "proto-2001-10-30" not in gate + inv   # one home: the scout
     assert all(w in builds for w in ("archive.org/advancedsearch.php", "archive.org/metadata/<identifier>",
                                      "`## archive.org items`", "It holds no identifier", "tcrf.net refuses every agent"))
     scout = (ROOT / "agents/scout-web.md").read_text()
@@ -440,7 +440,6 @@ def test_builds_question_reaches_the_gate():
     ask = gate.split("## The oracle-build question (in the first round, when a build was named)", 1)[1].split("\n## ", 1)[0]
     assert "the first round is the prior-art group, the answers group, the PsyQ question\nand this question" in ask
     assert "reference-library group then moves to the second round" in ask and "second round" not in gate.replace(ask, "")
-    assert "`config/oracle.<id>.sha1`" in ask and "`config/oracle.toml`" in ask and "`[oracle]`" in ask
     # the firewall's block: S9 and upgrade write one constant, and the launcher names the script that keeps the record
     import fnmatch
     assert common.FIREWALL_DEBUG_GLOBS == ("*.[Ss][Yy][Mm]", "*.[Cc][Pp][Ee]", "*.[Pp][Dd][Bb]", "*.[Dd][Bb][Gg]")
@@ -452,29 +451,25 @@ def test_builds_question_reaches_the_gate():
         text = (ROOT / "scripts" / ("%s.py" % script)).read_text()
         assert "with_firewall_debug(" in text and "[Ss][Yy][Mm]" not in text, script
     usage = (ROOT / "scripts/psxd").read_text()
-    assert "|oracle>" in usage and "psxd oracle record --repo . --dump <dump> " in usage and "--no-copy" not in usage
+    assert "|oracle>" in usage and "psxd oracle record --repo . --dump <dump> " in usage
     assert all(w in usage for w in ("psxd oracle add --repo . --id <id> --path <copy> --expect <sha1>", "psxd oracle list",
                                     "psxd oracle locate --id <id>", "psxd oracle link --id <id> --path <copy>"))
     text = (ROOT / "scripts/oracle.py").read_text()
     assert all('"%s"' % c in text.split("choices=[", 1)[1].split("]", 1)[0] for c in ("record", "add", "list", "locate", "link"))
-    assert "--byo" not in text and "--no-copy" not in text and oracle.COMMAND == "psxd oracle record --repo . --dump <your dump>"
     stages = (ref / "stages.md").read_text()
     assert "`.SYM`, `.CPE`, `.PDB`, `.DBG`" in stages.split("| S9 refs |")[1].split("\n")[0]
     assert all(w in stages.split("| S10 handoff |")[1].split("\n")[0] for w in (
         "`[oracle]`", "`config/oracle.toml`", "`config/oracle.<id>.sha1`", "`required: config/oracle.*.sha1`", "`psxdecomp/local.toml`"))
-    for rel, words in (("skills/upgrade/SKILL.md", ("`firewall-debug`", "`record-oracle`", "`oracle-public`", "`.PDB`")),
-                       ("skills/doctor/SKILL.md", ("| `oracle` |", "oracle record --repo .", "`oracle add`", "`oracle link`",
-                                                   "No image is hashed"))):
+    for rel, words in (("skills/upgrade/SKILL.md", ("`firewall-debug`", "`record-oracle`", "`oracle-public`")),
+                       ("skills/doctor/SKILL.md", ("| `oracle` |", "No image is hashed", "the row names the command"))):
         assert all(w in (ROOT / rel).read_text() for w in words), rel
-        assert "oracle.sha1" not in (ROOT / rel).read_text() and "--no-copy" not in (ROOT / rel).read_text(), rel
     for key in ("PATH", "ID", "SHA1", "CLASS", "PAGE"):
         assert "PSXDECOMP_BYO_ORACLE_" + key in answers.EXTRAS and "PSXDECOMP_BYO_ORACLE_" + key not in answers.KEY_NAMES
-    assert answers.BUILD_ID_RE.pattern == oracle.ID_RE.pattern and answers.BUILD_CLASSES + ("unstated",) == oracle.CLASSES
-    # the home, the id, the local record and the symbol-dump rule: the policy, and the page that every game receives
+    # the home, the id, the commands and the symbol-dump rule: the page that every game receives. The policy points to it
     page = (ROOT / "profiles/psx/floor.md").read_text().split("## Other builds of the game", 1)[1].split("\n## ", 1)[0]
     assert all(w in page for w in ("psxd oracle add --repo . --id <id> --path <your copy> --expect <sha1>",
                                    "psxd oracle link --repo . --id <id> --path <your copy>", "psxd oracle locate --repo . --id <id>",
-                                   "`disks/builds/<id>/`", "`config/oracle.<id>.sha1`", "`config/oracle.toml`", "There is no `.env` file",
+                                   "`disks/builds/<id>/`", "`config/oracle.<id>.sha1`", "`config/oracle.toml`", "The game does not hold it",
                                    "`symdump`", "`.SYM`, `.CPE`,\n  `.PDB` or `.DBG`"))
     gate_doc = (ROOT / "profiles/psx/floor.md").read_text().split("## The gate of the floor", 1)[1].split("\n## ", 1)[0]
     assert "`symdump`" in gate_doc and "64 lines in a row" in gate_doc and floor.SYMDUMP_CAP == 64
@@ -492,10 +487,9 @@ def test_builds_question_reaches_the_gate():
     assert any("prototype's symbols speak for the prototype" in t["what"] for t in doc["traps"])
     policy = (ROOT / "docs/REFS.md").read_text().split("## Oracle builds", 1)[1].split("\n## ", 1)[0]
     assert all(w in policy for w in ("`PSXDECOMP_BYO_ORACLE_PATH`", "no disc image", "leaked source code", "byte check",
-                                     "`config/oracle.<id>.sha1`", "`glob:`", "`disks/builds/<id>/`", "`config/oracle.toml`",
-                                     "`<git-common-dir>/psxdecomp/local.toml`", "There is no `.env` file", "`symdump`",
-                                     "`required: config/oracle.*.sha1`", "`psxd oracle locate --id <id>`", "`ghidra/`"))
-    assert "config/oracle.sha1" not in policy and "oracle record --byo" not in policy
+                                     "`disks/builds/<id>/`", "`psxdecomp/local.toml`", "no `.env` file", "`symdump`",
+                                     "`scripts/oracle.py`", "`docs/ops/psxdecomp-floor.md`", "`common.FIREWALL_DEBUG`"))
+    assert "proto-2001-10-30" not in policy and "psxd oracle locate" not in policy   # the mechanism has its homes
     # the check-out rule's five points, where an item is named, and a site that refuses agents
     assert all(w in policy for w in ("a second source confirms it", "A ROM set, a Redump mirror and a retail image never",
                                      "The developer downloads", "before anything else reads it", "becomes a `link` row"))

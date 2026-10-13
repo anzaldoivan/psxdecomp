@@ -418,11 +418,10 @@ def settings_due(repo: pathlib.Path) -> str | None:
 # each line refuses the extension in any folder and in any letter case ------------------------------------------------
 FIREWALL = "config/firewall.txt"
 FIREWALL_DEBUG_GLOBS = ("*.[Ss][Yy][Mm]", "*.[Cc][Pp][Ee]", "*.[Pp][Dd][Bb]", "*.[Dd][Bb][Gg]")
-FIREWALL_DEBUG_NOTE = ("# A link map (.MAP) has no line here: a game tracks text files of that name. The hash record\n",
-                       "# (config/oracle.<id>.sha1, written by psxdecomp's `oracle add`) covers a supplied copy.\n")
-FIREWALL_DEBUG_NOTE_OLD = "# (config/oracle.sha1, written by psxdecomp's `oracle record`) covers a supplied copy.\n"
 FIREWALL_DEBUG = ("# ---- psxdecomp: a debug file of any build (a symbol file, a linker's debug executable) ----\n"
-                  + "".join(FIREWALL_DEBUG_NOTE) + "".join("glob:  %s\n" % g for g in FIREWALL_DEBUG_GLOBS))
+                  "# A link map (.MAP) has no line here: a game tracks text files of that name. The checksum file\n"
+                  "# (config/oracle.<id>.sha1, written by psxdecomp's `oracle add`) covers a supplied copy.\n"
+                  + "".join("glob:  %s\n" % g for g in FIREWALL_DEBUG_GLOBS))
 
 
 def firewall_lines(text: str, kind: str) -> list[str]:
@@ -436,18 +435,7 @@ def firewall_debug_due(text: str) -> bool:
 
 
 def with_firewall_debug(text: str) -> str:
-    """The firewall's text with every line of the block. A file that holds the block of an earlier version gains the
-    lines it lacks under the block's last line, and the block's note in today's words."""
-    if not firewall_debug_due(text):
-        return text
-    have = firewall_lines(text, "glob")
-    lines = text.replace(FIREWALL_DEBUG_NOTE_OLD, FIREWALL_DEBUG_NOTE[1]).split("\n")
-    at = [i for i, l in enumerate(lines) if l.split("#", 1)[0].partition(":")[0].strip() == "glob"
-          and l.split("#", 1)[0].partition(":")[2].strip() in FIREWALL_DEBUG_GLOBS]
-    if not at:
-        return text.rstrip("\n") + "\n\n" + FIREWALL_DEBUG
-    lines[at[-1] + 1:at[-1] + 1] = ["glob:  %s" % g for g in FIREWALL_DEBUG_GLOBS if g not in have]
-    return "\n".join(lines)
+    return text.rstrip("\n") + "\n\n" + FIREWALL_DEBUG if firewall_debug_due(text) else text
 
 
 def firewall_debug_hits(repo: pathlib.Path) -> list[str]:
@@ -486,7 +474,7 @@ def local_read(repo) -> dict:
     return {t: rows for t, rows in doc.items() if isinstance(rows, dict)}
 
 
-def local_set(repo, table: str, key: str, value: str | None, dry: bool = False) -> pathlib.Path:
+def local_set(repo, table: str, key: str, value: str | None) -> pathlib.Path:
     """Write `key = "value"` into `[table]` of the local record (None removes the key). Returns the file's path."""
     p = local_path(repo)
     if p is None:
@@ -502,7 +490,7 @@ def local_set(repo, table: str, key: str, value: str | None, dry: bool = False) 
 
     write(p, LOCAL_HEAD + "".join("\n[%s]\n%s" % (k(t), "".join(
         "%s = %s\n" % (k(n), json.dumps(str(v), ensure_ascii=False)) for n, v in sorted(rows.items())))
-        for t, rows in sorted(doc.items()) if rows), dry=dry)
+        for t, rows in sorted(doc.items()) if rows))
     return p
 
 

@@ -21,11 +21,7 @@ the public repository, the pre-push hook is in place, every workflow action is p
 interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
 PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
-oracle (the record's [oracle], written by `psxd oracle record`, and the builds of config/oracle.toml, written by
-`psxd oracle add`: WARN without the table or its disc scan, and when a registered copy lacks the build's image by
-name or size; FAIL when a checksum file has no `required:` line in the firewall, a build has no checksum file, or a
-registered path lies inside the repository outside a folder that the firewall purges and git ignores. No image is
-hashed, and a build that is not on this machine is no warning);
+oracle (the disc scan in the record's [oracle] and the builds of config/oracle.toml: `oracle_row`);
 gate, toolchain, names and debt (the tooling and readability floor, each WAIT until its phase: one gate command and
 the hash files once 1.3 is closed, FAIL without them once 1.9 is closed; docs/ops/compiler-pin.md and
 config/toolchain.tsv once 1.4 is closed; the two ledgers once 1.4 is closed, FAIL when one is malformed; the debt

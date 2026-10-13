@@ -642,8 +642,6 @@ def s10_handoff(c: Ctx) -> str:
         got, line = oracle.record(c.target, (medium or {}).get("debug_artifacts"), dump)   # and the dump's path, locally
         c.written += got
         print("     oracle %s%s" % (line, "; the copy is your dump: the retail manifest covers it" if own else ""))
-    if not c.dry and dump and common.local_path(c.target) and oracle.RETAIL not in oracle.registered(c.target):
-        common.local_set(c.target, "dump", "path", os.path.abspath(os.path.expanduser(dump)))    # a re-run on another clone
     paths += [oracle.BUILDS, common.FIREWALL] + sorted(x.relative_to(c.target).as_posix()
                                                        for x in c.p("config").glob("oracle.*.sha1"))
     pa_src = c.boot("prior-art.md")
@@ -715,7 +713,7 @@ def s10_handoff(c: Ctx) -> str:
     named = items_named(c)                        # an archive.org item is named in the gate's question, never in a commit
     if named:
         raise common.Fail("%s names an archive.org item of a build (%s lists it): take the identifier out. The row "
-                          "keeps the build's date, its page and its hashes" % (", ".join(named), BUILDS))
+                          "keeps the build's date, its page and its hashes" % (", ".join(named), BUILDS_REPORT))
     sha = c.commit(paths, "psxdecomp handoff: the bootstrap record (pins, profile, host recipe), the prior-art table, "
                           "the README standard's lint and its CI, the writing rule of the public files (STE1, "
                           "its hook, the first ratchet), and the floor (its tool, its reference, the guard, the two "
@@ -726,14 +724,14 @@ def s10_handoff(c: Ctx) -> str:
     return "record %s, commit %s. %s" % (RECORD, sha, nxt)
 
 
-BUILDS = BOOT + "/research/builds.md"
+BUILDS_REPORT = BOOT + "/research/builds.md"
 
 
 def items_named(c: Ctx) -> list[str]:
     """The tracked or staged files that hold a build identifier of the scout's builds report (docs/REFS.md, "Oracle
     builds"). The report itself lies under the ignored .run/."""
     import oracle
-    report = c.p(BUILDS)
+    report = c.p(BUILDS_REPORT)
     items = oracle.build_items(common.read(report)) if report.is_file() else []
     if not items:
         return []
@@ -993,7 +991,7 @@ def self_test() -> int:
         common.write(repo / "notes.md", "example-quest-manual\n")
         c.git("add", "--", "docs/prior-art.md", "notes.md")
         ok &= items_named(c) == []                                                      # no report: nothing to hold
-        common.write(repo / BUILDS, "## archive.org items\n| identifier | kind | confirmed by | file | SHA-1 |\n|---|---|---|---|---|\n"
+        common.write(repo / BUILDS_REPORT, "## archive.org items\n| identifier | kind | confirmed by | file | SHA-1 |\n|---|---|---|---|---|\n"
                                     "| ExampleQuestJan011999prototype | build | hash | a.jpg | x |\n"
                                     "| example-quest-manual | document | link | m.pdf | y |\n")
         ok &= items_named(c) == ["docs/prior-art.md"]                                   # the document item may be a row

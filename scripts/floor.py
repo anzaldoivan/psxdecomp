@@ -34,8 +34,8 @@
                                           parent, and the head of the range against its base. --push: as --ci, and the
                                           game's own check
                                           The tree is also read for a symbol dump (`symdump`): a tracked text file
-                                          fails when 64 lines in a row have the shape of a PsyQ symbol dump or of the
-                                          name table of a PsyQ link map. Such a text is a file of another build
+                                          fails when 64 lines in a row have the shape of a PsyQ symbol dump. Such a
+                                          text is a file of another build
     floor.py trial FILE [--func NAME]     take each register pin and each empty asm statement of the file's functions out
                                           in turn and ask the game's probe (`[trial] probe` of the record: exit 0 match,
                                           1 no match, 2 or more an error) whether the function still matches. What the
@@ -2720,15 +2720,12 @@ def transition(repo, bases: list[Tree], head: Tree, online: bool = False, change
 
 
 # ---- a symbol dump of a build, as text. A path rule and a hash cannot see one: the text is made on the developer's
-# machine from a symbol file or a link map, and it has another hash each time. The shapes are the tools' own. The
+# machine from a symbol file, and it has another hash each time. The shape is the SDK dumper's own. The
 # rule is the audit's rule for a listing: the longest run of such lines in one file, and a short quote passes ----------
 SYMDUMP_CAP = 64
-SYMDUMP_LINES = (
-    r"[0-9a-f]{6}: \$[0-9a-f]{8} [^\n]*",              # the SDK's symbol dumper, and psx_mnd_sym: `000056: $00000000 94 Def ...`
-    r"[ \t]*[0-9A-Fa-f]{8}[ \t]+\S+[ \t]*",            # the name tables of a PsyQ link map: ` 80010000 __SN_ENTRY_POINT`
-)
-SYMDUMP_LINE = re.compile(r"(?:%s)\Z" % "|".join(SYMDUMP_LINES))
-SYMDUMP_RUN = re.compile(r"(?:^(?:%s)(?:\n|\Z)){%d}" % ("|".join(SYMDUMP_LINES), SYMDUMP_CAP), re.M)
+SYMDUMP_SHAPE = r"[0-9a-f]{6}: \$[0-9a-f]{8} [^\n]*"    # the SDK's symbol dumper, and psx_mnd_sym: `000056: $00000000 94 Def ...`
+SYMDUMP_LINE = re.compile(SYMDUMP_SHAPE + r"\Z")
+SYMDUMP_RUN = re.compile(r"(?:^%s(?:\n|\Z)){%d}" % (SYMDUMP_SHAPE, SYMDUMP_CAP), re.M)
 
 
 def symdump_run(text: str | None) -> int:
@@ -2748,7 +2745,7 @@ def symdump_findings(tree: Tree) -> list[str]:
     for path in tree.paths:
         n = symdump_run(tree.read(path))
         if n:
-            out.append("%s: %d lines in a row have the shape of a PsyQ symbol dump or link map (cap %d). A dump of "
+            out.append("%s: %d lines in a row have the shape of a PsyQ symbol dump (cap %d). A dump of "
                        "another build is a file of that build: keep it in disks/builds/<id>/, which git ignores"
                        % (path, n, SYMDUMP_CAP))
     return out
@@ -3987,7 +3984,7 @@ def self_test_gate(check) -> None:
             put("docs/notes/proto-symbols.txt", "".join(SYMDUMP_SELF[i % 4] for i in range(70)))
             rc, out = staged()
             check("gate: a staged symbol dump is refused", rc == 1 and "GATE FAIL symdump: docs/notes/proto-symbols.txt: 70 lines in a "
-                  "row have the shape of a PsyQ symbol dump or link map (cap 64)" in out, out)
+                  "row have the shape of a PsyQ symbol dump (cap 64)" in out, out)
             put("docs/notes/proto-symbols.txt", "".join(SYMDUMP_SELF[i % 4] for i in range(60)))
             rc, out = staged()
             check("gate: a quote of 60 lines passes", "symdump" not in out, out)
@@ -4195,11 +4192,11 @@ SYMDUMP_SELF = ("000008: $80010000 1 __SN_ENTRY_POINT\n", "00001d: $00000000 94 
 
 def self_test_symdump(check) -> None:
     dump = lambda n: "Header : MND version 1\nTarget unit 0\n" + "".join(SYMDUMP_SELF[i % 4] for i in range(n))  # noqa: E731
-    names = lambda n: " Address  Names in address order\n\n" + "".join(" %08X Func%d\n" % (0x80010000 + 8 * i, i) for i in range(n))  # noqa: E731
     gnu = "".join("                0x00000000%08x                Func%d\n" % (0x80010000 + 8 * i, i) for i in range(200))
     check("symdump: 70 lines of a symbol dump are a run of 70", symdump_run(dump(70)) == 70, symdump_run(dump(70)))
     check("symdump: 60 lines pass, and 64 do not", symdump_run(dump(60)) == 0 and symdump_run(dump(64)) == 64)
-    check("symdump: a link map's name table", symdump_run(names(70)) == 70 and symdump_run(names(63)) == 0)
+    check("symdump: a table of addresses and names is the game's own text", symdump_run("".join(
+        "%08X func_%08X\n" % (0x80010000 + 8 * i, 0x80010000 + 8 * i) for i in range(99))) == 0)
     check("symdump: CRLF as the tree reads it, and no newline at the end", symdump_run(dump(70).rstrip("\n")) == 70)
     check("symdump: a line of prose ends a run", symdump_run(dump(40) + "a note\n" + dump(40)) == 0)
     check("symdump: a GNU ld map of the game's own build passes", symdump_run(gnu) == 0)
@@ -4207,15 +4204,6 @@ def self_test_symdump(check) -> None:
           and symdump_run("".join("  %x:\t27bdffc0 \taddiu\tsp,sp,-64\n" % (4 * i) for i in range(99))) == 0
           and symdump_run(C_CLEAN * 40) == 0)
     check("symdump: a binary file is not read", symdump_run("\0" + dump(70)) == 0 and symdump_run(None) == 0)
-    with tempfile.TemporaryDirectory() as td:
-        repo = _repo(td)
-        (repo / "notes").mkdir()
-        (repo / "notes" / "proto.txt").write_bytes(dump(70).replace("\n", "\r\n").encode())
-        (repo / "notes" / "short.txt").write_text(dump(60))
-        (repo / "notes" / "FX.map").write_text(gnu)
-        _git(repo, "add", "-A")
-        got = symdump_findings(Tree(repo, INDEX))
-        check("symdump: the index's files, each by its path", len(got) == 1 and got[0].startswith("notes/proto.txt: 70 lines in a row"), got)
 
 
 def self_test_toolchain(check) -> None:
