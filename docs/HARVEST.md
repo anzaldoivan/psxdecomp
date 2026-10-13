@@ -14,6 +14,10 @@ bootstrap should start with. They come back here only as **reviewed pull request
 | A debt class that a game's scanner proved | mmx5 `tools/readability/scan.py` (commits `198d2e2`, `077fc91`, read 2026-10-12) | a kind of `scripts/floor.py debt`, written fresh, with a planted file in its self-test |
 | A tool of its own that does a delivery's work | one of the paths below | an `OWN_DETECT` entry in `scripts/upgrade.py` |
 
+Three patterns of `scripts/floor.py` are close to lines of that scanner: the function-definition finder, the
+placeholder-name pattern and the keyword set beside it. The scanner is AGPL-3.0 in mmx5. Its author, who is the owner
+of this repository, offers those three patterns here under this repository's MIT licence (decided 2026-10-12).
+
 ## What a game keeps as its own
 
 `/psxdecomp:upgrade` proposes an `[own]` key in `config/psxdecomp.toml` when a game holds one of these exact paths.

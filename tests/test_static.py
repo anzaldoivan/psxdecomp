@@ -807,6 +807,28 @@ def test_public_list_holds_the_tools_of_the_public_workflow(tmp_path):
     assert doctor.publish_tool_row(repo)[0] == "OK", doctor.publish_tool_row(repo)
 
 
+def test_release_gate_runs_the_debt_check(tmp_path):
+    """publish.debt_gate: the release gate refuses a tree whose debt baseline is not equal to its source, with the
+    command that updates it. An equal baseline passes. A tree without the floor's tool or without a baseline has no
+    such check in its public CI, and passes."""
+    tree = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], floor.BASELINE: "mode admit\n",
+                                  floor.VENDORED: (ROOT / "scripts/floor.py").read_text()})
+    assert (publish.FLOOR_TOOL, publish.DEBT_BASELINE) == (floor.VENDORED, floor.BASELINE)
+    got = publish.debt_gate(tree)
+    assert len(got) == 1 and "DEBT CHECK FAIL (1 rise(s)" in got[0] and "debt --update --admit" in got[0], got
+    (tree / floor.BASELINE).write_text("mode admit\n1 goto src/a.c\n")
+    assert publish.debt_gate(tree) == []
+    (tree / floor.BASELINE).write_text("mode admit\n2 goto src/a.c\n")           # a stale row fails too
+    assert len(publish.debt_gate(tree)) == 1
+    (tree / floor.BASELINE).unlink()
+    assert publish.debt_gate(tree) == []
+    (tree / floor.BASELINE).write_text("mode admit\n")
+    (tree / floor.VENDORED).unlink()
+    assert publish.debt_gate(tree) == []
+    text = (ROOT / "scripts/publish.py").read_text()
+    assert 'g["paths"] + g["readme"] + g["debt"]' in text and 'out["debt"] = debt_gate(x)' in text
+
+
 def test_delivered_texts_hold_no_exemplar_string():
     """The two exemplar repositories with no licence give ideas only. This is a tripwire for the strings that the
     0.6.0 audit found shared with their hooks: none is in a file that a game receives."""

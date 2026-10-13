@@ -482,6 +482,10 @@ The decomp.dev report is the one published number. `render` writes one sentence 
 number counts. A numbers block of the game's own that a tool generates is a WARN, also with `--release`: retire it.
 After an upgrade, the `readme-blocks` action of `/psxdecomp:upgrade` regenerates the two blocks.
 
+A release runs the same debt check as the README workflow, on the tree that it would publish. `ship` and `release`
+refuse a tree whose `config/debt-baseline.txt` is not equal to its source, and name the command that updates it. The
+pre-push hook of the development repository warns for the same finding.
+
 `validate` holds the report to the same rule. A unit whose `source_path` is not a C or C++ file (`.c`, `.cpp`,
 `.cc`, `.cxx`) reports no matched code. Assembly is never credited, also a hand-written file that
 `config/asm-evidence.tsv` accepts: that ledger clears the file's debt, it does not make it decompiled code. A unit

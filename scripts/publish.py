@@ -1521,10 +1521,30 @@ def _tail(r: subprocess.CompletedProcess, n: int = 20) -> str:
     return "\n".join(((r.stdout or "") + (r.stderr or "")).strip().splitlines()[-n:])
 
 
+FLOOR_TOOL = "tools/psxd_floor.py"                # psxdecomp's other vendored tool: run here, never imported
+DEBT_BASELINE = "config/debt-baseline.txt"
+
+
+def debt_gate(x: pathlib.Path) -> list[str]:
+    """The debt check of the public README workflow, run on an exported tree before it is released: a FAIL line when
+    the tree holds the floor's tool and a baseline that is not equal to its source. A tree without either has no such
+    check in its CI, and passes."""
+    if not ((x / FLOOR_TOOL).is_file() and (x / DEBT_BASELINE).is_file()):
+        return []
+    r = subprocess.run([sys.executable, "-I", FLOOR_TOOL, "debt", "--repo", "."], cwd=x, capture_output=True, text=True)
+    if r.returncode == 0:
+        return []
+    last = (r.stdout.strip().splitlines() or r.stderr.strip().splitlines() or ["no output"])[-1]
+    return ["debt: %s is not equal to the source of this tree (%s): the README workflow of the public repository "
+            "would fail. On dev run `python3 %s debt --update --admit`, commit the baseline, then release again"
+            % (DEBT_BASELINE, last, FLOOR_TOOL)]
+
+
 def gate_checks(cache, dev, cfg, tree: str, want: dict, rev: str) -> dict[str, list[str]]:
     """The release gate on an export of the projection, by kind: `paths` (check-public), `readme` (the release lint),
-    `audit` (the game's audit failed) and `noaudit` (nothing audits the tree). Writes no ref."""
-    out = {"paths": [], "readme": [], "audit": [], "noaudit": []}
+    `debt` (the debt baseline is not equal to the tree), `audit` (the game's audit failed) and `noaudit` (nothing
+    audits the tree). Writes no ref."""
+    out = {"paths": [], "readme": [], "debt": [], "audit": [], "noaudit": []}
     lst = _dev_list(cache, tree)[0] or []
     out["paths"] = [d for lv, d in check_paths(sorted(want), lst, deny_entries(dev, rev)) if lv == "FAIL"]
     with tempfile.TemporaryDirectory() as td:
@@ -1538,6 +1558,7 @@ def gate_checks(cache, dev, cfg, tree: str, want: dict, rev: str) -> dict[str, l
         if readme is not None:
             out["readme"] = ["README %s: %s" % (ck, d) for lv, ck, d in lint(readme, Ctx(x), release=True)
                              if lv == "FAIL"]
+        out["debt"] = debt_gate(x)
         default = (x / "tools" / "audit_public.py").is_file()
         for name in sorted(os.listdir(dev)):                   # ignored hash sources (extracted/...) resolve
             if name != ".git" and not os.path.lexists(x / name):
@@ -1558,7 +1579,7 @@ def gate_checks(cache, dev, cfg, tree: str, want: dict, rev: str) -> dict[str, l
 def preflight(cache, dev, cfg, tree: str, want: dict, rev: str) -> list[str]:
     """The release gate, run on the exported projection before any ref is written: FAIL lines."""
     g = gate_checks(cache, dev, cfg, tree, want, rev)
-    return g["paths"] + g["readme"] + g["noaudit"] + g["audit"]
+    return g["paths"] + g["readme"] + g["debt"] + g["noaudit"] + g["audit"]
 
 
 def tree_check(cache, dev, tree: str, argv: list[str], tip: str) -> subprocess.CompletedProcess:
@@ -2587,12 +2608,13 @@ def pre_push_refusals(dev, url: str, lines: list[str]) -> list[str]:
 def push_gate(dev, cfg, sha: str) -> tuple[list[str], list[str], str]:
     """The release gate on the projection of a pushed dev commit, offline (the cache as last fetched, no fetch):
     (blocks, warnings, the release-ready line). Blocks: a listed denied path, symlink or gitlink, a check-public FAIL,
-    a failing audit. Warnings: a README lint FAIL, nothing audits the tree, new public paths, nothing new to release."""
+    a failing audit. Warnings: a README lint FAIL, a debt baseline that is not equal to the tree (a release refuses
+    both), nothing audits the tree, new public paths, nothing new to release."""
     cache = public_cache(dev)
     tree, want, blocks = projection(cache, dev, sha)
     g = gate_checks(cache, dev, cfg, tree, want, sha)
     blocks = blocks + g["paths"] + g["audit"]
-    warns = g["readme"] + g["noaudit"]
+    warns = g["readme"] + g["debt"] + g["noaudit"]
     pub = _git(cache, "rev-parse", "-q", "--verify", PUB_REF + "^{commit}").stdout.strip()
     new = []
     if pub:
