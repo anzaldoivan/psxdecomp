@@ -400,6 +400,40 @@ def test_conventions_reach_the_gate():
     assert "conventions table" in gate and "contribute there under its rules, or stay separate" in gate
 
 
+def test_builds_question_reaches_the_gate():
+    """An oracle build (another build of the program, with symbols) from end to end: S2's probe scans the disc, S3 has
+    one question for it with its seeds, the S4 gate asks the developer, the path is an extra of the answers file, and
+    the reference library holds the byo row, the order of sources and the trap. The docs count the questions as the
+    list holds them. A blocked page has a table in the scout's report and in the prior-art template."""
+    ref = ROOT / "skills/new/reference"
+    inv, gate = (ref / "investigate.md").read_text(), (ref / "gate.md").read_text()
+    questions = re.findall(r"(?m)^\d\. \*\*([a-z]+)\*\* — ", inv)
+    assert questions == ["existing", "siblings", "maps", "ports", "versions", "sdk", "names", "builds"], questions
+    assert "## The eight questions" in inv and "scout-web × %d" % len(questions) in (ROOT / "docs/ARCHITECTURE.md").read_text()
+    names = inv.split("7. **names**")[1].split("8. **builds**")[0]
+    assert "symbol file" not in names and "question 8" in names
+    builds = inv.split("8. **builds**")[1]
+    assert all(w in builds for w in ("`debug_artifacts`", "byte-identical", "no disc image", "Leaked source code"))
+    seeds = tomllib.loads((ROOT / "profiles/psx/profile.toml").read_text())["research"]["search_seeds"]
+    assert sum("hiddenpalace.org" in x or "datacrystal" in x or '".SYM"' in x for x in seeds) == 3, seeds
+    assert all(w in gate for w in ("`debug_artifacts`", "`PSXDECOMP_BYO_ORACLE_PATH`", "Do you have your own copy?",
+                                   "`none`, `I'll paste a path`, `not using it`", "No other build with symbols found"))
+    assert "PSXDECOMP_BYO_ORACLE_PATH" in answers.EXTRAS and "PSXDECOMP_BYO_ORACLE_PATH" not in answers.KEY_NAMES
+    doc = fetch_refs.load_doc(ROOT / "profiles/psx/refs.toml")
+    rows = {r["name"]: r for r in doc["rows"]}
+    assert rows["oracle-build"]["class"] == "byo" and not rows["oracle-build"]["url"]
+    assert rows["nfshs-psx-decomp"]["class"] == rows["hidden-palace"]["class"] == rows["psxdatacenter"]["class"] == "link"
+    assert rows["psx-mnd-sym"]["tier"] == "optional" and "ghidra_scripts" in rows["ghidra-psx-ldr"]["paths"]
+    assert [a["order"] for a in doc["authority"] if "is called" in a["topic"] and "PsyQ" not in a["topic"]] == [["oracle-build"]]
+    assert any("prototype's symbols speak for the prototype" in t["what"] for t in doc["traps"])
+    policy = (ROOT / "docs/REFS.md").read_text().split("## Oracle builds", 1)[1].split("\n## ", 1)[0]
+    assert all(w in policy for w in ("`PSXDECOMP_BYO_ORACLE_PATH`", "no disc image", "leaked source code", "byte check"))
+    assert "debug_artifacts" in (ROOT / "profiles/SCHEMA.md").read_text()
+    for rel in ("agents/scout-web.md", "skills/new/reference/report-template.md"):
+        assert "For a person to read" in (ROOT / rel).read_text(), rel
+    assert "nforest/awesome-decompilation" in (ROOT / "docs/ECOSYSTEM.md").read_text()
+
+
 def test_ai_policy_and_install_hints():
     """The AI policy has one home (common.AI_POLICY): the README carries its block verbatim, and S10 puts the same
     block in every game README. Every host recipe a game repo receives carries install commands."""

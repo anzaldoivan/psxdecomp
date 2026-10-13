@@ -47,6 +47,8 @@ EXTRAS = {
     "PSXDECOMP_PROJECT_NAME": "the repository / PA3 project name (a slug)",
     "PSXDECOMP_REGION_VERSION": "region and version to target, e.g. 'USA v1.1'",
     "PSXDECOMP_BYO_PSYQ_PATH": "optional local folder of your own PsyQ SDK (never fetched, never committed)",
+    "PSXDECOMP_BYO_ORACLE_PATH": "optional local path of your own copy of another build of this program that carries "
+                                 "more than the target (symbols, a link map); never fetched, never committed",
     "PSXDECOMP_BACKTEST_EXCLUDE": "backtests only: the replayed project's own repositories (OWNER/REPO, space separated), "
                                   "which S3 must not read",
 }
@@ -119,6 +121,9 @@ def check(values: dict, allow_no_dump: bool = False) -> list[str]:
                 errs.append("DUMP_PATH must be an absolute path outside the repository")
         elif not v:
             errs.append("%s is empty" % k)
+    oracle = values.get("PSXDECOMP_BYO_ORACLE_PATH", "")
+    if oracle and not os.path.isabs(os.path.expanduser(oracle)):
+        errs.append("PSXDECOMP_BYO_ORACLE_PATH must be an absolute path outside the repository")
     unknown = [k for k in values if k not in KEY_NAMES and k not in EXTRAS and k not in OPTIONAL]
     errs += ["unknown key %s" % k for k in unknown]
     con = values.get("PSXDECOMP_CONSOLE", "psx")
@@ -200,6 +205,10 @@ def self_test() -> int:
     bad = dict(v, PSXDECOMP_CONSOLE="n64")
     ok &= any("not yet supported" in e for e in check(bad, True))
     ok &= any("DUMP_PATH" in e for e in check(dict(v, DUMP_PATH="relative/game.cue")))
+    byo = dict(v, PSXDECOMP_BYO_ORACLE_PATH="/outside/the/repo/GAME.SYM")
+    ok &= check(byo, True) == [] and parse(render(byo, note, extras=True))[0] == byo
+    ok &= "PSXDECOMP_BYO_ORACLE_PATH" in split(byo)[1] and "PSXDECOMP_BYO_ORACLE_PATH" not in split(byo)[0]
+    ok &= any("ORACLE_PATH must be an absolute" in e for e in check(dict(v, PSXDECOMP_BYO_ORACLE_PATH="GAME.SYM"), True))
     once = scope_candidate(v, "2026-10-01")
     ok &= once["COMPILER_FAMILY"] == CANDIDATE % "2026-10-01" + v["COMPILER_FAMILY"]
     ok &= scope_candidate(once, "2027-01-01") == once and scope_candidate({}) == {} and v == parse(text)[0]

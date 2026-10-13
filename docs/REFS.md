@@ -39,8 +39,8 @@ tracked docs and its own `tools/reference/` clones.
 | decomp.me · decomp.dev · TCRF · Redump | — · — · L8 · dump check | 7 · 3 · 3 · 1 | **links** |
 | psxdev.net | 0 | 0 | **dropped** |
 
-Result: **4 core sources (13 MB, about 9 s)**, 8 optional, 1 byo, 9 links (counted 2026-10-12). Three of the links are exemplar projects. The optional ones take up to 109 MB if
-all are fetched. Most of that is the two gcc sources, and a project needs only its pin's.
+Result: **4 core sources (13 MB, about 9 s)**, 9 optional, 2 byo, 12 links (counted 2026-10-13). Three of the links are exemplar projects. The optional ones take up to 109 MB if
+all are fetched (measured 2026-10-12, before `psx-mnd-sym`). Most of that is the two gcc sources, and a project needs only its pin's.
 
 decomp.dev is a research source too, not a fetched row. `scripts/decompdev.py lookup --title T [--serial S]` lists
 its matching projects from the read API: repository, version, measures, last commit. Each is dated like any S3 lead.
@@ -68,6 +68,30 @@ a game repo's phase 1.2 check.
   persona-psx `lib/psyq`, psx.arthus.net.
 - **The default path needs no PsyQ binary:** decompals/old-gcc plus maspsx, as sotn-decomp does.
 - Deferred until a real SDK is in hand: per-version sha256 manifests ([HARVEST](HARVEST.md)).
+
+## Oracle builds (policy, 2026-10-13, not legal advice)
+
+An oracle build is another build of the same program that carries more than the target: symbols, a link map, source
+file names. Of the PS1 projects read on 2026-10-13, the ones with such a build took names, function boundaries and
+types from it. S2 scans the developer's own disc for one (`medium.json` `debug_artifacts`). S3's **builds** question
+searches for the others, and the S4 gate asks the developer.
+
+- **Instructions only.** A build is the publisher's and never distributed. Its class is `byo` (the `oracle-build`
+  row). The developer supplies a copy outside the repository (`PSXDECOMP_BYO_ORACLE_PATH`), and only that a path was
+  given is recorded.
+- **Pages only.** A scout reads the page that describes a build. It fetches no disc image, no symbol file and no
+  patch. No file holds a download URL for one.
+- **Never a source:** leaked source code and SDK internals. celophi/lom-decomp and abelbriggs1/tm1_decomp state the
+  same rule in their READMEs.
+- **A build speaks for itself only.** A name moves to the target after a byte check of the function body at both
+  addresses. Until then it is a lead. The order of sources and the trap live in the profile's file, like every other.
+- **No symbol parser of our own.** `ghidra-psx-ldr` (core) imports a PsyQ symbol file into Ghidra, and `psx-mnd-sym`
+  (optional) dumps one to text or to a C header.
+- **A page that refuses an agent is a hand-off.** The scout writes it in the report's "For a person to read" table.
+
+Not adopted: a general reading list. nforest/awesome-decompilation was read in full on 2026-10-13. It holds no entry
+on matching decompilation, MIPS, consoles or compiler identification
+([ECOSYSTEM.md](ECOSYSTEM.md)).
 
 ## Classes
 

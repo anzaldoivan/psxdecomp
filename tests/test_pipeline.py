@@ -555,6 +555,10 @@ def test_dump_never_copied(game, toolchain):
             assert blob[2048:2400] not in p.read_bytes(), p
     medium = (game / ".run/bootstrap/medium.json").read_text()
     assert str(toolchain["dump"]) not in medium
+    # the planted debug leftover: S2 reports its name, size and kind, and no byte of it
+    debug = json.loads(medium)["debug_artifacts"]
+    assert debug["files"] == [{"path": "/MAIN.SYM", "size": 8, "kind": "symbols", "psyq_sym": True}], debug
+    assert (debug["count"], debug["psyq_sym"]) == (1, 1) and "MND\\u0001" not in medium
 
 
 def test_s5_dry_run_lists_what_s5_writes(toolchain, tmp_path):

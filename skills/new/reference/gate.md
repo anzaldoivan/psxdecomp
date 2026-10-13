@@ -3,7 +3,7 @@
 Nothing installs before this stage ends. Present, in this order, compactly:
 
 1. **The medium**, one line: `medium.json`'s boot exe, serial, PsyQ version, stamp count, track 01 SHA-1, Redump
-   match if any.
+   match if any. Then one line on other builds: the disc's debug leftovers and the **builds** leads, or "none found".
 2. **The prior-art report** — `prior-art.draft.md`'s table (leads, licence, class, status, how to verify) and its
    conventions table. A community decompilation of this game may exist. Then its conventions and AI policy are one
    decision: contribute there under its rules, or stay separate and say why.
@@ -17,6 +17,7 @@ The whole view fits one screen. The game is invented:
 
 ```
 Medium: SLUS_000.00 (SLUS-00000), PsyQ 4.0, 212 stamps, track 01 SHA-1 3f2a…c91e, Redump match: yes.
+Builds: the disc holds QUEST.SYM (symbols, 412,880 bytes, PsyQ SYM magic). No other build found (3 searches).
 Prior art: 3 leads, 1 dead end.
   L1 compiler triple of the sibling game (MIT, adapt, lead) — verify: the 1.4 ladder runs it first
   L2 symbol file for the USA disc (unstated, facts, lead) — verify: 12 addresses land on function starts
@@ -45,11 +46,36 @@ Options: `none` (recommended), `I'll paste a path`. No stamp or no row: say "the
 the same with the version left open. A path must lie outside this folder. It is never fetched and never committed (the
 firewall purges `tools/psyq/`). Only the answers file under `.run/` holds it.
 
+## The oracle-build question (it opens the second round)
+
+An oracle build is another build of this program that carries more than the target: symbols, a link map, source file
+names. Two places name one: `medium.json` `debug_artifacts` (the developer's own disc) and the **builds** leads of
+the report. The first round holds four questions, so this one opens the second round. Ask it for the best-ranked
+build when either place has a row:
+
+> A build with symbols exists: `<id>` (`<source>`). It carries `<what>`. Do you have your own copy?
+
+Options: `none`, `I'll paste a path`, `not using it` (the developer types the reason in the notes).
+
+- The id is a serial or a build date. For a leftover on the developer's own disc, word the question from the probe
+  row: the file's path, kind and size. `I'll paste a path` then takes the dump's own path.
+- A probe row without the PsyQ SYM magic is a lead by its extension only. Say so: a `.MAP` or a `.LIB` is often game
+  data.
+- A path must lie outside this folder. It is never fetched and never committed. Only the answers file under `.run/`
+  holds it.
+- Never give a download link for a build, and never offer to fetch one.
+- Write the answer into the lead's row of `prior-art.md`: `byo path given`, `no copy`, or `rejected` with the reason.
+
+When neither place has a row, ask nothing. Say it in one line, with the searches that ran:
+
+> No other build with symbols found: `<n>` searches (`<the seeds>`), and the disc scan found no debug file.
+
 ## Writes (only after every group is confirmed)
 
 - `.run/bootstrap/answers.txt` — the confirmed 13 keys plus the extras, in the shape `"$PSXD" answers template` prints.
   The extras: `PSXDECOMP_CONSOLE: psx`, `PSXDECOMP_PROJECT_NAME`, `PSXDECOMP_REGION_VERSION`, and
-  `PSXDECOMP_BYO_PSYQ_PATH` when the PsyQ question got a path.
+  `PSXDECOMP_BYO_PSYQ_PATH` when the PsyQ question got a path, and `PSXDECOMP_BYO_ORACLE_PATH` when the oracle-build
+  question got one.
   Check it with `"$PSXD" answers check .run/bootstrap/answers.txt`. Write
   `COMPILER_FAMILY` bare: the installer adds its dated `Candidate (S4 …)` label (`answers.scope_candidate`).
 - `.run/bootstrap/refs.toml` — the confirmed rows; check with

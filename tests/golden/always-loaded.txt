@@ -1,6 +1,6 @@
 14 .claude/CLAUDE.md
 2545 AGENTS.md
 197 agent:scout-repo
-241 agent:scout-web
+268 agent:scout-web
 0 hook:SessionStart
 470 hook:SessionStart (paused bootstrap)

@@ -37,7 +37,8 @@ Optional: an SDK catalogue (`psx/psyq.toml`; fields in its header). S10 copies t
 Facts only: `console`, `volume_id`, `files`, `file_list` (path, size), `system_cnf` (or the console's boot record),
 `boot_exe`, `serial`, `exe` (header fields, size, sha1), `track01` (sha1, sha256, bytes, mode), `toc` (tracks, line,
 fingerprint), `psyq` (or the SDK's stamps: count, version, libnums, first, last; `note` when there is no stamp), `sdk_strings`, `seeds` (method,
-count, entry). Never a byte of the medium; never the dump's path.
+count, entry), `debug_artifacts` (the disc's debug leftovers: each file's path, size and kind, and counts for the boot
+executable). Never a byte of the medium; never the dump's path.
 
 ## Adding a profile
 
