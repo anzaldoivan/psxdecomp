@@ -46,12 +46,12 @@ Options: `none` (recommended), `I'll paste a path`. No stamp or no row: say "the
 the same with the version left open. A path must lie outside this folder. It is never fetched and never committed (the
 firewall purges `tools/psyq/`). Only the answers file under `.run/` holds it.
 
-## The oracle-build question (it opens the second round)
+## The oracle-build question (in the first round, when a build was named)
 
 An oracle build is another build of this program that carries more than the target: symbols, a link map, source file
 names. Two places name one: `medium.json` `debug_artifacts` (the developer's own disc) and the **builds** leads of
-the report. The first round holds four questions, so this one opens the second round. Ask it for the best-ranked
-build when either place has a row:
+the report. When either place has a row, the first round is the prior-art group, the answers group, the PsyQ question
+and this question. The reference-library group then moves to the second round. Ask for the best-ranked build:
 
 > A build with symbols exists: `<id>` (`<source>`). It carries `<what>`. Do you have your own copy?
 
@@ -65,6 +65,8 @@ Options: `none`, `I'll paste a path`, `not using it` (the developer types the re
   holds it.
 - Never give a download link for a build, and never offer to fetch one.
 - Write the answer into the lead's row of `prior-art.md`: `byo path given`, `no copy`, or `rejected` with the reason.
+- S10 records the answer (`config/psxdecomp.toml` `[oracle]`). For a path it also writes `config/oracle.sha1`: the
+  SHA-1 of each file of the copy. The audit then refuses a tracked copy of one.
 
 When neither place has a row, ask nothing. Say it in one line, with the searches that ran:
 

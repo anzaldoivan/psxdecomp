@@ -413,6 +413,38 @@ def settings_due(repo: pathlib.Path) -> str | None:
     return text
 
 
+# ---- the firewall's block for a debug file of any build (config/firewall.txt): S9 writes it, upgrade's
+# `firewall-debug` adds it. The kit's audit matches a `glob:` line with fnmatch.fnmatchcase, whose `*` crosses `/`, so
+# each line refuses the extension in any folder and in any letter case ------------------------------------------------
+FIREWALL = "config/firewall.txt"
+FIREWALL_DEBUG_GLOBS = ("*.[Ss][Yy][Mm]", "*.[Cc][Pp][Ee]")
+FIREWALL_DEBUG = ("# ---- psxdecomp: a debug file of any build (a symbol file, a linker's debug executable) ----\n"
+                  "# A link map (.MAP) has no line here: a game tracks text files of that name. The hash record\n"
+                  "# (config/oracle.sha1, written by psxdecomp's `oracle record`) covers a supplied copy.\n"
+                  + "".join("glob:  %s\n" % g for g in FIREWALL_DEBUG_GLOBS))
+
+
+def firewall_lines(text: str, kind: str) -> list[str]:
+    """The values of one rule kind in a firewall file, read as the kit's audit reads them (`#` starts a comment)."""
+    rows = (l.split("#", 1)[0].partition(":") for l in text.splitlines())
+    return [value.strip() for k, _, value in rows if k.strip() == kind]
+
+
+def firewall_debug_due(text: str) -> bool:
+    return not set(FIREWALL_DEBUG_GLOBS) <= set(firewall_lines(text, "glob"))
+
+
+def with_firewall_debug(text: str) -> str:
+    return text.rstrip("\n") + "\n\n" + FIREWALL_DEBUG if firewall_debug_due(text) else text
+
+
+def firewall_debug_hits(repo: pathlib.Path) -> list[str]:
+    """The tracked files that a line of the block refuses: with one of these, the block would break the audit."""
+    import fnmatch
+    r = git(repo, "ls-files", "-z", check=False)
+    return sorted(p for p in r.stdout.split("\0") if p and any(fnmatch.fnmatchcase(p, g) for g in FIREWALL_DEBUG_GLOBS))
+
+
 # ---- the profile's rules (profiles/psx/rules/<id>.md, each a body with no title line): the game's own rules_add.py
 # writes rules/<id>.md and its row of rules/INDEX.md. Never `promote`: a headline stays out of the project-architect
 # skill, and no rule text goes in the card. S10 and upgrade's `<x>-rule` actions both go through here ----------------

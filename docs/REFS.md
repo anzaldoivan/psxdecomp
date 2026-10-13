@@ -79,6 +79,10 @@ searches for the others, and the S4 gate asks the developer.
 - **Instructions only.** A build is the publisher's and never distributed. Its class is `byo` (the `oracle-build`
   row). The developer supplies a copy outside the repository (`PSXDECOMP_BYO_ORACLE_PATH`), and only that a path was
   given is recorded.
+- **A hash record, and two firewall lines.** `psxd oracle record` writes the SHA-1 of each file of a supplied copy to
+  the game's `config/oracle.sha1`. The game's audit then refuses a tracked copy under any name. S9 adds two `glob:`
+  lines to `config/firewall.txt`: the audit refuses a tracked `.SYM` or `.CPE` file of any build. A `.MAP` file has
+  no line, because a game tracks text files of that name.
 - **Pages only.** A scout reads the page that describes a build. It fetches no disc image, no symbol file and no
   patch. No file holds a download URL for one.
 - **Never a source:** leaked source code and SDK internals. celophi/lom-decomp and abelbriggs1/tm1_decomp state the

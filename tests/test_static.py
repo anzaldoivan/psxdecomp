@@ -418,6 +418,27 @@ def test_builds_question_reaches_the_gate():
     assert sum("hiddenpalace.org" in x or "datacrystal" in x or '".SYM"' in x for x in seeds) == 3, seeds
     assert all(w in gate for w in ("`debug_artifacts`", "`PSXDECOMP_BYO_ORACLE_PATH`", "Do you have your own copy?",
                                    "`none`, `I'll paste a path`, `not using it`", "No other build with symbols found"))
+    # a headless run shows the first round only, so the question is in it and the references group gives its slot
+    ask = gate.split("## The oracle-build question (in the first round, when a build was named)", 1)[1].split("\n## ", 1)[0]
+    assert "the first round is the prior-art group, the answers group, the PsyQ question\nand this question" in ask
+    assert "reference-library group then moves to the second round" in ask and "second round" not in gate.replace(ask, "")
+    assert "`config/oracle.sha1`" in ask and "`[oracle]`" in ask
+    # the firewall's block: S9 and upgrade write one constant, and the launcher names the script that keeps the record
+    import fnmatch
+    assert common.FIREWALL_DEBUG_GLOBS == ("*.[Ss][Yy][Mm]", "*.[Cc][Pp][Ee]")
+    assert all("glob:  %s\n" % g in common.FIREWALL_DEBUG for g in common.FIREWALL_DEBUG_GLOBS) and ".MAP" in common.FIREWALL_DEBUG
+    assert not any(fnmatch.fnmatchcase("tools/census/fixtures/ok/build/fx/FX.map", g) for g in common.FIREWALL_DEBUG_GLOBS)
+    for script in ("install", "upgrade"):
+        text = (ROOT / "scripts" / ("%s.py" % script)).read_text()
+        assert "with_firewall_debug(" in text and "[Ss][Yy][Mm]" not in text, script
+    usage = (ROOT / "scripts/psxd").read_text()
+    assert "|oracle>" in usage and "psxd oracle record --repo . --dump <dump> --no-copy" in usage
+    stages = (ref / "stages.md").read_text()
+    assert "`.SYM`, `.CPE`" in stages.split("| S9 refs |")[1].split("\n")[0]
+    assert all(w in stages.split("| S10 handoff |")[1].split("\n")[0] for w in ("`[oracle]`", "`config/oracle.sha1`"))
+    for rel, words in (("skills/upgrade/SKILL.md", ("`firewall-debug`", "`record-oracle`")),
+                       ("skills/doctor/SKILL.md", ("| `oracle` |", "oracle record --repo ."))):
+        assert all(w in (ROOT / rel).read_text() for w in words), rel
     assert "PSXDECOMP_BYO_ORACLE_PATH" in answers.EXTRAS and "PSXDECOMP_BYO_ORACLE_PATH" not in answers.KEY_NAMES
     doc = fetch_refs.load_doc(ROOT / "profiles/psx/refs.toml")
     rows = {r["name"]: r for r in doc["rows"]}
@@ -427,7 +448,8 @@ def test_builds_question_reaches_the_gate():
     assert [a["order"] for a in doc["authority"] if "is called" in a["topic"] and "PsyQ" not in a["topic"]] == [["oracle-build"]]
     assert any("prototype's symbols speak for the prototype" in t["what"] for t in doc["traps"])
     policy = (ROOT / "docs/REFS.md").read_text().split("## Oracle builds", 1)[1].split("\n## ", 1)[0]
-    assert all(w in policy for w in ("`PSXDECOMP_BYO_ORACLE_PATH`", "no disc image", "leaked source code", "byte check"))
+    assert all(w in policy for w in ("`PSXDECOMP_BYO_ORACLE_PATH`", "no disc image", "leaked source code", "byte check",
+                                     "`config/oracle.sha1`", "`glob:`"))
     assert "debug_artifacts" in (ROOT / "profiles/SCHEMA.md").read_text()
     for rel in ("agents/scout-web.md", "skills/new/reference/report-template.md"):
         assert "For a person to read" in (ROOT / rel).read_text(), rel

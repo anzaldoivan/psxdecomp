@@ -479,10 +479,13 @@ def s9_refs(c: Ctx) -> str:
     if "!/refs/" not in ig.splitlines():
         c.write(".ignore", ig + ("" if not ig or ig.endswith("\n") else "\n") + "%s: search refs/ though git ignores "
                 "it ----\n!/refs/\n" % PSX_MARK)
-    fw = c.p("config/firewall.txt")
-    if fw.is_file() and "purge: refs/" not in common.read(fw):
-        c.write("config/firewall.txt", common.read(fw).rstrip("\n") +
-                "\n\n%s: the reference library (upstream clones; never tracked) ----\npurge: refs/\n" % PSX_MARK)
+    fw = c.p(common.FIREWALL)
+    if fw.is_file():                              # one write: the purge line, and the block for a debug file of any build
+        rules = common.read(fw)
+        if "purge: refs/" not in rules:
+            rules = (rules.rstrip("\n") + "\n\n%s: the reference library (upstream clones; never tracked) ----\n"
+                     "purge: refs/\n" % PSX_MARK)
+        c.write(common.FIREWALL, common.with_firewall_debug(rules))
     how = c.p("HOW_WE_WORK.md")
     if how.is_file() and REFS_RULE not in common.read(how):
         c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Docs map", REFS_RULE))
@@ -625,6 +628,13 @@ def s10_handoff(c: Ctx) -> str:
         if not c.p(rel).exists():
             c.write(rel, body)
     paths = [RECORD, "config/psxdecomp.profile.toml", "docs/ops/host-recipe.md"]
+    import oracle                                 # the oracle-build question: the disc scan, the hashes of a given copy
+    if not c.dry and "oracle" not in upgrade.record_tables(c.target):
+        got, line = oracle.record(c.target, (medium or {}).get("debug_artifacts"),
+                                  ans.get("PSXDECOMP_BYO_ORACLE_PATH") or None, ans.get("DUMP_PATH") or None)
+        c.written += got
+        print("     oracle %s" % line)
+    paths += [oracle.HASHES, common.FIREWALL]
     pa_src = c.boot("prior-art.md")
     if pa_src.is_file() and not c.p("docs/prior-art.md").exists():
         c.write("docs/prior-art.md", common.read(pa_src))
@@ -679,7 +689,8 @@ def s10_handoff(c: Ctx) -> str:
         c.write(floor.BASELINE, "" if c.dry else floor.first_baseline(c.target))
     paths.append(floor.BASELINE)
     if c.dry:                                     # every write of the stage is listed above; a dry run counts nothing
-        return "would write the record, the tools, the settings, the rules, the ledgers and the two baselines"
+        return ("would write the record (with the oracle-build table), the tools, the settings, the rules, the ledgers "
+                "and the two baselines")
     c.git("add", "--", *[x for x in paths if c.p(x).exists()])   # the README lint counts tracked paths, not local
     import doctor
     rows = doctor.check(c.target)
@@ -942,6 +953,14 @@ def self_test() -> int:
         st = common.State(td)
         st.mark("S0", "done")
         ok &= st.first_open() == "S1"
+    fw = "purge: disks/\nglob:  SCPH*.BIN\n"         # S9's firewall block: both lines, once, whatever the file held
+    blocked = common.with_firewall_debug(fw)
+    ok &= blocked == fw + "\n" + common.FIREWALL_DEBUG and common.with_firewall_debug(blocked) == blocked
+    ok &= common.firewall_debug_due(fw + "glob:  %s\n" % common.FIREWALL_DEBUG_GLOBS[0]) and not common.firewall_debug_due(blocked)
+    ok &= common.firewall_lines(blocked, "glob") == ["SCPH*.BIN"] + list(common.FIREWALL_DEBUG_GLOBS)
+    import fnmatch
+    hit = lambda p: any(fnmatch.fnmatchcase(p, g) for g in common.FIREWALL_DEBUG_GLOBS)  # noqa: E731
+    ok &= all(map(hit, ("GAME.SYM", "x/y/game.sym", "tools/a.Cpe"))) and not any(map(hit, ("notes.map", "sym.txt", "a.symbols")))
     with tempfile.TemporaryDirectory() as td:       # S10's writes that need no PA3: the settings, the rule, the ratchet
         repo = pathlib.Path(td)
         common.git(repo, "init", "--quiet")

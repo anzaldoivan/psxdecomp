@@ -17,7 +17,7 @@ pinned installers. After S10 the repository needs nothing from the plugin.
   ├─ S7 PA3's intake handed the kit's intake.decomp.md                 (PA3's tested path, unchanged)
   ├─ S8 install.py → the kit's install.py --answers (dry run, then run; digest-checked) + the README standard
   ├─ S9 fetch_refs.py → refs/ (git-ignored, searchable via .ignore) + docs/ops/refs.md (committed)
-  └─ S10 doctor.py + config/psxdecomp.toml + tools/psxd_publish.py (the README lint, vendored; its CI)
+  └─ S10 doctor.py + oracle.py (the oracle-build record) + config/psxdecomp.toml + tools/psxd_publish.py (the README lint, vendored; its CI)
          + tools/psxd_floor.py (the floor, vendored: roadmap lint, debt baseline, guard hook) + docs/ops/psxdecomp-floor.md
 ```
 
