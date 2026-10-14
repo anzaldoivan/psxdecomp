@@ -353,7 +353,7 @@ def toolchain_row(repo: pathlib.Path, state: dict, own: dict) -> tuple[str, str]
 def names_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, str]:
     """Due when phase 1.4 is closed: config/names.tsv and config/asm-evidence.tsv parse (or `[own] names`). FAIL on a
     file that cannot be read and on an assembly row that points at nothing, at any time; WARN on a names row that
-    points at nothing and when a ledger is absent; the functions with no row are counted."""
+    points at nothing and when a ledger is absent."""
     if own.get("names"):
         return "OK", "the game's own names ledger: %s" % own["names"]
     found = floor.names_findings(repo)
@@ -370,9 +370,7 @@ def names_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, st
     gone = [rel for rel in mine if not (repo / rel).is_file()]
     if gone:
         return "WARN", "no %s — `python3 %s names --init` writes the header line" % (" and no ".join(gone), floor.VENDORED)
-    unbased = sum(n for (kind, _), n in debt["counts"].items() if kind == "unbased") if isinstance(debt, dict) else 0
-    rows = next((f[1] for f in found if f[1].startswith(floor.NAMES)), floor.NAMES)
-    return "OK", "%s; %d function(s) in src/ with no accepted row" % (rows, unbased)
+    return "OK", next((f[1] for f in found if f[1].startswith(floor.NAMES)), floor.NAMES)
 
 
 def debt_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, str]:
@@ -1407,8 +1405,8 @@ def self_test_floor() -> bool:
         common.git(repo, "add", "-A")
         mid = rows()
         ok &= [mid[k][0] for k in ("gate", "toolchain", "names", "debt")] == ["OK", "OK", "OK", "WARN"]
-        ok &= "gate `make verify`; 1 hash file(s)" == mid["gate"][1] and "1 function(s) in src/" in mid["names"][1]
-        ok &= "the tree holds: goto 1, unbased 1" in mid["debt"][1]
+        ok &= "gate `make verify`; 1 hash file(s)" == mid["gate"][1] and mid["names"][1].startswith(floor.NAMES)
+        ok &= "the tree holds: goto 1)" in mid["debt"][1]
         ok &= first["cpp"][0] == "WAIT" and "phase 1.4 closes" in first["cpp"][1]
         ok &= mid["cpp"][0] == "WARN" and "no `[floor] cpp`" in mid["cpp"][1] and "under `[floor]`" in mid["cpp"][1]
         common.write(repo / "tools/cpp.py", floor.CPP_SELF)
@@ -1421,7 +1419,7 @@ def self_test_floor() -> bool:
         equal = rows()["debt"]
         (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0] + floor.C_DEBT["goto"][0].replace("Walk", "Run"))
         rise = rows()["debt"]
-        ok &= rise[0] == "FAIL" and "2 count(s) over their row" in rise[1] and "refuses a rise" in rise[1]   # a goto and an unbased name
+        ok &= rise[0] == "FAIL" and "1 count(s) over their row" in rise[1] and "refuses a rise" in rise[1]   # a goto
         tool = repo / "tools-ext"
         tool.mkdir()
         common.git(tool, "init", "--quiet")
@@ -1466,7 +1464,7 @@ def self_test_floor() -> bool:
     with tempfile.TemporaryDirectory() as td:                                   # debt is due before any C file exists
         repo = pathlib.Path(td).resolve()
         common.git(repo, "init", "--quiet")
-        common.write(repo / "include/common.h", "#define SWAP(a, b) { s32 t = a; a = b; b = t; }\n")
+        common.write(repo / "include/common.h", "#define HP(p) (*(s16 *)((u8 *)(p) + 0x10))\n")
         common.git(repo, "add", "-A")
         ok &= dict(floor_rows(repo))["debt"][0] == "WARN"
     with tempfile.TemporaryDirectory() as td:                                   # what an [own] value may name

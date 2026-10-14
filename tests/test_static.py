@@ -1086,17 +1086,13 @@ def test_debt_kinds(tmp_path):
     bl = floor.parse_baseline(floor.first_baseline(repo))
     want = {(k, "src/%s.c" % kind): n for kind, (_, got) in floor.C_DEBT.items() for k, n in got.items()}
     assert bl.rows == want and bl.skip == [] and len(bl.head) == len(floor.BASELINE_HEAD), bl.rows   # no stub header here: no skip line
-    assert {k for k, _ in bl.rows} == set(floor.KINDS) - {"unbased", "filename", "flag", "reservation"} and not bl.lacks()
+    assert {k for k, _ in bl.rows} == set(floor.KINDS) - {"filename"} and not bl.lacks()
     assert bl.summary() == "down: pin-unmarked, goto-unmarked, barrier-unmarked, asm; count: pin, goto, barrier, " \
-                           "offset, address, cast, field, macro, placeholder, placeholder-use, unbased, struct, extern, " \
-                           "filename, flag, reservation"
+                           "offset, address, cast, field, placeholder, placeholder-use, struct, extern, filename"
     (repo / "config").mkdir()
     (repo / floor.BASELINE).write_text(floor.first_baseline(repo))
     r = _floor("debt", "--repo", repo)
     assert r.returncode == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); down: pin-unmarked" in r.stdout, r.stdout
-    _floor("names", "--init", "--repo", repo)                           # the ledger exists: every other name is unbased
-    r = _floor("debt", "--repo", repo)
-    assert r.returncode == 1 and "DEBT FAIL rise unbased src/clean.c: 1, its row is 0\n" in r.stdout, r.stdout
 
 
 def test_debt_bodies(tmp_path):
@@ -1107,11 +1103,11 @@ def test_debt_bodies(tmp_path):
     assert len(files) > 100
     for f in files:
         text, total = f.read_text(), {}
-        bodies = floor.file_bodies("src/t.c", text, based=set())
+        bodies = floor.file_bodies("src/t.c", text)
         for got in bodies.values():
             for kind, n in got.items():
                 total[kind] = total.get(kind, 0) + n
-        assert total == floor.file_debt("src/t.c", text, based=set()), f
+        assert total == floor.file_debt("src/t.c", text), f
         assert not set(bodies.get(floor.SCOPE, {})) & {"pin", "pin-unmarked", "goto", "offset", "asm"}, (f, bodies)
         if f.suffix == ".c":
             assert len([n for n in bodies if n != floor.SCOPE]) == 1, (f, sorted(bodies))
@@ -1304,7 +1300,7 @@ def test_debt_against_rev(tmp_path):
     `debt --against` prints what differs from a revision. `style --against` judges the prose by the ratchet, the
     `skip` lines and the public list of the revision: a raised row, a new `skip` line and a file that left the public
     list change nothing."""
-    files = {"src/a.c": floor.C_DEBT["goto"][0], "src/m.c": floor.C_DEBT["macro"][0],
+    files = {"src/a.c": floor.C_DEBT["goto"][0], "src/m.c": floor.C_DEBT["struct"][0],
              "src/o.c": "s32 Walk(void *p) {\n    return HP(p);\n}\n",
              "include/h.h": "#define HP(p) \\\n    (*(s16 *)((u8 *)(p) + 0x10))\n",
              "README.md": "# G\n\nOne; two.\n", "docs/a.md": "Clean.\n",
@@ -1312,7 +1308,7 @@ def test_debt_against_rev(tmp_path):
     repo = _style_repo(tmp_path, files)
     debt = lambda *a: _floor("debt", "--repo", repo, *a)  # noqa: E731
     totals = lambda r: re.search(r"totals: ([^(]+) \(", r.stdout)[1]  # noqa: E731
-    want = "goto 1, offset 2, macro 3"
+    want = "goto 1, offset 2, struct 1"
     assert [totals(debt()), totals(debt("--staged")), totals(debt("--rev", "HEAD"))] == [want] * 3
     assert "counted in the index" in debt("--staged").stdout and "counted in HEAD" in debt("--rev", "HEAD").stdout
     run(["git", "-C", repo, "config", "core.autocrlf", "true"])                 # a Windows checkout of the same commit
@@ -1330,7 +1326,7 @@ def test_debt_against_rev(tmp_path):
     assert "0 finding(s) against HEAD" in r.stdout, r.stdout
     assert totals(debt("--staged")) == want                                     # not added yet
     run(["git", "-C", repo, "add", "src/a.c"])
-    assert totals(debt("--staged")) == "goto 2, offset 2, macro 3" and totals(debt("--rev", "HEAD")) == want
+    assert totals(debt("--staged")) == "goto 2, offset 2, struct 1" and totals(debt("--rev", "HEAD")) == want
     assert debt("--staged", "--update").returncode == 1 and debt("--rev", "nowhere").returncode == 1
     # the ratchet of the change cannot admit what the base's ratchet refuses
     (repo / "README.md").write_text("# G\n\nOne; two; three.\n")
@@ -1390,7 +1386,7 @@ def test_debt_baseline_command(tmp_path):
     r = debt("--recount")
     assert r.returncode == 0 and "DEBT RECOUNT written" in r.stdout and base.read_text().endswith("1 goto src/a.c\n")
     first = base.read_text()
-    assert "mode pin-unmarked down\n" in first and "mode pin count\n" in first and "mode unbased count\n" in first
+    assert "mode pin-unmarked down\n" in first and "mode pin count\n" in first and "mode filename count\n" in first
     assert debt().returncode == 0
     run(["git", "-C", repo, "add", "-A"])
     run(["git", "-C", repo, "-c", "commit.gpgsign=false", "commit", "-qm", "the baseline"])

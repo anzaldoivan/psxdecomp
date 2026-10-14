@@ -284,7 +284,7 @@ def test_s10_writes_the_debt_baseline_and_debt_passes(game):
     import floor
     bl = floor.parse_baseline((game / floor.BASELINE).read_text())
     assert (bl.rows, bl.skip, bl.version, bl.lacks()) == ({}, [], 2, []), vars(bl)             # no stub header yet: no skip line
-    assert bl.policy("pin-unmarked") == "down" and bl.policy("pin") == "count" and bl.policy("unbased") == "count", vars(bl)
+    assert bl.policy("pin-unmarked") == "down" and bl.policy("pin") == "count" and bl.policy("placeholder") == "count", vars(bl)
     assert (game / floor.NAMES).read_text() == "\t".join(floor.NAME_COLUMNS) + "\n"
     assert (game / floor.ASM_EVIDENCE).read_text() == "\t".join(floor.ASM_COLUMNS) + "\n"
     for rid in ("FIN1", "NAME1"):
@@ -305,8 +305,6 @@ def test_s10_writes_the_debt_baseline_and_debt_passes(game):
         run(["git", "-C", game, "add", "-f", "src/probe.c"])
         r = run([PY, floor.VENDORED, "debt"], cwd=game, check=False)
         assert r.returncode == 1 and "DEBT FAIL rise goto src/probe.c: 1, its row is 0\n" in r.stdout, r.stdout
-        r = run([PY, floor.VENDORED, "debt"], cwd=game, check=False)
-        assert "DEBT FAIL rise unbased src/probe.c: 1, its row is 0\n" in r.stdout, r.stdout   # the ledger exists
     finally:
         run(["git", "-C", game, "rm", "-q", "-f", "--cached", "src/probe.c"])
         src.unlink()
@@ -352,7 +350,7 @@ def test_fresh_game_passes_its_gate(game):
 def test_a_matched_function_is_committed_and_pushed_under_any_name(game, tmp_path):
     """No check asks for a name. In a clone of the game with its git hooks, three functions are committed and pushed:
     one under its address name, one under a guessed name with no row, one under a name with a `provisional` row. The
-    baseline's rows show them (`placeholder`, `unbased`), and neither the commit hook nor the push hook refuses."""
+    baseline's rows show the address name (`placeholder`), and neither the commit hook nor the push hook refuses."""
     import floor
     clone, remote = tmp_path / "clone", tmp_path / "remote.git"
     git = lambda *a, check=True: run(["git", "-C", clone, "-c", "user.name=t", "-c", "user.email=t@example.invalid",  # noqa: E731
@@ -374,7 +372,7 @@ def test_a_matched_function_is_committed_and_pushed_under_any_name(game, tmp_pat
     r = run([PY, floor.VENDORED, "gate", "--bank"], cwd=clone, check=False)
     assert r.returncode == 0 and "the rows of now written" in r.stdout, r.stdout + r.stderr
     rows = (clone / floor.BASELINE).read_text()
-    assert "1 placeholder src/names.c\n" in rows and "2 unbased src/names.c\n" in rows, rows
+    assert "1 placeholder src/names.c\n" in rows, rows
     git("add", "-A")
     r = git("commit", "-qm", "three functions that match, named as far as anyone knows", check=False)
     assert r.returncode == 0, r.stdout + r.stderr

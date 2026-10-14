@@ -208,15 +208,11 @@ The tool finds the other kinds with patterns over the raw text. They are counted
 | `address` | a literal in the address ranges of the console with no symbol, or a macro that hides one, outside the address header |
 | `cast` | an integer made of a pointer, or a pointer made of an integer: `(s32)&x`, `(T *)(s32)x`, also with `u_long`, `u_int` and `u_short` |
 | `field` | a name such as `unk_10` or `field_0x10`: a field with an offset and no name |
-| `macro` | a `#define` whose body holds `{`, `;` or a line continuation |
 | `placeholder` | a `func_` or `D_` address name that a C file defines, also `FUN_`, `DAT_`, `sub_` and `loc_` |
 | `placeholder-use` | each other place where such a name stands |
-| `unbased` | any other function that a C file defines, with no accepted row in `config/names.tsv` |
 | `struct` | a struct, union or enum body outside an `include/` folder |
 | `extern` | an `extern` declaration or a prototype in a C file |
 | `filename` | a source file named by an address or a number, such as `func_80012344.c` or `misc12.c` |
-| `flag` | a compiler option of one file |
-| `reservation` | a register that a file takes from the compiler, `-ffixed-N` |
 
 - A pattern is a count, not a proof. Code in another spelling is not counted.
 - For these kinds the tool reads each tracked file with a C suffix. It does not read `asm/`, `build/`, `expected/`,
@@ -224,8 +220,6 @@ The tool finds the other kinds with patterns over the raw text. They are counted
 - It does not read the work folders of a campaign: `drafts/`, `waves/`, `repro/`, `scratch/` and `sandbox/`.
 - It also does not read a folder whose name starts with a dot. It reads each other folder.
 - The tool knows the macros of each header in every file, and those of an included C file in the file that includes it.
-- The game counts `flag` and `reservation`. `[debt] flags` in `config/psxdecomp.toml` names its command.
-- That command prints one `<count> <kind> <path>` line for each count.
 - A pointer sum with a variable is not an `offset`. The address ranges are main RAM, the scratchpad, the I/O
   ports and the BIOS. The value `0x80000000` counts only behind a pointer cast, because it is also the sign mask.
 - `config/debt-baseline.txt` holds one `<count> <kind> <path>` row for each count above zero.
@@ -259,7 +253,7 @@ The baseline holds one policy line for each kind. `debt --recount` writes the st
 - The gate refuses a new row of `config/asm-evidence.tsv` in an agent session in the same way.
 - `debt --bodies` prints the counts of each function body.
 - `debt --files` prints the state of each C file: `stubs`, `matched` or `finished`.
-- A finished file has every function in C and no debt of any kind. The names ledger must exist.
+- A finished file has every function in C and no debt of any kind.
 - The README shows that count in a generated block. The README lint refuses the count in any other place.
 
 ## Trials
@@ -292,10 +286,9 @@ The rule is `rules/NAME1.md`. `python3 tools/psxd_floor.py names` checks two tab
 | `config/asm-evidence.tsv` | `image symbol path class evidence date verified_by` |
 
 - `kind` is `function`, `data`, `type`, `field`, `macro` or `file`.
-- `decision` is `accepted`, `provisional` or `rejected`. Only an accepted row clears `unbased`.
+- `decision` is `accepted`, `provisional` or `rejected`.
 - A name is never required. A function that matches is banked and pushed under the name that it has.
-- `names --init` writes the header line of each file. When `config/names.tsv` exists, the tool counts each named
-  function with no accepted row as `unbased`. That kind is counted and shown. It refuses nothing.
+- `names --init` writes the header line of each file.
 - `evidence` is `<class>:<path>:<line>`. `rules/NAME1.md` lists the classes.
 - The path is a file of the repository, and the file has that line.
 - A row of `config/names.tsv` with other evidence is a warning: `NAMES WARN`, and `GATE WARN names` in the gate.

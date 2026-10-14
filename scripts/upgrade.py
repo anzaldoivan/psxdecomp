@@ -1395,7 +1395,7 @@ def self_test() -> int:
         ok &= (repo / floor.NAMES).read_text() == "\t".join(floor.NAME_COLUMNS) + "\n"
         ok &= (repo / floor.ASM_EVIDENCE).read_text() == "\t".join(floor.ASM_COLUMNS) + "\n"
         base = (repo / floor.BASELINE).read_text()
-        ok &= base.endswith("mode reservation count\n") and "skip " not in base and base.startswith("# %s: " % floor.BASELINE)
+        ok &= base.endswith("mode filename count\n") and "skip " not in base and base.startswith("# %s: " % floor.BASELINE)
         ok &= "debt-recount" not in keys and recount_due(repo) is None
         ok &= "asm-ledger" not in keys | keys2
         (repo / floor.ASM_EVIDENCE).write_text("# ours\n" + "\t".join(floor.ASM_COLUMNS_OLD) + "\nmain\tboot\tsrc/boot.s\thand-asm\td.md:1\t2026-01-02\n")
@@ -1408,7 +1408,7 @@ def self_test() -> int:
         ok &= "version 1 file in `mode admit`" in next(x["what"] for x in plan(repo) if x["key"] == "debt-recount")
         apply(repo, False, False)
         again = (repo / floor.BASELINE).read_text()
-        ok &= again.endswith("mode reservation count\n") and "# a note of the game\n" in again and recount_due(repo) is None
+        ok &= again.endswith("mode filename count\n") and "# a note of the game\n" in again and recount_due(repo) is None
         (repo / floor.BASELINE).write_text(base)
         ok &= "would be created %s" % floor.BASELINE in dry and dry.index("would be created %s" % floor.NAMES) < dry.index(
             "would be created %s" % floor.BASELINE)

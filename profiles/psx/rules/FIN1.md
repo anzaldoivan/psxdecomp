@@ -6,8 +6,8 @@ A finished file meets six conditions:
 1. Matched. The hash check of the build passes with the file in C.
 2. No forced code. No register pin and no `goto` that copies the assembly. One that the match needs has a `// !FAKE:` reason.
 3. Typed. No field read by its offset, and no address without a symbol. Each type has one definition, in a header.
-4. Named. No placeholder name. Each other name has an accepted row in `config/names.tsv`.
-5. Plain C. No macro that hides a body. No assembly without a row in `config/asm-evidence.tsv`.
+4. Named. No placeholder name.
+5. Plain C. No assembly without a row in `config/asm-evidence.tsv`.
 6. Formatted. The formatter of the repository makes no change.
 
 `python3 tools/psxd_floor.py debt` counts conditions 2 to 5 for each file against `config/debt-baseline.txt`.

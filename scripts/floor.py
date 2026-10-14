@@ -89,17 +89,11 @@ The other kinds are patterns over the raw text. They are counted and shown, and 
   cast             an integer made of a pointer, or a pointer made of an integer: `(s32)&x`, `(T *)(s32)x`, also
                    with the SDK's names (`u_long`, `u_int`, `u_short`)
   field            a member or a name `unk_10`, `field_0x10`: a field that has an offset and no name
-  macro            a `#define` whose body holds `{`, `;` or a line continuation
   placeholder      a `func_XXXXXXXX` or `D_XXXXXXXX` name defined in a C file (also `FUN_`, `DAT_`, `sub_`, `loc_`)
   placeholder-use  each other place where such a name stands: a call, a read, a declaration
-  unbased          any other function defined in a C file with no accepted row in config/names.tsv (once that file
-                   exists)
   struct           a struct, union or enum body outside an include/ folder
   extern           an `extern` declaration or a prototype in a C file: a declaration has one owner, a header
   filename         a source file named by an address or a number (`func_80012344.c`, `misc12.c`)
-  flag, reservation
-                   a compiler option of one file, and a register taken from the compiler (`-ffixed-N`). The game
-                   counts them: `[debt] flags` of the record names a command that prints `<count> <kind> <path>` lines
 
 The baseline's policy lines (one per kind; `debt --recount` writes the starting ones):
   mode <kind> count                             the kind is counted and shown: each commit's diff of the baseline shows
@@ -682,9 +676,8 @@ def cmd_plan(repo) -> int:
 
 # ---- the readability debt -----------------------------------------------------------------------------------------
 KINDS = ("pin", "pin-unmarked", "goto", "goto-unmarked", "barrier", "barrier-unmarked", "offset", "address", "cast",
-         "field", "macro", "asm", "placeholder", "placeholder-use", "unbased", "struct", "extern", "filename",
-         "flag", "reservation")
-RETIRED = ("obscured",)                              # a kind of an unreleased build of this tool: its lines are dropped
+         "field", "asm", "placeholder", "placeholder-use", "struct", "extern", "filename")
+RETIRED = ("obscured", "unbased", "macro", "flag", "reservation")   # kinds of an earlier build: their lines are dropped
 NUM = r"(?:0[xX][0-9A-Fa-f]+|\d+)"
 OFFX = rf"(?:\([^()]*\)|{NUM}|[A-Za-z_]\w*)(?:\s*[-+*]\s*(?:\([^()]*\)|{NUM}|[A-Za-z_]\w*))*"
 OPND = r"\(?\s*&?\s*\w+(?:\s*(?:->|\.)\s*\w+|\s*\[[^\[\]\n]*\])*\s*\)?"
@@ -1181,9 +1174,8 @@ _SCANS: dict[tuple, dict] = {}                         # one scan per text and c
 
 def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -> dict:
     """One C file or header, read once. `hits`: [(kind, position)] of every kind that a pattern over the raw text
-    decides (not the keyword kinds, and not `unbased`, `filename`, `flag`, `reservation`). `extents`: its function
-    bodies. `funcs`: {name: position} of the functions it defines under a name that is no placeholder. `stubs`: its
-    INCLUDE_ASM lines. `shared`: the macros of the headers that hide an offset or an address."""
+    decides (not the keyword kinds, and not `filename`). `extents`: its function bodies. `stubs`: its INCLUDE_ASM
+    lines. `shared`: the macros of the headers that hide an offset or an address."""
     key = (hashlib.sha1(text.encode("utf-8", "replace")).digest(), in_include(rel), is_c(rel), is_header(rel),
            rel == address_header, tuple(sorted((shared or {}).items())))
     if key in _SCANS:
@@ -1207,11 +1199,8 @@ def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -
             hits += [(kind, m.start()) for m in rx.finditer(code)]
     hits += [("cast", m.start()) for m in CASTS.finditer(code)]
     hits += [("field", m.start()) for m in FIELD.finditer(code)]
-    hits += [("macro", m.start()) for m in DEFINE.finditer(body) if m.group(1) not in STUB_MACROS
-             and re.search(r"[{;]|\\\n", m.group(2))]
     if not in_include(rel):
         hits += [("struct", m.start()) for m in STRUCT.finditer(code)]
-    funcs: dict[str, int] = {}
     stub_lines = [(m.start(), code.find("\n", m.start())) for m in STUB_USE.finditer(code)]
     uses = [m for m in PLACEHOLDER_USE.finditer(code) if not any(a <= m.start() and (b < 0 or m.start() < b) for a, b in stub_lines)]
     if is_c(rel):
@@ -1220,22 +1209,20 @@ def scan_file(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER) -
         for m in list(DEF_FUNC.finditer(code)) + list(DEF_DATA.finditer(code)):
             if m.group(1) not in NOT_A_NAME or m.re is DEF_DATA:
                 named.setdefault(m.group(1), m.start())
-                if m.re is DEF_FUNC and not PLACEHOLDER.match(m.group(1)):
-                    funcs.setdefault(m.group(1), m.start())
         hits += [("placeholder", at) for n, at in named.items() if PLACEHOLDER.match(n)]
         for n, at in named.items():                    # the name in its own definition is no use of it
             own = next((u for u in uses if u.group(0) == n and u.start() >= at), None)
             if own is not None:
                 uses.remove(own)
     hits += [("placeholder-use", m.start()) for m in uses]
-    _SCANS[key] = {"hits": hits, "extents": ext, "funcs": funcs, "stubs": len(STUB_USE.findall(code))}
+    _SCANS[key] = {"hits": hits, "extents": ext, "stubs": len(STUB_USE.findall(code))}
     return _SCANS[key]
 
 
-def file_bodies(rel: str, text: str, shared=None, based=None, address_header=ADDRESS_HEADER, view=None) -> dict[str, dict[str, int]]:
+def file_bodies(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER, view=None) -> dict[str, dict[str, int]]:
     """{function name: {kind: count}} of one C file or header: every function body it holds, also one with no debt,
-    and under SCOPE what no body holds (left out when it is empty). Two bodies of one name are one entry. `based`:
-    the names with a ledger row, or None before the ledger exists. `view`: [(kind, line from 0)] of the keyword kinds
+    and under SCOPE what no body holds (left out when it is empty). Two bodies of one name are one entry. `view`:
+    [(kind, line from 0)] of the keyword kinds
     as the game's preprocessor shows them for this file (`compiler_view`); None: as the raw text shows them."""
     scan = scan_file(rel, text, shared, address_header)
     hits = list(scan["hits"])
@@ -1243,8 +1230,6 @@ def file_bodies(rel: str, text: str, shared=None, based=None, address_header=ADD
     if view:                                           # a hit stands in the body that holds the start of its line
         starts = [0] + [m.end() for m in re.finditer("\n", text)]
         hits += [(kind, starts[min(line, len(starts) - 1)]) for kind, line in marked(view, markers(text) if "!FAKE:" in text else {})]
-    if based is not None:
-        hits += [("unbased", at) for n, at in scan["funcs"].items() if n not in based]
     out: dict[str, dict[str, int]] = {name: {} for name, _, _ in scan["extents"]}
     starts = [a for _, a, _ in scan["extents"]]
     for kind, at in hits:
@@ -1255,10 +1240,10 @@ def file_bodies(rel: str, text: str, shared=None, based=None, address_header=ADD
     return out
 
 
-def file_debt(rel: str, text: str, shared=None, based=None, address_header=ADDRESS_HEADER, view=None) -> dict[str, int]:
+def file_debt(rel: str, text: str, shared=None, address_header=ADDRESS_HEADER, view=None) -> dict[str, int]:
     """The counts of one C file or header, by kind (zero counts left out): the sum of its bodies and its scope."""
     got: dict[str, int] = {}
-    for counts in file_bodies(rel, text, shared, based, address_header, view).values():
+    for counts in file_bodies(rel, text, shared, address_header, view).values():
         for kind, n in counts.items():
             got[kind] = got.get(kind, 0) + n
     return {k: got[k] for k in KINDS if got.get(k)}
@@ -1339,32 +1324,6 @@ def read_tsv(path, columns, tree: Tree | None = None, also=()) -> tuple[list[dic
     return rows, errs
 
 
-def flag_counts(repo, tree: Tree) -> dict[tuple[str, str], int]:
-    """{(kind, path): count} of the two kinds that a game counts itself, `flag` (a compiler option of one file) and
-    `reservation` (a register taken from the compiler, `-ffixed-N`). `[debt] flags` of the record names the game's
-    lister: a command that prints `<count> flag|reservation <path>` lines for the work tree. It is run for the work
-    tree and the index. A revision cannot be listed without a checkout, so its counts are the rows of its own
-    baseline, which the gate held equal to the lister when that revision was committed."""
-    cmd = record_table(tree, "debt").get("flags")
-    out: dict[tuple[str, str], int] = {}
-    if tree.source not in (None, INDEX):
-        try:
-            rows = parse_baseline(tree.read(BASELINE)).rows
-        except Fail:
-            rows = {}
-        return {k: n for k, n in rows.items() if k[0] in ("flag", "reservation")} if cmd else {}
-    if not cmd:
-        return out
-    r = subprocess.run(cmd, shell=True, cwd=str(repo), capture_output=True, text=True)
-    if r.returncode != 0:
-        raise Fail("the lister of `[debt] flags` (`%s`) exited %d: %s" % (cmd, r.returncode, (r.stderr or r.stdout).strip()[-200:]))
-    for line in r.stdout.splitlines():
-        m = re.fullmatch(r"(\d+) (flag|reservation) (\S.*)", line.strip())
-        if m and int(m[1]):
-            out[(m[2], m[3])] = out.get((m[2], m[3]), 0) + int(m[1])
-    return out
-
-
 def debt_bodies(repo, skip=(), tree: Tree | None = None, cpp=False) -> dict[str, dict[str, dict[str, int]]]:
     """{path: {function name: {kind: count}}} over the tracked source files (is_source) that no `skip` entry covers:
     every function body of every C file (also one with no debt), and under SCOPE what no body holds. `tree`: the
@@ -1379,8 +1338,6 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None, cpp=False) -> dict[str,
     covered = lambda p: any(entry_match(e, p) for e in skip)  # noqa: E731
     files = [p for p in tree.paths if is_source(p) and not covered(p)]
     header = address_header(tree)
-    names, _ = read_tsv(NAMES, NAME_COLUMNS, tree)
-    based = None if names is None else {r["new_name"] for r in names if r["decision"] == "accepted"}
     evidence: dict[str, set] = {}                      # {path: the symbols with a row}: a row clears one function, or one file
     for r in read_tsv(ASM_EVIDENCE, ASM_COLUMNS, tree, also=(ASM_COLUMNS_OLD,))[0] or []:
         evidence.setdefault(r["path"], set()).add(r["symbol"])
@@ -1416,7 +1373,7 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None, cpp=False) -> dict[str,
         if is_asm(p):
             out[p] = {} if p in evidence else {SCOPE: {"asm": 1}}
         else:
-            out[p] = file_bodies(p, texts[p], known(p), based, header, None if view is None else view.get(p, []))
+            out[p] = file_bodies(p, texts[p], known(p), header, None if view is None else view.get(p, []))
             for name in evidence.get(p, ()):
                 if name != SCOPE:
                     out[p].get(name, {}).pop("asm", None)
@@ -1430,9 +1387,6 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None, cpp=False) -> dict[str,
         for kind, _ in marked(hits, markers(text) if text and "!FAKE:" in text else {}):
             got[kind] = got.get(kind, 0) + 1
         out.setdefault(p, {})[SCOPE] = got
-    for (kind, p), n in flag_counts(repo, tree).items():
-        if not covered(p):
-            out.setdefault(p, {}).setdefault(SCOPE, {})[kind] = n
     tree.memo[("bodies", tuple(skip), cmd)] = out
     return out
 
@@ -1729,14 +1683,12 @@ def public_view(tree: Tree) -> Tree:
 
 def file_states(repo, tree: Tree | None = None) -> list[tuple[str, str, dict]]:
     """[(state, path, its counts)] for each C file that holds a function body or an INCLUDE_ASM line. `stubs`: a
-    function of the file is still assembly. `matched`: every function is in C, and the file holds debt, or the names
-    ledger does not exist yet. `finished`: every function is in C and the file holds no debt of any kind, so each of
-    its names has an accepted row and no crutch is left. Nobody writes that word by hand: this is where it comes
-    from."""
+    function of the file is still assembly. `matched`: every function is in C, and the file holds debt. `finished`:
+    every function is in C and the file holds no debt of any kind. Nobody writes that word by hand: this is where it
+    comes from."""
     tree = tree or Tree(repo)
     skip = parse_baseline(tree.read(BASELINE)).skip
     bodies = debt_bodies(repo, skip, tree)
-    ledger = tree.read(NAMES) is not None
     out = []
     for p in sorted(bodies):
         stubs = scan_file(p, tree.read(p) or "", address_header=address_header(tree))["stubs"] if is_c(p) else 0
@@ -1744,7 +1696,7 @@ def file_states(repo, tree: Tree | None = None) -> list[tuple[str, str, dict]]:
             continue
         counts = debt_counts(repo, bodies={p: bodies[p]})
         got = {k[0]: n for k, n in counts.items()}
-        out.append(("stubs" if stubs else "matched" if got or not ledger else "finished", p, got))
+        out.append(("stubs" if stubs else "matched" if got else "finished", p, got))
     return out
 
 
@@ -1761,9 +1713,7 @@ def cmd_files(repo, source: str | None = None, public: bool = False) -> int:
     for state, p, got in states:
         print("DEBT FILE %-8s %s%s" % (state, p, ": " + ", ".join("%s %d" % (k, got[k]) for k in KINDS if got.get(k)) if got else ""))
     by = {st: sum(1 for x in states if x[0] == st) for st in ("finished", "matched", "stubs")}
-    print("DEBT FILES %d C file(s): %d finished, %d matched, %d with stubs%s" % (
-        len(states), by["finished"], by["matched"], by["stubs"],
-        "" if tree.read(NAMES) is not None else " (no %s yet: no file is finished before each name has a row)" % NAMES))
+    print("DEBT FILES %d C file(s): %d finished, %d matched, %d with stubs" % (len(states), by["finished"], by["matched"], by["stubs"]))
     return 0
 
 
@@ -2080,9 +2030,6 @@ def cmd_names(repo, init=False, source: str | None = None, against: str | None =
             (repo / rel).parent.mkdir(parents=True, exist_ok=True)
             (repo / rel).write_text("\t".join(cols) + "\n", encoding="utf-8")
             print("NAMES INIT written %s" % rel)
-            if rel == NAMES:
-                print("NAMES INFO with %s in place, each named function with no accepted row is counted as `unbased`. "
-                      "A name is never required to bank or to push: run `python3 %s debt --update` for the rows" % (NAMES, VENDORED))
     try:
         tree = Tree(repo, source)
         found = names_findings(repo, tree, Tree(repo, against) if against else None)
@@ -2091,14 +2038,6 @@ def cmd_names(repo, init=False, source: str | None = None, against: str | None =
         return 1
     for level, detail in found:
         print("NAMES %-4s %s" % (level, detail))
-    if not any(f[0] == "FAIL" for f in found) and tree.read(NAMES) is not None:
-        try:
-            skip = parse_baseline(tree.read(BASELINE)).skip
-        except Fail as e:
-            print("NAMES INFO %s (the `skip` lines are not read)" % e)
-            skip = []
-        unbased = sum(n for (kind, _), n in debt_counts(repo, skip, tree).items() if kind == "unbased")
-        print("NAMES INFO %d function(s) defined in src/ with no accepted row" % unbased)
     bad, warned = sum(f[0] == "FAIL" for f in found), sum(f[0] == "WARN" for f in found)
     print("NAMES %s (%d finding(s), %d warning(s)%s)" % ("FAIL" if bad else "OK", bad, warned, "; only the rows that are new since "
                                                         "%s were opened" % against if against else ""))
@@ -3036,7 +2975,6 @@ C_DEBT = {
     "no offset": ("void Walk(void *dst, s32 n) {\n    end = (u8 *)dst + n;\n    p = q + 4;\n}\n", {}),
     "the define of M2C_FIELD": ("#define M2C_FIELD(expr, type_ptr, offset) (*(type_ptr)((s8 *)(expr) + (offset)))\n", {}),
     "the stub macro": ("#define INCLUDE_ASM(FOLDER, NAME) \\\n    __asm__(\".include \\\"\" FOLDER \"/\" #NAME \".s\\\"\");\n", {}),
-    "macro": ("#define SWAP(a, b) { s32 t = a; a = b; b = t; }\n#define TWO(a) \\\n    ((a) * 2)\n", {"macro": 2}),
     "asm": ('void Walk(void) {\n    __asm__("nop");\n}\n', {"asm": 1}),
     "placeholder": ("s32 D_800A1234 = 4;\nextern s32 D_800A5678;\nINCLUDE_ASM(\"asm/nonmatchings\", func_80010000);\n"
                     "s32 func_80012344(s32 a) {\n    return a;\n}\n", {"placeholder": 2, "placeholder-use": 1, "extern": 1}),
@@ -3233,8 +3171,8 @@ def self_test_debt(check) -> None:
     shared = _macros(strip("#define HP(p) (*(s16 *)((u8 *)(p) + 0x10))\n"))
     check("a header's offset macro counts at each use", file_debt("src/a.c", "s32 Walk(void *p) {\n    return HP(p);\n}\n", shared)
           == {"offset": 1})
-    check("unbased: a function with no row", file_debt("src/a.c", C_CLEAN, based=set()) == {"unbased": 1})
-    check("unbased: a function with a row", file_debt("src/a.c", C_CLEAN, based={"Player_Hp"}) == {})
+    old = parse_baseline("mode macro count\n2 macro src/a.c\n1 flag src/a.c\nraise flag 1 2026-01-02 r\n")
+    check("the baseline: the lines of a retired kind are dropped", (old.modes, old.rows, old.raises, old.other) == ({}, {}, [], []))
     bl = parse_baseline("# top\nmode goto down\nmode pin count\nmode shift down\n3 shift src/a.c\n"
                         "raise goto 2 2026-01-02 the first wave\nskip src/vendor/\n1 goto src/a.c\n# a note below a row\n")
     check("the baseline: its lines, and the lines of a kind this tool does not know", bl.version == 2
@@ -3283,16 +3221,15 @@ def self_test_debt(check) -> None:
             "# config/debt-baseline.txt: ") and text.endswith(
             "mode pin count\nmode pin-unmarked down\nmode goto count\nmode goto-unmarked down\nmode barrier count\n"
             "mode barrier-unmarked down\nmode offset count\nmode address count\nmode cast count\nmode field count\n"
-            "mode macro count\nmode asm down\nmode placeholder count\nmode placeholder-use count\n"
-            "mode unbased count\nmode struct count\nmode extern count\nmode filename count\nmode flag count\n"
-            "mode reservation count\n1 asm src/boot.s\n1 goto src/walk.c\n"), text)
+            "mode asm down\nmode placeholder count\nmode placeholder-use count\n"
+            "mode struct count\nmode extern count\nmode filename count\n1 asm src/boot.s\n1 goto src/walk.c\n"), text)
         rc, out = run(recount=True)
         check("--recount writes it", rc == 0 and base_file.read_text() == text and "DEBT RECOUNT written" in out
               and "DEBT INFO policy written: pin: count\n" in out, out)
         rc, out = run()
         check("an equal baseline passes", rc == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); down: pin-unmarked, goto-unmarked, "
-              "barrier-unmarked, asm; count: pin, goto, barrier, offset, address, cast, field, macro, placeholder, "
-              "placeholder-use, unbased, struct, extern, filename, flag, reservation)" in out, out)
+              "barrier-unmarked, asm; count: pin, goto, barrier, offset, address, cast, field, placeholder, "
+              "placeholder-use, struct, extern, filename)" in out, out)
         _git(repo, "add", "config")
         _commit(repo, "the floor")
         # a kind in mode `count` is counted and shown: the rows follow the tree, and nothing is refused
@@ -3457,10 +3394,6 @@ def self_test_debt(check) -> None:
         (repo / BASELINE).write_text("mode sideways\n")
         rc, out = run()
         check("a baseline line that is no row", rc == 1 and "config/debt-baseline.txt:1: not " in out, out)
-        (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n")
-        rc, out = _capture(cmd_names, repo)
-        check("names: a baseline that does not parse is said, not raised", rc == 0 and "NAMES INFO config/debt-baseline.txt:1" in out, out)
-        (repo / NAMES).unlink()
         # the record's address header is read without tomllib; a run from a folder of the repository finds its root
         (repo / RECORD).write_text('[psxdecomp]\nversion = "0.0.0"\n\n[debt]  # ours\naddress_header = "include/hw.h"\n')
         check("the record's address header", address_header(repo) == "include/hw.h" and address_header(repo / "src") == ADDRESS_HEADER)
@@ -3483,19 +3416,16 @@ def self_test_debt(check) -> None:
         rc, out = _capture(cmd_names, repo, init=True)
         check("names --init writes the two header lines", rc == 0 and (repo / NAMES).read_text() == "\t".join(NAME_COLUMNS) + "\n"
               and (repo / ASM_EVIDENCE).read_text() == "\t".join(ASM_COLUMNS) + "\n", out)
-        check("names: every function is unbased at first, and no name is required", "NAMES INFO 2 function(s) defined" in out
-              and "A name is never required to bank or to push" in out, out)
         row = "function\tmain\t\tfunc_80010000\tPlayer_Hp\taccepted\tstring:src/clean.c:4\tthe string it prints\n"
         (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + row)
         rc, out = _capture(cmd_names, repo)
-        check("names: a good row", rc == 0 and "1 row(s): 1 accepted" in out and "NAMES INFO 0 function(s)" in out, out)
+        check("names: a good row", rc == 0 and "1 row(s): 1 accepted" in out, out)
         (repo / REFS).write_text("# the library\n" * 10 + '[[ref]]\nname = "manual"\nurl = "https://example.invalid/manual"\n\n[[trap]]\ntopic = "x"\n')
         _git(repo, "add", REFS)
         (repo / NAMES).write_text("﻿" + "\t".join(NAME_COLUMNS) + "\n" + row.replace("accepted", "provisional")
                                   .replace("string:src/clean.c:4\tthe string it prints", "refs:config/refs.toml:12"))
         rc, out = _capture(cmd_names, repo)
-        check("names: a provisional name is not based; a refs row is evidence; a trimmed last cell and a BOM are read",
-              rc == 0 and "1 provisional" in out and "NAMES INFO 2 function(s)" in out, out)
+        check("names: a refs row is evidence; a trimmed last cell and a BOM are read", rc == 0 and "1 provisional" in out, out)
         many = "".join("function\tmain\t\tfunc_%08X\tName%d\tprovisional\tstring:src/clean.c:1\tr\n" % (i, i) for i in range(20000))
         (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + many + many[:70])
         import time
@@ -3548,7 +3478,7 @@ def self_test_debt(check) -> None:
         asm_row = lambda sym, ev="docs/boot.md:3", who="developer": "\t".join(ASM_COLUMNS) + "\nmain\t%s\tsrc/two.c\thand-asm\t%s\t2026-01-02\t%s\n" % (sym, ev, who)  # noqa: E731
         (repo / ASM_EVIDENCE).write_text(asm_row("A"))
         check("an assembly row clears the function it names, and no other", _capture(cmd_names, repo)[0] == 0
-              and debt_bodies(repo)["src/two.c"] == {"A": {"unbased": 1}, "B": {"asm": 1, "unbased": 1}}, debt_bodies(repo)["src/two.c"])
+              and debt_bodies(repo)["src/two.c"] == {"A": {}, "B": {"asm": 1}}, debt_bodies(repo)["src/two.c"])
         for name, text, want in (("a row for a whole C file", asm_row(""), "src/two.c defines no function ''"),
                                  ("a row for a function that the file lacks", asm_row("C"), "src/two.c defines no function 'C'"),
                                  ("evidence that is no path and line", asm_row("A", "the vendor said so"), "'the vendor said so' is not `<path>:<line>`"),
@@ -3576,9 +3506,6 @@ def self_test_debt(check) -> None:
         (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + row.replace("string:src/clean.c:4", "string:"))
         rc, out = _capture(cmd_names, repo)
         check("names: evidence with no path and no line", rc == 0 and "NAMES WARN" in out and "evidence 'string:'" in out, out)
-        (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + row.replace("accepted", "rejected"))
-        rc, out = _capture(cmd_names, repo)
-        check("names: a rejected row bases no name", rc == 0 and "NAMES INFO 2 function(s)" in out, out)
         (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\n" + row)
         (repo / ASM_EVIDENCE).write_text("\t".join(ASM_COLUMNS) + "\nmain\tboot\tsrc/boot.s\tguess\tdocs/boot.md:3\tyesterday\tdeveloper\n")
         rc, out = _capture(cmd_names, repo)
@@ -3611,8 +3538,7 @@ C_BODIES = {
         "void B(void) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 1}, "B": {"goto": 1}}),
     "two bodies of one name are one entry": ("void A(void) {\nx:\n    goto x; // !FAKE: the loop\n}\nstruct S {\n    s32 a;\n};\n"
                                              "void A(s32 b) {\ny:\n    goto y; // !FAKE: the loop\n}\n", {"A": {"goto": 2}, SCOPE: {"struct": 1}}),
-    "data, a macro and a struct are file scope": ("#define SWAP(a, b) { a = b; }\ns32 D_800A1234 = 4;\nstruct S {\n    s32 a;\n};\n",
-                                                  {SCOPE: {"macro": 1, "placeholder": 1, "struct": 1}}),
+    "data and a struct are file scope": ("s32 D_800A1234 = 4;\nstruct S {\n    s32 a;\n};\n", {SCOPE: {"placeholder": 1, "struct": 1}}),
 }
 
 
@@ -3623,14 +3549,12 @@ def self_test_bodies(check) -> None:
     stubs = scan_file("src/a.c", C_BODIES["a body beside its stub"][0])["stubs"]
     check("bodies: the stub lines of a file are counted", stubs == 1, stubs)
     for name, text in [(k, t) for k, (t, _) in C_DEBT.items()] + [(k, t) for k, (t, _) in C_BODIES.items()] + [("clean", C_CLEAN)]:
-        for rel, based in (("src/a.c", None), ("src/a.c", set()), ("include/a.h", None)):
+        for rel in ("src/a.c", "include/a.h"):
             total: dict[str, int] = {}
-            for got in file_bodies(rel, text, based=based).values():
+            for got in file_bodies(rel, text).values():
                 for kind, n in got.items():
                     total[kind] = total.get(kind, 0) + n
-            check("bodies: the sum of a file's bodies is its count: %s (%s)" % (name, rel), total == file_debt(rel, text, based=based), total)
-    check("bodies: an unbased name counts in its own body", file_bodies("src/a.c", C_BODIES["two plain bodies"][0], based={"A"})
-          == {"A": {"offset": 1}, "B": {"goto": 1, "unbased": 1}})
+            check("bodies: the sum of a file's bodies is its count: %s (%s)" % (name, rel), total == file_debt(rel, text), total)
     with tempfile.TemporaryDirectory() as td:
         repo = _repo(td)
         (repo / "src").mkdir()
@@ -3646,24 +3570,18 @@ def self_test_bodies(check) -> None:
         (repo / "src" / "table.c").write_text("s32 g_Table[4];\n")
         _git(repo, "add", "src")
         rc, out = _capture(cmd_files, repo)
-        check("debt --files: no file is finished before the names ledger exists", rc == 0 and "DEBT FILE matched  src/done.c\n" in out
-              and "DEBT FILE stubs    src/half.c\n" in out and "DEBT FILE matched  src/one.c: goto 1\n" in out and "table.c" not in out
-              and "DEBT FILES 4 C file(s): 0 finished, 3 matched, 1 with stubs (no config/names.tsv yet" in out, out)
-        (repo / "config").mkdir()
-        (repo / NAMES).write_text("\t".join(NAME_COLUMNS) + "\nfunction\tmain\t\t\tDone\taccepted\tstring:src/done.c:1\tr\n")
-        rc, out = _capture(cmd_files, repo)
-        check("debt --files: a file with no debt of any kind is finished", "DEBT FILE finished src/done.c\n" in out
-              and "DEBT FILE matched  src/one.c: goto 1, unbased 1\n" in out
+        check("debt --files: a file with no debt of any kind is finished, with no names ledger", rc == 0
+              and "DEBT FILE finished src/done.c\n" in out and "DEBT FILE stubs    src/half.c\n" in out
+              and "DEBT FILE matched  src/one.c: goto 1\n" in out and "table.c" not in out
               and out.endswith("DEBT FILES 4 C file(s): 1 finished, 2 matched, 1 with stubs\n"), out)
+        (repo / "config").mkdir()
         (repo / PUBLIC_PATHS).write_text("src/one.c\nsrc/half.c\n")
         _git(repo, "add", "config")
         rc, out = _capture(cmd_files, repo, public=True)
         check("debt --files --public: the files that the repository publishes, as its public tree counts them", out.endswith(
-            "DEBT FILES 2 C file(s): 0 finished, 1 matched, 1 with stubs (no config/names.tsv yet: no file is finished before each "
-            "name has a row)\n") and "src/one.c: goto 1\n" in out, out)
+            "DEBT FILES 2 C file(s): 0 finished, 1 matched, 1 with stubs\n") and "src/one.c: goto 1\n" in out, out)
         _git(repo, "rm", "-q", "-f", "--cached", PUBLIC_PATHS)
         (repo / PUBLIC_PATHS).unlink()
-        (repo / NAMES).unlink()
         for name in ("half.c", "done.c", "table.c"):
             (repo / "src" / name).unlink()
         _git(repo, "add", "-A", "src")
@@ -3761,24 +3679,7 @@ def self_test_files(check) -> None:
         _commit(repo, "the tree")
         check("a revision and the index hold the same files", debt_bodies(repo, tree=Tree(repo, "HEAD")) == got
               and debt_bodies(repo, tree=Tree(repo, INDEX)) == got)
-        # the two kinds that the game counts: its lister for the work tree, its rows for a revision
-        put(RECORD, "[psxdecomp]\nversion = \"0.6.0\"\n\n[debt]\nflags = '%s tools/flags.py'\n" % sys.executable)
-        put("tools/flags.py", "print('2 reservation src/walk.c')\nprint('1 flag src/walk.c')\nprint('0 flag lib/walk.c')\nprint('a line that is no row')\n")
-        got = debt_bodies(repo)["src/walk.c"]
-        check("the game's lister gives the flags and the reservations", got[SCOPE] == {"reservation": 2, "flag": 1}, got)
-        put(BASELINE, first_baseline(repo))
-        _git(repo, "add", "-A")
-        _commit(repo, "the lister and its rows")
-        check("a revision's flags are the rows of its baseline", debt_bodies(repo, tree=Tree(repo, "HEAD"))["src/walk.c"][SCOPE]
-              == {"reservation": 2, "flag": 1} and admission(repo, Tree(repo, "HEAD"), Tree(repo))[0] == [])
-        put("tools/flags.py", "import sys\nsys.exit(4)\n")
-        try:
-            debt_bodies(repo)
-            check("a lister that fails is a refusal", False)
-        except Fail as e:
-            check("a lister that fails is a refusal", "exited 4" in str(e), str(e))
         # a macro of a header and of an included C file that hides an offset counts where it is used
-        put("tools/flags.py", "")
         put("src/shared/mac.c", "#define FIELD4(p) (*(s32 *)((p) + 4))\n")
         put("src/id.c", '#include "shared/mac.c"\ns32 Kept(s32 n) {\n    return FIELD4(n);\n}\n')
         got = debt_bodies(repo, tree=Tree(repo, None, untracked=True))["src/id.c"]
@@ -3939,7 +3840,7 @@ def self_test_tree(check) -> None:
         repo = _repo(td)
         (repo / "src").mkdir()
         (repo / "src" / "walk.c").write_text(C_DEBT["goto"][0])
-        (repo / "src" / "two.c").write_bytes(C_DEBT["macro"][0].replace("\n", "\r\n").encode())
+        (repo / "src" / "two.c").write_bytes(C_DEBT["struct"][0].replace("\n", "\r\n").encode())
         os.symlink("walk.c", repo / "src" / "link.c")
         _git(repo, "add", "-A")
         (repo / "config").mkdir()
@@ -3952,7 +3853,7 @@ def self_test_tree(check) -> None:
         got = [debt_counts(repo, tree=Tree(repo, src)).get(("goto", "src/walk.c")) for src in ("HEAD", INDEX, None)]
         check("tree: a revision, the index and the work tree are three sources", got == [1, 2, 3], got)
         check("tree: CRLF is read as LF, from the disk and from a blob", all(
-            debt_counts(repo, tree=Tree(repo, src)).get(("macro", "src/two.c")) == 2 for src in ("HEAD", INDEX, None)))
+            debt_counts(repo, tree=Tree(repo, src)).get(("struct", "src/two.c")) == 1 for src in ("HEAD", INDEX, None)))
         check("tree: a symbolic link is no file of the tree", all(
             Tree(repo, src).read("src/link.c") is None for src in ("HEAD", INDEX, None)))
         check("tree: an untracked file counts only when asked for", "src/new.c" not in Tree(repo).paths
@@ -4154,7 +4055,7 @@ def self_test_gate(check) -> None:
             rc, out = staged()
             check("gate: an address name, a guessed name and a provisional row with no evidence pass, with a warning", rc == 0
                   and "GATE WARN names: config/names.tsv: line 2: the evidence of Enemy_Walk points at nothing" in out
-                  and "1 unbased src/guess.c\n" in (repo / BASELINE).read_text() and out.endswith("GATE OK (staged)\n"), out)
+                  and "1 placeholder src/guess.c\n" in (repo / BASELINE).read_text() and out.endswith("GATE OK (staged)\n"), out)
             put(NAMES, "kind\tname\n")
             rc, out = staged()
             check("gate: a names ledger that cannot be read fails", rc == 1 and "GATE FAIL names: config/names.tsv: line 1: the header is not" in out, out)
