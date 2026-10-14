@@ -695,10 +695,11 @@ def test_s8_commits_pa3s_own_change_of_pa_json_first(toolchain, tmp_path):
     text = pa.read_text()
     assert '"upgrade": "ask",' in text
     pa.write_text(text.replace('"upgrade": "ask",', '"upgrade": "ask",\n  "preset": "max5",', 1))
-    (target / "LICENSE").write_text((target / "LICENSE").read_text() + "\n")
+    other = target / "config/firewall.txt"     # S1 writes it on every host; LICENSE needs a gh token there
+    other.write_text(other.read_text() + "\n")
     r = bootstrap(toolchain, target, "--until", "S8", check=False)
-    assert r.returncode == 1 and "not clean" in r.stdout and "LICENSE" in r.stdout, r.stdout
-    run(["git", "-C", target, "checkout", "--", "LICENSE"])
+    assert r.returncode == 1 and "not clean" in r.stdout and "config/firewall.txt" in r.stdout, r.stdout
+    run(["git", "-C", target, "checkout", "--", "config/firewall.txt"])
     r = bootstrap(toolchain, target)
     assert "BOOTSTRAP OK through S10" in r.stdout and "pa.json committed first" in r.stdout, r.stdout
     assert run(["git", "-C", target, "status", "--porcelain"]).stdout == ""
