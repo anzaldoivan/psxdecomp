@@ -943,23 +943,22 @@ def test_public_list_holds_the_tools_of_the_public_workflow(tmp_path):
 
 def test_release_gate_runs_the_debt_check(tmp_path):
     """publish.debt_gate: the release gate refuses a tree whose debt baseline is missing or not equal to its source,
-    with the command that updates it. An equal baseline passes, and so does one that holds a row of a file the tree
-    does not publish. A tree without the floor's tool has no such check in its public CI, and passes."""
+    with the command that updates it. An equal baseline passes, and so does a public tree whose totals count a file
+    that it does not publish. A tree without the floor's tool has no such check in its public CI, and passes."""
     tree = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], floor.VENDORED: (ROOT / "scripts/floor.py").read_text()})
     assert (publish.FLOOR_TOOL, publish.DEBT_BASELINE) == (floor.VENDORED, floor.BASELINE)
     got = publish.debt_gate(tree)
     assert len(got) == 1 and "no %s" % floor.BASELINE in got[0] and publish.PUBLIC_PATHS_REL in got[0], got
     base = floor.first_baseline(tree)
     (tree / floor.BASELINE).parent.mkdir()
-    (tree / floor.BASELINE).write_text(base.replace("1 goto src/a.c\n", ""))
+    (tree / floor.BASELINE).write_text(base.replace("1 goto\n", ""))
     got = publish.debt_gate(tree)
     assert len(got) == 1 and "DEBT CHECK FAIL (1 rise(s)" in got[0] and "`debt --update` rewrites the rows" in got[0], got
     (tree / floor.BASELINE).write_text(base)
     assert publish.debt_gate(tree) == []
     (tree / floor.BASELINE).write_text(base.replace("1 goto", "2 goto"))         # a stale row fails too
-    assert len(publish.debt_gate(tree)) == 1 and "stale goto src/a.c" in publish.debt_gate(tree)[0]
-    (tree / floor.BASELINE).write_text(base + "1 goto src/private.c\n")          # a row of a file that is not published
-    assert len(publish.debt_gate(tree)) == 1                                     # with no public list it is a stale row
+    assert len(publish.debt_gate(tree)) == 1 and "stale goto: 1, its row is 2" in publish.debt_gate(tree)[0]
+    # a public list that names each source file makes the tree public: its row may count a file that it does not hold
     (tree / publish.PUBLIC_PATHS_REL).write_text("src/a.c\nconfig/\ntools/\n")
     run(["git", "-C", tree, "add", publish.PUBLIC_PATHS_REL])
     assert publish.debt_gate(tree) == []
@@ -1091,8 +1090,8 @@ def test_debt_kinds(tmp_path):
     repo = _style_repo(tmp_path, files)
     bl = floor.parse_baseline(floor.first_baseline(repo))
     want = {(k, "src/%s.c" % kind): n for kind, (_, got) in floor.C_DEBT.items() for k, n in got.items()}
-    assert bl.rows == want and bl.skip == [] and len(bl.head) == len(floor.BASELINE_HEAD), bl.rows   # no stub header here: no skip line
-    assert {k for k, _ in bl.rows} == set(floor.KINDS) - {"filename"} and not bl.lacks()
+    assert bl.totals == {k: n for k, n in floor._kind_totals(want).items() if n} and bl.skip == [] and len(bl.head) == len(floor.BASELINE_HEAD), bl.totals   # no stub header here: no skip line
+    assert set(bl.totals) == set(floor.KINDS) - {"filename"} and not bl.lacks() and not bl.by_file
     assert bl.summary() == "down: pin-unmarked, goto-unmarked, barrier-unmarked, asm; count: pin, goto, barrier, " \
                            "offset, address, cast, field, placeholder, placeholder-use, struct, extern, filename"
     (repo / "config").mkdir()
@@ -1171,7 +1170,7 @@ def test_gate_modes(tmp_path):
     (side / "src/stubs.c").write_text(_stubs())
     git("add", "-A", cwd=side)
     r = _floor("gate", "--bank", "--repo", side)                                 # the bank writes the rows of the new file
-    assert r.returncode == 0 and "1 goto src/b.c\n" in (side / floor.BASELINE).read_text(), r.stdout
+    assert r.returncode == 0 and "2 goto\n" in (side / floor.BASELINE).read_text(), r.stdout
     git("commit", "-qam", "a new body on the side", cwd=side)
     # a merge: both sides added a body and a row
     (repo / "src/c.c").write_text(floor.C_DEBT["goto"][0].replace("Walk", "Jump"))
@@ -1188,7 +1187,7 @@ def test_gate_modes(tmp_path):
     assert r.returncode != 0 and refusal in r.stdout + r.stderr, r.stdout + r.stderr
     (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0])
     r = _floor("debt", "--update", "--repo", repo)
-    assert r.returncode == 0 and "1 goto src/b.c\n" in (repo / floor.BASELINE).read_text(), r.stdout
+    assert r.returncode == 0 and "3 goto\n" in (repo / floor.BASELINE).read_text(), r.stdout
     git("add", "-A")
     git("commit", "-qm", "the merge")
     assert len(git("rev-list", "--parents", "-n", "1", "HEAD").stdout.split()) == 3
@@ -1383,7 +1382,7 @@ def test_debt_baseline_command(tmp_path):
     assert r.returncode == 1 and "DEBT FAIL no %s" % floor.BASELINE in r.stdout, r.stdout
     assert debt("--update").returncode == 1 and not base.exists()
     r = debt("--recount")
-    assert r.returncode == 0 and "DEBT RECOUNT written" in r.stdout and base.read_text().endswith("1 goto src/a.c\n")
+    assert r.returncode == 0 and "DEBT RECOUNT written" in r.stdout and base.read_text().endswith("1 goto\n")
     first = base.read_text()
     assert "mode pin-unmarked down\n" in first and "mode pin count\n" in first and "mode filename count\n" in first
     assert debt().returncode == 0
@@ -1391,16 +1390,16 @@ def test_debt_baseline_command(tmp_path):
     run(["git", "-C", repo, "-c", "commit.gpgsign=false", "commit", "-qm", "the baseline"])
     (repo / "src/a.c").write_text(more)
     r = debt()
-    assert r.returncode == 1 and "DEBT FAIL rise goto src/a.c: 2, its row is 1\n" in r.stdout, r.stdout
+    assert r.returncode == 1 and "DEBT FAIL rise goto: 2, its row is 1\n" in r.stdout, r.stdout
     r = debt("--update", "--admit")
     assert r.returncode == 2 and "unrecognized arguments: --admit" in r.stderr and base.read_text() == first, r.stderr
     r = debt("--update")                                                        # a counted kind: the row follows the tree
-    assert r.returncode == 0 and "DEBT INFO goto src/a.c: 1 -> 2\n" in r.stdout and debt("--against", "HEAD").returncode == 0, r.stdout
+    assert r.returncode == 0 and "DEBT INFO goto: 1 -> 2\n" in r.stdout and debt("--against", "HEAD").returncode == 0, r.stdout
     base.write_text(first)
     (repo / "src/a.c").write_text(floor.C_DEBT["goto-unmarked"][0])
     r = debt("--update")
     assert r.returncode == 1 and refusal in r.stdout and "DEBT UPDATE refused" in r.stdout and base.read_text() == first, r.stdout
-    base.write_text(first.replace("1 goto src/a.c", "1 goto src/a.c\n1 goto-unmarked src/a.c"))   # the row written by hand
+    base.write_text(first.replace("1 goto\n", "1 goto\n1 goto-unmarked\n"))   # the row written by hand
     assert debt().returncode == 0
     r = debt("--against", "HEAD")
     assert r.returncode == 1 and refusal in r.stdout, r.stdout
@@ -1425,7 +1424,7 @@ def test_debt_baseline_command(tmp_path):
     assert r.returncode == 0 and "goto-unmarked is over by 1: the change's `raise` line(s) allow 3" in r.stdout, r.stdout
     (repo / "src/a.c").write_text(floor.C_CLEAN)
     r = debt()
-    assert r.returncode == 1 and "DEBT FAIL stale goto src/a.c: 0, its row is 1" in r.stdout, r.stdout
+    assert r.returncode == 1 and "DEBT FAIL stale goto: 0, its row is 1" in r.stdout, r.stdout
     assert debt("--down", "goto").returncode == 1 and debt("--update").returncode == 0 and debt("--down", "goto").returncode == 0
     assert "mode goto down\n" in base.read_text()
 

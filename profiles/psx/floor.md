@@ -138,7 +138,7 @@ The gate refuses these things, and no other. Established decompilation projects 
 - The gate judges a change against a tree that the change cannot rewrite. An edited baseline or tool decides nothing.
 - The two ends of a change decide. A merge in progress is judged against `HEAD`, as any other change.
 - A base that names no commit fails. A tool that cannot run passes nothing.
-- `--bank` writes the rows of the baseline when the change is admitted. A bank tool calls it before the commit.
+- `--bank` writes the totals of the baseline when the change is admitted. A bank tool calls it before the commit.
 - `--bank` and `--push` also run the check of the game, `[floor] gate` or `[own] gate`.
 - The gate never refuses a function for its name. It never refuses a cast, an offset or a placeholder name.
 - `protected` covers the two tools, the workflows, and the hooks, deny rules and `env` of `.claude/settings.json`.
@@ -222,9 +222,12 @@ The tool finds the other kinds with patterns over the raw text. They are counted
 - The tool knows the macros of each header in every file, and those of an included C file in the file that includes it.
 - A pointer sum with a variable is not an `offset`. The address ranges are main RAM, the scratchpad, the I/O
   ports and the BIOS. The value `0x80000000` counts only behind a pointer cast, because it is also the sign mask.
-- `config/debt-baseline.txt` holds one `<count> <kind> <path>` row for each count above zero.
-- The diff of that file shows the debt that a commit brings.
-- The check fails when a count is over its row. It also fails when a row is over its count.
+- `config/debt-baseline.txt` holds one `<count> <kind>` row for each kind above zero: the total of the tree.
+- The diff of that file shows the debt that a commit brings. `debt --files` prints the counts of each file.
+- The check fails when a total is over its row. It also fails when a row is over its total.
+- In the public tree of a game in split mode, a total under its row is no failure. The row also counts the files
+  that the public tree does not hold.
+- A file of an earlier psxdecomp holds a row for each file. The tool adds them up. `debt --recount` writes totals.
 - The check also fails with no baseline, and with no policy line for a kind.
 - Run `debt --update` in the commit that changes a count, or bank with `gate --bank`.
 - A `skip <entry>` line takes files out of the count. A change cannot add one.
@@ -242,7 +245,7 @@ The baseline holds one policy line for each kind. `debt --recount` writes the st
 | `raise <kind> <n> <date> <reason>` | The developer lets one change go over by `n`. |
 
 - The starting mode is `down` for `asm`, `pin-unmarked`, `goto-unmarked` and `barrier-unmarked`.
-- Each other kind starts in `count`. Its rows show the debt that each commit brings.
+- Each other kind starts in `count`. Its row shows the debt that each commit brings.
 - No kind about names starts in `down`. A function that matches is never refused for its name.
 - The tool compares the total of the tree that a change starts from with the total of the tree that it makes.
 - `debt --against <revision>` judges a change by the policy of the revision that it starts from.

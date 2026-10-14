@@ -384,7 +384,7 @@ def _debt_row(repo: pathlib.Path, state: dict, debt) -> tuple[str, str]:
     if isinstance(debt, Exception):
         return "FAIL", str(debt)
     bl = debt["baseline"]
-    if not (debt["counts"] or bl.rows or any(p.startswith("src/") and p.endswith(".c") for p in floor.Tree(repo).paths)):
+    if not (debt["counts"] or bl.totals or any(p.startswith("src/") and p.endswith(".c") for p in floor.Tree(repo).paths)):
         return "WAIT", "due with the first C file under src/: %s%s" % (
             floor.BASELINE, "" if bl.version else " (/psxdecomp:upgrade apply writes it)")
     totals = floor._totals(debt["counts"])
@@ -397,7 +397,7 @@ def _debt_row(repo: pathlib.Path, state: dict, debt) -> tuple[str, str]:
         return "FAIL", "%s has no policy line for %s: /psxdecomp:upgrade apply writes them" % (
             floor.BASELINE, ", ".join(bl.lacks()))
     if debt["rise"] or debt["stale"]:
-        return "FAIL", "%d count(s) over their row, %d row(s) over their count (`python3 %s debt` lists them; " \
+        return "FAIL", "%d total(s) over their row, %d row(s) over their total (`python3 %s debt` lists them; " \
                        "`debt --update` rewrites the rows, and refuses a rise of a kind in mode `down`)" % (
                            len(debt["rise"]), len(debt["stale"]), floor.VENDORED)
     loose = [k for k in floor.KINDS if bl.policy(k) != "down"]
@@ -1416,7 +1416,7 @@ def self_test_floor() -> bool:
         equal = rows()["debt"]
         (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0] + floor.C_DEBT["goto"][0].replace("Walk", "Run"))
         rise = rows()["debt"]
-        ok &= rise[0] == "FAIL" and "1 count(s) over their row" in rise[1] and "refuses a rise" in rise[1]   # a goto
+        ok &= rise[0] == "FAIL" and "1 total(s) over their row" in rise[1] and "refuses a rise" in rise[1]   # a goto
         tool = repo / "tools-ext"
         tool.mkdir()
         common.git(tool, "init", "--quiet")
@@ -1482,7 +1482,7 @@ def self_test_floor() -> bool:
             print("  own_missing WRONG for: %s" % wrong)
     print("  floor rows: before %s; at 1.4 %s; a stale row %s; no gate after 1.9 %s; [own] %s" % (
         first["gate"][0], "/".join(due[k][0] for k in due), stale[0], gone[0], "/".join(mine[k][0] for k in mine)))
-    return (ok and equal[0] == "OK" and "count: pin, goto" in equal[1] and stale[0] == "FAIL" and "1 row(s) over their count" in stale[1]
+    return (ok and equal[0] == "OK" and "count: pin, goto" in equal[1] and stale[0] == "FAIL" and "1 row(s) over their total" in stale[1]
             and late["debt"][0] == "WARN" and "debt --down" in late["debt"][1] and gone[0] == "FAIL"
             and broken[0] == "FAIL" and "the header is not" in broken[1]
             and [mine[k][0] for k in ("gate", "toolchain", "names", "debt")] == ["OK", "OK", "OK", "WARN"]   # the count is read all the same

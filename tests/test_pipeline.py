@@ -283,7 +283,7 @@ def test_s10_writes_the_debt_baseline_and_debt_passes(game):
     a source file gains a `goto`."""
     import floor
     bl = floor.parse_baseline((game / floor.BASELINE).read_text())
-    assert (bl.rows, bl.skip, bl.version, bl.lacks()) == ({}, [], 2, []), vars(bl)             # no stub header yet: no skip line
+    assert (bl.totals, bl.skip, bl.version, bl.lacks()) == ({}, [], 2, []), vars(bl)             # no stub header yet: no skip line
     assert bl.policy("pin-unmarked") == "down" and bl.policy("pin") == "count" and bl.policy("placeholder") == "count", vars(bl)
     assert (game / floor.NAMES).read_text() == "\t".join(floor.NAME_COLUMNS) + "\n"
     assert (game / floor.ASM_EVIDENCE).read_text() == "\t".join(floor.ASM_COLUMNS) + "\n"
@@ -304,7 +304,7 @@ def test_s10_writes_the_debt_baseline_and_debt_passes(game):
         src.write_text(floor.C_DEBT["goto"][0])
         run(["git", "-C", game, "add", "-f", "src/probe.c"])
         r = run([PY, floor.VENDORED, "debt"], cwd=game, check=False)
-        assert r.returncode == 1 and "DEBT FAIL rise goto src/probe.c: 1, its row is 0\n" in r.stdout, r.stdout
+        assert r.returncode == 1 and "DEBT FAIL rise goto: 1, its row is 0\n" in r.stdout, r.stdout
     finally:
         run(["git", "-C", game, "rm", "-q", "-f", "--cached", "src/probe.c"])
         src.unlink()
@@ -366,9 +366,9 @@ def test_a_matched_function_is_committed_and_pushed_under_any_name(game, tmp_pat
         f.write("function\tmain\t\tfunc_80012400\tEnemy_Walk\tprovisional\thuman:src/names.c:9\tit moves the enemy; one source\n")
     git("add", "-f", "src/names.c", floor.NAMES)
     r = run([PY, floor.VENDORED, "gate", "--bank"], cwd=clone, check=False)
-    assert r.returncode == 0 and "the rows of now written" in r.stdout, r.stdout + r.stderr
+    assert r.returncode == 0 and "the totals of now written" in r.stdout, r.stdout + r.stderr
     rows = (clone / floor.BASELINE).read_text()
-    assert "1 placeholder src/names.c\n" in rows, rows
+    assert "1 placeholder\n" in rows, rows
     git("add", "-A")
     r = git("commit", "-qm", "three functions that match, named as far as anyone knows", check=False)
     assert r.returncode == 0, r.stdout + r.stderr

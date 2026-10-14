@@ -23,8 +23,8 @@ are printed as commands for the developer (their own installers, their own gates
 psxdecomp also delivers the readability floor: `fin-rule` and `name-rule` (rules/FIN1.md and rules/NAME1.md, written
 as `ste-rule` is), `names-ledger` (the header lines of config/names.tsv and config/asm-evidence.tsv, once) and
 `debt-baseline` (config/debt-baseline.txt, once, last, with the starting mode of each debt kind); `debt-recount`
-rewrites a baseline of an earlier psxdecomp in version 2 (the rows of now, a policy line for each kind that has none;
-the game's own lines stay); `asm-ledger` adds the `verified_by` column to the header line of an assembly ledger that
+rewrites a baseline of an earlier psxdecomp in version 2 (the totals of now, a policy line for each kind that has
+none; the game's own lines stay); `asm-ledger` adds the `verified_by` column to the header line of an assembly ledger that
 an earlier psxdecomp wrote (the rows stay); `trial-tool` writes tools/psxd_trial.py for a record that names
 `[trial] probe`; `floor-public` is the manual line of split mode, and
 `floor-cpp` the manual line for the preprocess command of the record (`[floor] cpp`). A game with `[own] names` gets none of the
@@ -556,9 +556,10 @@ def plan(repo: pathlib.Path) -> list[dict]:
             "pin, goto, barrier and asm are then read in the text that the compiler gets; without it they are read in the raw "
             "text, where a macro can hide one", "floor-cpp")
     if (repo / floor.BASELINE).is_file() and recount_due(repo):
-        add("psxdecomp", "debt-recount: rewrite %s in version 2 (the rows of now; %s; the lines of the game stay)"
+        add("psxdecomp", "debt-recount: rewrite %s in version 2 (the totals of now; %s; the lines of the game stay)"
             % (floor.BASELINE, recount_due(repo)),
-            "from psxdecomp 0.6.0 the baseline holds a policy line for each kind, and `debt` fails without one",
+            "from psxdecomp 0.6.0 the baseline holds a policy line and one total for each kind, and `debt` fails "
+            "without a policy line",
             "debt-recount")
     trial = common.PLUGIN_ROOT / "scripts" / "trial.py"
     if floor.record_table(floor.Tree(repo), "trial").get("probe") and not (
@@ -867,8 +868,9 @@ def asm_header_due(repo: pathlib.Path) -> bool:
 
 
 def recount_due(repo: pathlib.Path) -> str | None:
-    """Why the baseline needs `debt --recount`, or None: it is a version 1 file, or a kind has no policy line. A
-    baseline that does not parse is the game's to repair (the doctor's `debt` row says where)."""
+    """Why the baseline needs `debt --recount`, or None: it is a version 1 file, a kind has no policy line, or it
+    holds a row per file. A baseline that does not parse is the game's to repair (the doctor's `debt` row says
+    where)."""
     try:
         bl = floor.parse_baseline(common.read(repo / floor.BASELINE) if (repo / floor.BASELINE).is_file() else None)
     except floor.Fail:
@@ -877,6 +879,8 @@ def recount_due(repo: pathlib.Path) -> str | None:
         return "it is a version 1 file in `mode %s`, and each kind gets its starting mode" % bl.old_mode
     if bl.version == 2 and bl.lacks():
         return "a policy line for %s" % ", ".join(bl.lacks())
+    if bl.by_file:
+        return "it holds a row for each file, and one total for each kind replaces them"
     return None
 
 
