@@ -493,6 +493,11 @@ repository warns for the same finding.
 that reports matched code and names no `source_path` is a `REPORT WARN` line: the check cannot read it. For each
 top-level category `validate` prints how many matched functions are 8 bytes or less, as an INFO line.
 
+`categorize` marks a unit complete when its source is a C or C++ file, it has code, and all its code and data match. The
+tool objdiff gives this mark to a unit of a module that the build checks byte for byte. The build workflow does that
+check before the report. So on decomp.dev, a unit that `categorize` marks is a matched C file. It is not a finished file
+(`rules/FIN1.md`). `validate` refuses an assembly unit that is marked complete.
+
 ## The writing style of the public prose files
 
 The rules are in [CONTRIBUTING.md](../CONTRIBUTING.md#writing), in the style of ASD-STE100. A game counts the

@@ -1683,7 +1683,7 @@ def test_exemplar_credit():
         assert "(%s) by %s" % (url, owner) in readme or "(%s) and its sibling projects by %s" % (url, owner) in readme
         line = next(l for l in eco.splitlines() if l.startswith("| [%s/%s](%s) |" % (owner, repo, url)))
         cells = [c.strip() for c in line.strip("|").split("|")]
-        assert re.fullmatch(r"`[0-9a-f]{7}`", cells[1]) and cells[2] == "2026-10-12" and cells[4].startswith(licence), cells
+        assert re.fullmatch(r"`[0-9a-f]{7}`", cells[1]) and re.fullmatch(r"2026-10-\d\d", cells[2]) and cells[4].startswith(licence), cells
         row = rows[repo]
         assert row["class"] == "link" and row["url"] == url and "exemplar" in row["topics"], row
         assert cells[1].strip("`") in row["licence"] and "psxdecomp 0.6.0" in row["used_by"], row

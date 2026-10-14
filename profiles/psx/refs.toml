@@ -282,10 +282,10 @@ used_by  = "BFM docs/matching-cookbook.md 28a (GCC patterns, PS1-applicable subs
 name     = "parasite-eve-decomp"
 url      = "https://github.com/khasinski/parasite-eve-decomp"
 class    = "link"
-licence  = "none selected (its LICENSE.md, licence read 2026-10-12 at commit a357ac0c): ideas only, no text and no code"
-topics   = ["exemplar", "debt-baseline", "verify-gate", "asm-evidence", "pinned-toolchain", "finished-file"]
-covers   = "practice on a PS1 project (seen 2026-10-12): debt baselines that must equal the tree, one verify gate, an evidence record for each assembly function, a toolchain that refuses a patched checkout, a definition of a finished file apart from a matched one"
-used_by  = "psxdecomp 0.6.0 (2026-10-12): the equal-baseline rule of the debt check, the `make verify` convention, the dirty-checkout check of the toolchain pins, the idea of the finished-file rule (rules/FIN1.md, its text written fresh)"
+licence  = "none selected (its LICENSE.md, licence read 2026-10-12 at commit a357ac0c and 2026-10-14 at c578deb): ideas only, no text and no code"
+topics   = ["exemplar", "debt-baseline", "verify-gate", "asm-evidence", "pinned-toolchain", "finished-file", "objdiff-complete"]
+covers   = "practice on a PS1 project (seen 2026-10-12 and 2026-10-14): debt baselines that must equal the tree, one verify gate, an evidence record for each assembly function, a toolchain that refuses a patched checkout, a definition of a finished file apart from a matched one, a `complete` mark for a fully matched C unit"
+used_by  = "psxdecomp 0.6.0 (2026-10-12): the equal-baseline rule of the debt check, the `make verify` convention, the dirty-checkout check of the toolchain pins, the idea of the finished-file rule (rules/FIN1.md, its text written fresh); psxdecomp 0.6.0 (2026-10-14): a `complete` mark on decomp.dev for a fully matched C unit"
 
 [[ref]]
 name     = "kings-field-decomp"

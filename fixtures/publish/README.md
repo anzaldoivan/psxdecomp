@@ -40,7 +40,7 @@ The target `PSXD_000.01` has SHA-1 `89abcdef0123456789abcdef0123456789abcdef` (`
 
 </details>
 
-The published number is the matched code of the `game` category, in bytes. The `sdk` row counts the SDK libraries apart.
+The published number is the matched code of the `game` category, in bytes. The `sdk` row counts the SDK libraries apart. A complete unit is a C file whose code and data all match. It is not a finished file (`rules/FIN1.md`).
 
 Progress bars powered by [decomp.dev][psxd-progress].
 
