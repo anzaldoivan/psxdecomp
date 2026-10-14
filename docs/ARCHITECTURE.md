@@ -10,14 +10,14 @@ pinned installers. After S10 the repository needs nothing from the plugin.
 ```
 /psxdecomp:new (skill, invocation-only)
   ├─ S0 preflight.py ─ S2 identify.py ─ profiles/psx/probes/psx.py      (scripts: deterministic, --self-test each)
-  ├─ S1 interview ─ S3 decompdev.py + ghsearch.py → scout-web × 7 + scout-repo ─ S4 gate   (the model: AskUserQuestion, agents)
+  ├─ S1 interview ─ S3 decompdev.py + ghsearch.py → scout-web × 8 + scout-repo ─ S4 gate   (the model: AskUserQuestion, agents)
   ├─ S5 install.py: firewall pack (from the pinned kit's templates) → first commit
   ├─ S6 install.py → PA3's pa_install.py --project --yes  (pinned tag, sha-checked); pa.json "upgrade": "ask"
   ├─ restart → claude --agent plain → /psxdecomp:new --resume       (hooks/hooks.json repeats it at session start)
   ├─ S7 PA3's intake handed the kit's intake.decomp.md                 (PA3's tested path, unchanged)
   ├─ S8 install.py → the kit's install.py --answers (dry run, then run; digest-checked) + the README standard
   ├─ S9 fetch_refs.py → refs/ (git-ignored, searchable via .ignore) + docs/ops/refs.md (committed)
-  └─ S10 doctor.py + config/psxdecomp.toml + tools/psxd_publish.py (the README lint, vendored; its CI)
+  └─ S10 doctor.py + oracle.py (the oracle-build record) + config/psxdecomp.toml + tools/psxd_publish.py (the README lint, vendored; its CI)
          + tools/psxd_floor.py (the floor, vendored: roadmap lint, debt baseline, guard hook) + docs/ops/psxdecomp-floor.md
 ```
 

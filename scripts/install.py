@@ -479,10 +479,13 @@ def s9_refs(c: Ctx) -> str:
     if "!/refs/" not in ig.splitlines():
         c.write(".ignore", ig + ("" if not ig or ig.endswith("\n") else "\n") + "%s: search refs/ though git ignores "
                 "it ----\n!/refs/\n" % PSX_MARK)
-    fw = c.p("config/firewall.txt")
-    if fw.is_file() and "purge: refs/" not in common.read(fw):
-        c.write("config/firewall.txt", common.read(fw).rstrip("\n") +
-                "\n\n%s: the reference library (upstream clones; never tracked) ----\npurge: refs/\n" % PSX_MARK)
+    fw = c.p(common.FIREWALL)
+    if fw.is_file():                              # one write: the purge line, and the block for a debug file of any build
+        rules = common.read(fw)
+        if "purge: refs/" not in rules:
+            rules = (rules.rstrip("\n") + "\n\n%s: the reference library (upstream clones; never tracked) ----\n"
+                     "purge: refs/\n" % PSX_MARK)
+        c.write(common.FIREWALL, common.with_firewall_debug(rules))
     how = c.p("HOW_WE_WORK.md")
     if how.is_file() and REFS_RULE not in common.read(how):
         c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Docs map", REFS_RULE))
@@ -625,9 +628,26 @@ def s10_handoff(c: Ctx) -> str:
         if not c.p(rel).exists():
             c.write(rel, body)
     paths = [RECORD, "config/psxdecomp.profile.toml", "docs/ops/host-recipe.md"]
+    import oracle                                 # the oracle-build question: the developer's copy first, then the scan
+    byo, dump = ans.get("PSXDECOMP_BYO_ORACLE_PATH") or None, ans.get("DUMP_PATH") or None
+    own = bool(byo and dump) and os.path.realpath(os.path.expanduser(byo)) == os.path.realpath(os.path.expanduser(dump))
+    bid = ans.get("PSXDECOMP_BYO_ORACLE_ID", "")
+    if byo and not own and not c.dry and bid not in [b["id"] for b in oracle.builds(c.target)]:
+        got, line = oracle.add(c.target, bid, byo, ans.get("PSXDECOMP_BYO_ORACLE_SHA1", "").split(),
+                               ans.get("PSXDECOMP_BYO_ORACLE_CLASS") or None, None,
+                               ans.get("PSXDECOMP_BYO_ORACLE_PAGE") or None)       # a refusal: nothing was written
+        c.written += got
+        print("     oracle build %s" % line)
+    if not c.dry and "oracle" not in upgrade.record_tables(c.target):
+        got, line = oracle.record(c.target, (medium or {}).get("debug_artifacts"), dump)   # and the dump's path, locally
+        c.written += got
+        print("     oracle %s%s" % (line, "; the copy is your dump: the retail manifest covers it" if own else ""))
+    paths += [oracle.BUILDS, common.FIREWALL] + sorted(x.relative_to(c.target).as_posix()
+                                                       for x in c.p("config").glob("oracle.*.sha1"))
     pa_src = c.boot("prior-art.md")
     if pa_src.is_file() and not c.p("docs/prior-art.md").exists():
         c.write("docs/prior-art.md", common.read(pa_src))
+    if pa_src.is_file():                          # always: a run that S10 refused left the table staged
         paths.append("docs/prior-art.md")
     readme_policy(c)                              # S8 did it; a repo whose S8 predates it gets it here
     for d in upgrade.DELIVERY:                    # every owned file: the two vendored tools, the workflow, the floor's doc
@@ -685,7 +705,8 @@ def s10_handoff(c: Ctx) -> str:
         c.write(floor.BASELINE, "" if c.dry else floor.first_baseline(c.target))
     paths.append(floor.BASELINE)
     if c.dry:                                     # every write of the stage is listed above; a dry run counts nothing
-        return "would write the record, the tools, the settings, the rules, the ledgers and the two baselines"
+        return ("would write the record (with the oracle-build table and a supplied build), the tools, the settings, the rules, the ledgers "
+                "and the two baselines")
     c.git("add", "--", *[x for x in paths if c.p(x).exists()])   # the README lint counts tracked paths, not local
     import doctor
     rows = doctor.check(c.target)
@@ -695,6 +716,10 @@ def s10_handoff(c: Ctx) -> str:
     if bad:
         raise common.Fail("doctor: %s" % "; ".join("%s: %s" % (r[0], r[2]) for r in bad))
     card_check(c)
+    named = items_named(c)                        # an archive.org item is named in the gate's question, never in a commit
+    if named:
+        raise common.Fail("%s names an archive.org item of a build (%s lists it): take the identifier out. The row "
+                          "keeps the build's date, its page and its hashes" % (", ".join(named), BUILDS_REPORT))
     sha = c.commit(paths, "psxdecomp handoff: the bootstrap record (pins, profile, host recipe), the prior-art table, "
                           "the README standard's lint and its CI, the writing rule of the public files (STE1, "
                           "its hook, the first ratchet), and the floor (its tool, its reference, the guard, the two "
@@ -703,6 +728,21 @@ def s10_handoff(c: Ctx) -> str:
            "The steps after it: %s." % upgrade.FLOOR_DOC
            + (" Phase 1.2 leads: %s." % (BOOT + "/seeds.txt") if seeds.is_file() else ""))
     return "record %s, commit %s. %s" % (RECORD, sha, nxt)
+
+
+BUILDS_REPORT = BOOT + "/research/builds.md"
+
+
+def items_named(c: Ctx) -> list[str]:
+    """The tracked or staged files that hold a build identifier of the scout's builds report (docs/REFS.md, "Oracle
+    builds"). The report itself lies under the ignored .run/."""
+    import oracle
+    report = c.p(BUILDS_REPORT)
+    items = oracle.build_items(common.read(report)) if report.is_file() else []
+    if not items:
+        return []
+    r = c.git("grep", "--cached", "-l", "-I", "-F", *sum((["-e", i] for i in items), []), check=False)
+    return sorted(set(r.stdout.split("\n")) - {""})
 
 
 def pa_upgrade(c: Ctx) -> str:
@@ -948,6 +988,30 @@ def self_test() -> int:
         st = common.State(td)
         st.mark("S0", "done")
         ok &= st.first_open() == "S1"
+    with tempfile.TemporaryDirectory() as td:       # S10's last refusal: a staged file that names a build's item
+        repo = pathlib.Path(td).resolve()
+        common.git(repo, "init", "--quiet")
+        c = Ctx(argparse.Namespace(target=str(repo), dry_run=False))
+        row = "| L3 | Oracle build: Jan 1, 1999 prototype | the page | lead | %s |\n"
+        common.write(repo / "docs/prior-art.md", row % "ExampleQuestJan011999prototype")
+        common.write(repo / "notes.md", "example-quest-manual\n")
+        c.git("add", "--", "docs/prior-art.md", "notes.md")
+        ok &= items_named(c) == []                                                      # no report: nothing to hold
+        common.write(repo / BUILDS_REPORT, "## archive.org items\n| identifier | kind | confirmed by | file | SHA-1 |\n|---|---|---|---|---|\n"
+                                    "| ExampleQuestJan011999prototype | build | hash | a.jpg | x |\n"
+                                    "| example-quest-manual | document | link | m.pdf | y |\n")
+        ok &= items_named(c) == ["docs/prior-art.md"]                                   # the document item may be a row
+        common.write(repo / "docs/prior-art.md", row % "sha1 0f0f")
+        c.git("add", "--", "docs/prior-art.md")
+        ok &= items_named(c) == []
+    fw = "purge: disks/\nglob:  SCPH*.BIN\n"         # S9's firewall block: both lines, once, whatever the file held
+    blocked = common.with_firewall_debug(fw)
+    ok &= blocked == fw + "\n" + common.FIREWALL_DEBUG and common.with_firewall_debug(blocked) == blocked
+    ok &= common.firewall_debug_due(fw + "glob:  %s\n" % common.FIREWALL_DEBUG_GLOBS[0]) and not common.firewall_debug_due(blocked)
+    ok &= common.firewall_lines(blocked, "glob") == ["SCPH*.BIN"] + list(common.FIREWALL_DEBUG_GLOBS)
+    import fnmatch
+    hit = lambda p: any(fnmatch.fnmatchcase(p, g) for g in common.FIREWALL_DEBUG_GLOBS)  # noqa: E731
+    ok &= all(map(hit, ("GAME.SYM", "x/y/game.sym", "tools/a.Cpe"))) and not any(map(hit, ("notes.map", "sym.txt", "a.symbols")))
     with tempfile.TemporaryDirectory() as td:       # S10's writes that need no PA3: the settings, the rule, the ratchet
         repo = pathlib.Path(td)
         common.git(repo, "init", "--quiet")

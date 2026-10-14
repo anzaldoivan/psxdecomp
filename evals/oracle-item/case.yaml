@@ -1,0 +1,37 @@
+schema_version: "1.0"
+name: oracle-item
+description: The gate (S4) asks for a checked build without symbols, names its checked archive.org item in the question only, and says that the agent does not download it.
+tags: [flow, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "/psxdecomp:new --resume --until S4"
+  max_turns: 20
+  timeout_seconds: 600
+  allowed_tools: [Skill, Bash, Read, Write, Glob, Grep, AskUserQuestion]
+runs: 1
+graders:
+  - name: names-the-build-date
+    type: regex
+    target: last_message
+    pattern: "Jan(uary)?\\.? 1,? 1999|1999-01-01"
+    flags: "i"
+  - name: names-the-checked-item
+    type: regex
+    target: last_message
+    pattern: "HomebrewFixtureJan011999prototype"
+  - name: asks-for-own-copy
+    type: regex
+    target: last_message
+    pattern: "own copy"
+    flags: "i"
+  - name: says-it-does-not-download
+    type: regex
+    target: last_message
+    pattern: "(not|n't|never) download|you download|you do, and you paste"
+    flags: "i"
+  - name: nothing-installed
+    type: file_exists
+    path: .claude/pa.json
+    exists: false
+expected_outcome: S4 asks whether the developer has their own copy of the Jan 1, 1999 prototype (a debug menu, no symbols), adds that archive.org holds it as the checked item, and says that the agent does not download it. Nothing installs and nothing is fetched.

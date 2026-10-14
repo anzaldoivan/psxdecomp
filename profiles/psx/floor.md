@@ -81,6 +81,7 @@ edits a file. The hook reads `config/guard.tsv`. psxdecomp writes that file once
 - The default rows refuse an edit of `asm/`, of the hash files and of the two baselines.
 - Two default rows refuse a commit that skips the commit hook (`-n`, `--no-verify`) and a change of `core.hooksPath`.
 - `.claude/settings.json` also holds an `Edit(...)` deny rule for each of those paths. It stops a shell redirection too.
+- A new game also has two rows for `config/oracle.toml` and `config/oracle.*.sha1`. Add them to an older game by hand.
 - Add a row when a session must not run a command raw, such as a new split. The file holds two examples.
 
 ## The tooling rows
@@ -132,6 +133,7 @@ The gate refuses these things, and no other. Established decompilation projects 
 | assembly that stands for a function: an assembly statement with an instruction or data, or an assembly file, with no evidence row | `debt` |
 | a new pin, `goto` or barrier with no `// !FAKE: <reason>` comment | `debt` |
 | a rise of a kind that the developer set to `down` | `debt` |
+| the text of a symbol file of another build: 64 lines in a row with the shape of a PsyQ symbol dump | `symdump` |
 | a baseline, a ledger, a README, a plan or a tool pin that is not in order | `debt`, `names`, `readme`, `plan`, `toolchain`, `categories`, `style`, `own-debt` |
 
 - The gate judges a change against a tree that the change cannot rewrite. An edited baseline or tool decides nothing.
@@ -317,6 +319,44 @@ The rule is `rules/NAME1.md`. `python3 tools/psxd_floor.py names` checks two tab
 - A `sha256` row passes when the file at `path` has the hash `pin`.
 - The command runs no tool of the game. A path that is not on this machine is `MISSING`, not a failure. A folder of
   the game that is not a checkout of the tool is `MISSING` too.
+
+## Other builds of the game
+
+A prototype, a debug build or another revision can tell more than the target does. The game keeps one table and one
+checksum file for each such build that a developer supplies. It keeps no byte of one.
+
+| Where | What it holds | Tracked |
+|---|---|---|
+| `disks/builds/<id>/`, or a folder outside the repository | your copy of the build, and each file that you make from it | no |
+| `ghidra/` | a database of the build | no |
+| `config/oracle.toml` | one table for each build: its id, its class, its page and the hashes that the page states | yes |
+| `config/oracle.<id>.sha1` | the SHA-1 of each file of the build | yes |
+| the git directory of your clone | the path of your copy | no |
+
+`psxd` is the launcher of the psxdecomp plugin. The game does not hold it.
+
+- An id is the date of the build or its serial: `proto-2001-10-30`, `slpm-86959`. `retail` is the id of your disc.
+- Add a build once for the project. The command checks your copy against the hash that the page of the build states:
+
+      psxd oracle add --repo . --id <id> --path <your copy> --expect <sha1> --page <the page>
+
+  Commit the files that it names. It also registers your path for this clone.
+- A build that another developer added needs only your path:
+
+      psxd oracle link --repo . --id <id> --path <your copy>
+
+- List the builds. Print the path of one:
+
+      psxd oracle list --repo .
+      psxd oracle locate --repo . --id <id>
+
+- Each worktree of the clone finds the same paths. No tracked file holds a path of your machine.
+- A build that you do not have is no fault. The doctor's `oracle` row counts the builds on this machine.
+- The audit refuses a tracked copy of a file of a build, under any name. It also refuses a tracked `.SYM`, `.CPE`,
+  `.PDB` or `.DBG` file, and a listing of 64 lines.
+- Never commit the text of a symbol file. The gate's `symdump` check refuses it. Keep the text in
+  `disks/builds/<id>/`.
+- A name from another build is a lead. It moves to the target after a byte check of the function at both addresses.
 
 ## A tool of the game's own
 

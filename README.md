@@ -31,10 +31,12 @@ Each backtest replays a real bootstrap with its community leads blanked; the res
 
 ## What it does
 
-- **Identification.** The disc is read in place: boot executable, track layout, PsyQ library stamps. Only facts are
-  recorded, and no byte of the dump is copied.
+- **Identification.** The disc is read in place: boot executable, track layout, PsyQ library stamps. It also names
+  the debug files that a build left on the disc, such as a symbol file. Only facts are recorded, and no byte of the
+  dump is copied.
 - **Research.** Parallel agents look for existing decompilations (decomp.dev's listing first), sibling games and their
-  toolchains, symbol maps, ports and releases. Findings stay leads until a later phase verifies them, and nothing is
+  toolchains, symbol maps, ports and releases. They also look for another build of the game that carries symbols,
+  and the gate asks whether you own a copy. Findings stay leads until a later phase verifies them, and nothing is
   installed before you confirm the report.
 - **Repository.** The ROM firewall is the first commit, after its negative control. Project Architect and the kit
   follow, each at a pinned version checked by hash ([compat.toml](compat.toml)).

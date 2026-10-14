@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Build the synthetic PS1 disc: a PS-X EXE from hello.s's pre-encoded words, an ISO9660 volume with SYSTEM.CNF,
-written as raw MODE2/2352 sectors plus a short audio track, and a Redump-style CUE sheet.
+"""Build the synthetic PS1 disc: a PS-X EXE from hello.s's pre-encoded words, an ISO9660 volume with SYSTEM.CNF and
+a planted debug leftover (MAIN.SYM: the PsyQ symbol magic and nothing else), written as raw MODE2/2352 sectors plus a
+short audio track, and a Redump-style CUE sheet.
 
 CC0 1.0. Deterministic (fixed dates). Output goes to the folder given (a temp dir in tests); nothing it writes is ever
 committed: the repository's own audit refuses disc images and executables.
@@ -17,6 +18,8 @@ WORDS = [0x27BDFFE8, 0xAFBF0014, 0x2408002A, 0x1000FFFF, 0x00000000,   # _start
 STAMPS = bytes([0x50, 0x73, 0x01, 0, 0, 0, 0x47, 0, 0x50, 0x73, 0x03, 0, 0, 0, 0x47, 0])
 BOOT = "HELLO.EXE"
 MARKER = b"psxdecomp homebrew fixture (CC0)"
+SYM_NAME = "MAIN.SYM"
+SYM = b"MND\x01" + bytes(4)                     # the header of an empty PsyQ symbol file: no symbol in it
 
 
 def exe_image() -> bytes:
@@ -108,7 +111,7 @@ def build(out_dir: str) -> dict:
     os.makedirs(out_dir, exist_ok=True)
     exe = exe_image()
     cnf = ("BOOT = cdrom:\\%s;1\r\nTCB = 4\r\nEVENT = 10\r\nSTACK = 801FFF00\r\n" % BOOT).encode()
-    secs = iso_sectors([("SYSTEM.CNF", cnf), (BOOT, exe)])
+    secs = iso_sectors([("SYSTEM.CNF", cnf), (BOOT, exe), (SYM_NAME, SYM)])
     t1 = os.path.join(out_dir, "HOMEBREW (Track 1).bin")
     t2 = os.path.join(out_dir, "HOMEBREW (Track 2).bin")
     with open(t1, "wb") as f:

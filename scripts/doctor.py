@@ -21,6 +21,7 @@ the public repository, the pre-push hook is in place, every workflow action is p
 interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
 PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
+oracle (the disc scan in the record's [oracle] and the builds of config/oracle.toml: `oracle_row`);
 gate, toolchain, names and debt (the tooling and readability floor, each WAIT until its phase: one gate command and
 the hash files once 1.3 is closed, FAIL without them once 1.9 is closed; docs/ops/compiler-pin.md and
 config/toolchain.tsv once 1.4 is closed; the two ledgers once 1.4 is closed, FAIL when one is malformed; the debt
@@ -57,11 +58,12 @@ import common  # noqa: E402
 import decompdev  # noqa: E402
 import fetch_refs  # noqa: E402
 import floor  # noqa: E402
+import oracle  # noqa: E402
 import publish  # noqa: E402
 
 NETWORK_ROWS = ("progress", "github", "dev-ci", "private-repo", "public-standard")
 SPLIT_ROWS = ("private-repo", "public-standard")
-ROWS = ("record", "sdk", "pa3", "pa3-drift", "python", "kit", "roadmap", "gate", "toolchain", "names", "debt", "cpp",
+ROWS = ("record", "sdk", "oracle", "pa3", "pa3-drift", "python", "kit", "roadmap", "gate", "toolchain", "names", "debt", "cpp",
         "readme", "publish-tool", "deny", "guard", "git-hooks", "split-guard",
         "categories", "ignore", "audit", "fixture", "refs", "refs-ignored", "hygiene", "card") + NETWORK_ROWS
 WIDTH = max(map(len, ROWS))                     # the name column of every printed row (doctor, upgrade audit, S10)
@@ -122,6 +124,7 @@ def base_rows(repo: pathlib.Path, add):
             sdk = sdk_row(r.get("psyq"), repo, os.environ.get("PSXDECOMP_BYO_PSYQ_PATH"))
             if sdk:
                 add("sdk", *sdk)
+            add("oracle", *oracle_row(r.get("oracle"), repo))
     else:
         add("record", "WARN", "no config/psxdecomp.toml (not bootstrapped by psxdecomp; /psxdecomp:upgrade adopts it)")
     pa = repo / ".claude" / "pa.json"
@@ -677,6 +680,42 @@ def sdk_row(psyq: dict | None, repo: pathlib.Path, byo: str | None) -> tuple[str
     return "OK", what + "; byo path given"
 
 
+def oracle_row(table: dict | None, repo: pathlib.Path) -> tuple[str, str]:
+    """The oracle-build question's record: the disc scan, and each other build that a developer supplied. No image is
+    hashed. A checksum file that the firewall does not read, a build without its checksum file and a registered path
+    that the firewall refuses are FAILs; no record, no scan and a copy that lacks the build's image WARN."""
+    try:
+        rows = oracle.status(repo)
+    except common.Fail as e:
+        return "FAIL", str(e)
+    loose = oracle.uncovered(repo)
+    if loose:
+        return "FAIL", "%s exists and %s has no `required:` line that reads it: the audit does not read it (`%s` writes " \
+                       "`required: %s`)" % (", ".join(loose), common.FIREWALL, oracle.ADD_COMMAND, oracle.HASH_GLOB)
+    gone = [r["id"] for r in rows if not (repo / (oracle.HASHES % r["id"])).is_file()]
+    if gone:
+        return "FAIL", "%s names `%s` and %s is missing: run `%s` again with your copy" % (
+            oracle.BUILDS, gone[0], oracle.HASHES % gone[0], oracle.ADD_COMMAND)
+    bad = [r for r in rows if r["problem"]]
+    if bad:
+        return "FAIL", "the registered copy of `%s` is refused (firewall): %s (`psxd oracle link --id %s --path <path>`)" % (
+            bad[0]["id"], bad[0]["problem"], bad[0]["id"])
+    if not isinstance(table, dict):
+        return "WARN", "no [oracle] in the record: run `%s`" % oracle.COMMAND
+    what = "%s, checked %s; %d build(s): %d on this machine" % (
+        oracle.scan_line(table), table.get("checked", "?"), len(rows), sum(r["here"] for r in rows))
+    lost = [r["id"] for r in rows if r["path"] and not r["here"]]
+    if lost:
+        what += " (the registered path is gone: %s)" % ", ".join(lost)
+    if "disc_debug_files" not in table:
+        return "WARN", what + ": run `%s`" % oracle.COMMAND
+    odd = [r for r in rows if r["note"]]
+    if odd:
+        return "WARN", what + "; the copy of `%s` %s: `psxd oracle link --id %s --path <path>` checks a copy" % (
+            odd[0]["id"], odd[0]["note"], odd[0]["id"])
+    return "OK", what
+
+
 # ---- progress: a decomp.dev report workflow --------------------------------------------------------------------
 # decomp.dev reads an objdiff report.json from an artifact named <version>_report. The safety lint is text-level (the
 # scripts are stdlib only): a report job needs no ROM and no secret; a byte-match job that pulls a private ROM image
@@ -1197,6 +1236,47 @@ def self_test() -> int:
         for got, want in cases:
             ok &= (got[0] if got else None) == want
         print("  sdk row: %s" % cases[0][0][1])
+        # the oracle row: no table, no scan, a checksum file the firewall does not read, a build without its file, then
+        # the record as `oracle add` leaves it: a copy on this machine, its image by size, a path that is gone, a path
+        # that the firewall refuses, no copy
+        t = {"checked": "2026-10-13", "disc_debug_files": 1, "disc_psyq_sym": 1}
+        game = repo / "game"
+        common.write(game / common.FIREWALL, "purge: disks/\n")
+        common.write(game / oracle.RECORD, "[psxdecomp]\n")
+        common.write(game / ".gitignore", "/disks/\n")
+        common.git(game, "init", "--quiet")
+        out = repo / "copy.sym"
+        out.write_bytes(b"MND\x01copy")
+        cases = [(oracle_row(None, game), "WARN"), (oracle_row(t, game), "OK"), (oracle_row({"checked": "2026-10-13"}, game), "WARN")]
+        common.write(game / "config" / "oracle.sha1", "%s  copy.sym\n" % oracle.sha1_file(out))
+        cases += [(oracle_row(t, game), "FAIL")]                          # a checksum file, and no `required:` line
+        (game / "config" / "oracle.sha1").unlink()
+        oracle.add(game, "proto-a", str(out), cls="prototype")
+        cases += [(oracle_row(t, game), "OK")]
+        ok &= cases[-1][0][1].endswith("; 1 build(s): 1 on this machine") and cases[1][0][1].endswith("; 0 build(s): 0 on this machine")
+        print("  oracle row: %s" % cases[-1][0][1])
+        out.write_bytes(b"MND\x01copy!")
+        cases += [(oracle_row(t, game), "WARN")]                          # the image by its size: nothing is hashed
+        ok &= "has 9 bytes, and the record says 8" in cases[-1][0][1]
+        out.unlink()
+        cases += [(oracle_row(t, game), "OK")]                            # the path is gone: said, and no warning
+        ok &= cases[-1][0][1].endswith("0 on this machine (the registered path is gone: proto-a)")
+        common.write(game / "tools" / "GAME.SYM", "x")
+        common.local_set(game, "builds", "proto-a", str(game / "tools" / "GAME.SYM"))
+        cases += [(oracle_row(t, game), "FAIL")]                          # a copy inside the repository
+        common.local_set(game, "builds", "proto-a", None)
+        cases += [(oracle_row(t, game), "OK")]                            # a build that is not on this machine
+        hashes = game / (oracle.HASHES % "proto-a")
+        text = common.read(game / common.FIREWALL)
+        common.write(game / common.FIREWALL, "purge: disks/\n")
+        cases += [(oracle_row(t, game), "FAIL")]                          # the build's file, and no `required:` line
+        common.write(game / common.FIREWALL, text)
+        hashes.unlink()
+        cases += [(oracle_row(t, game), "FAIL")]                          # a [[build]] without its checksum file
+        for got, want in cases:
+            ok &= got[0] == want
+        ok &= oracle.COMMAND in cases[0][0][1] and "config/oracle.sha1 exists" in cases[3][0][1]
+        ok &= oracle.HASHES % "proto-a" in cases[-1][0][1] and "under no folder" in cases[7][0][1]
     with tempfile.TemporaryDirectory() as td:                           # hygiene: clean tree OK, one planted line WARN
         repo = pathlib.Path(td).resolve()
         common.git(repo, "init", "--quiet")
@@ -1451,7 +1531,7 @@ def self_test_deny() -> bool:
     print("  deny: all %s; one removed %s; PA3-managed %s" % (full[0], short[0], managed[0]))
     print("  guard: no rules file %s; the default rules %s; a bad line %s; no guard group %s; PA3-managed %s" % (
         bare[0], good[0], bad[0], gone[0], theirs[0]))
-    ok = (bare[0] == "WARN" and good[0] == "OK" and "holds 7 rule(s)" in good[1] and bad[0] == "FAIL"
+    ok = (bare[0] == "WARN" and good[0] == "OK" and "holds 9 rule(s)" in good[1] and bad[0] == "FAIL"
           and "line 1" in bad[1] and gone[0] == "FAIL" and "1 of 2" in gone[1] and "guard-hook" in gone[1]
           and theirs[0] == "WARN")
     return (ok and full[0] == "OK" and short[0] == "FAIL" and "1 of %d" % n in short[1] and managed[0] == "WARN"

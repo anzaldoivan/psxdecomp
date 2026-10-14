@@ -39,8 +39,8 @@ tracked docs and its own `tools/reference/` clones.
 | decomp.me · decomp.dev · TCRF · Redump | — · — · L8 · dump check | 7 · 3 · 3 · 1 | **links** |
 | psxdev.net | 0 | 0 | **dropped** |
 
-Result: **4 core sources (13 MB, about 9 s)**, 8 optional, 1 byo, 10 links (counted 2026-10-13). Four of the links are exemplar projects. The optional ones take up to 109 MB if
-all are fetched. Most of that is the two gcc sources, and a project needs only its pin's.
+Result: **4 core sources (13 MB, about 9 s)**, 9 optional, 2 byo, 13 links (counted 2026-10-13). Four of the links are exemplar projects. The optional ones take up to 109 MB if
+all are fetched (measured 2026-10-12, before `psx-mnd-sym`). Most of that is the two gcc sources, and a project needs only its pin's.
 
 decomp.dev is a research source too, not a fetched row. `scripts/decompdev.py lookup --title T [--serial S]` lists
 its matching projects from the read API: repository, version, measures, last commit. Each is dated like any S3 lead.
@@ -68,6 +68,56 @@ a game repo's phase 1.2 check.
   persona-psx `lib/psyq`, psx.arthus.net.
 - **The default path needs no PsyQ binary:** decompals/old-gcc plus maspsx, as sotn-decomp does.
 - Deferred until a real SDK is in hand: per-version sha256 manifests ([HARVEST](HARVEST.md)).
+
+## Oracle builds (policy, 2026-10-13, not legal advice)
+
+An oracle build is another build of the same program that carries more than the target: symbols, a link map, source
+file names. Of the PS1 projects read on 2026-10-13, the ones with such a build took names, function boundaries and
+types from it. S2 scans the developer's own disc for one (`medium.json` `debug_artifacts`). S3's **builds** question
+searches for the others, and the S4 gate asks the developer.
+
+- **Instructions only.** A build is the publisher's and never distributed. Its reference class is `byo` (the
+  `oracle-build` row). The developer supplies a copy (`PSXDECOMP_BYO_ORACLE_PATH`), and no tracked file holds its path.
+- **Ignored image, committed checksums.** A copy lies in the game's ignored `disks/builds/<id>/`, or outside the
+  repository. Git ignores the image, and the project commits only a checksum file for each build id. Six projects
+  read on 2026-10-13 do the same: zeldaret/oot and mm, Xeeynamo/sotn-decomp, celophi/lom-decomp,
+  sushi-shi/kings-field-2-decomp and TOMB5/TOMB5. In split mode the developer adds the checksum files to
+  `config/public-paths.txt`.
+- **Where the rest is written.** The id, the checksum file and the commands: `scripts/oracle.py` (its docstring),
+  and "Other builds of the game" in the game's `docs/ops/psxdecomp-floor.md`. The firewall's lines for a debug file:
+  `common.FIREWALL_DEBUG`.
+- **A local path, and no `.env` file.** The path of a copy lies in the git directory of the clone
+  (`psxdecomp/local.toml`). A path with a space breaks Make and a sourced shell file, and no tool here reads a
+  `.env` file.
+- **No symbol dump as text.** The text of a symbol file is a file of the build, whatever tool wrote it. A hash and
+  a path rule do not see it. The gate's `symdump` check refuses it (`tools/psxd_floor.py`). diabpsx/psx_decomp
+  commits such a text (`rom/DIABPSX-SYM.txt`, read 2026-10-13), and we do not follow it. A link map as text has no
+  check yet ([ECOSYSTEM.md](ECOSYSTEM.md), K35).
+- **Pages only.** A scout reads the page that describes a build. It fetches no disc image, no symbol file and no
+  patch. No committed file holds a download URL for one.
+- **archive.org: the check-out rule.** An agent searches archive.org through its metadata API and reads metadata only.
+  1. An item counts only when a second source confirms it. The build's page is that source. It states the hash of
+     one of the item's files, or it links to the item. The collection and the uploader prove nothing.
+  2. A ROM set, a Redump mirror and a retail image never count.
+  3. The developer downloads. The agent never does.
+  4. `psxd oracle add --id <id> --path <path> --expect <sha1>` checks a supplied copy against the hashes that the
+     build's page states, before anything else reads it. It refuses a copy with no matching file.
+  5. A document item (a manual, a guide book) becomes a `link` row under the same confirmation.
+- **Where an item is named.** Only the gate's question and the scout's report under the ignored `.run/` hold an
+  item's identifier. S10 refuses to commit when a tracked file holds one.
+- **Any checked build, one at the gate.** The gate asks for the best-ranked build, with symbols or without: a
+  prototype, a review build, another revision. A later copy goes through `psxd oracle add`, under its own id.
+- **Never a source:** leaked source code and SDK internals. celophi/lom-decomp and abelbriggs1/tm1_decomp state the
+  same rule in their READMEs.
+- **A build speaks for itself only.** A name moves to the target after a byte check of the function body at both
+  addresses. Until then it is a lead. The order of sources and the trap live in the profile's file, like every other.
+- **No symbol parser of our own.** `ghidra-psx-ldr` (core) imports a PsyQ symbol file into Ghidra, and `psx-mnd-sym`
+  (optional) dumps one to text or to a C header.
+- **A site that refuses agents is never fetched live.** tcrf.net is one, with its subdomains (its stated policy,
+  read 2026-10-13). It serves an agent a decoy that holds injected instructions. The fact comes from other sources first.
+- **The preserved page is the check.** `https://archive.org/wayback/available?url=<page>` finds the page's Wayback
+  Machine snapshot. The lead cites it with its timestamp, and its text is untrusted. When the tool refuses the
+  snapshot too, its URL goes to the report's "For a person to read" table. No other tool takes its place.
 
 ## Classes
 

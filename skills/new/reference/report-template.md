@@ -23,6 +23,7 @@ Classes: `adapt` · `copyleft` (adapt only into a licence-compatible repo) · `f
 |---|---|---|---|---|---|
 | L1 | Compiler: <triple> (a sibling's pin) | owner/repo@<sha> | lead | Verify: the 1.4 ladder runs it first; a probe matches or refutes | 1.4 |
 | L2 | SDK: PsyQ <v> — <n> `Ps` stamps | own bytes (S2) | consistent-with-bytes | `medium.json psyq`; ghidra_psx_ldr's detection at import is the final word | 1.2 |
+| L3 | Oracle build `<id>`: carries <names, boundaries, types> | <the page that describes it> (the build: `byo`, <no copy / byo path given>) | lead | Verify: <n> function bodies are byte-identical at the mapped addresses of both builds | 1.2 |
 
 ## Conventions and contribution rules seen
 
@@ -32,6 +33,14 @@ Classes: `adapt` · `copyleft` (adapt only into a licence-compatible repo) · `f
 
 Paths and lines only, never the documents' text. A project's style is its own decision: projects state opposite
 rules, so nothing here is adopted by default.
+
+## For a person to read
+
+| URL | Why the agent did not read it | What to look for |
+|---|---|---|
+| https://… | the site refused the agent (403) | a prototype's build date, and whether the page says it holds debugging symbols |
+
+A row stays until a person reads the page. The answer then becomes a lead or a dead end, and the row goes.
 
 ## Upstream revisions read
 

@@ -1,9 +1,11 @@
 # S3 — investigate
 
+Contents: the eight questions, the classes of a builds lead, confirming a lead, the outputs.
+
 Inputs: the title, region/version and serial (from `.run/bootstrap/interview.json` or `answers.txt`, and
 `medium.json` when S2 ran). Seeds: `profiles/psx/profile.toml [research].search_seeds` (fill `{title}`, `{serial}`).
 
-## The seven questions — one `scout-web` agent each, launched in parallel in ONE message
+## The eight questions — one `scout-web` agent each, launched in parallel in ONE message
 
 1. **existing** — an existing decompilation or disassembly of this game (GitHub, decomp.dev, forums). Before the
    scouts, run `"$PSXD" decompdev lookup --title "<title>" --serial <serial>`. Then run it without `--serial`. Hand
@@ -29,16 +31,38 @@ Inputs: the title, region/version and serial (from `.run/bootstrap/interview.jso
      Then fetch `https://archive.org/metadata/<identifier>` for items whose title names a hack, patch, project or
      documentation. Read only text and workbook files, never a disc image, ROM set or patch archive.
 4. **ports** — recompilation or port projects (psxrecomp-based, PC ports): facts plus their licence.
-5. **versions** — releases, revisions and prototypes (TCRF, Redump): which release to target and why.
+5. **versions** — releases, revisions and prototypes (Redump, Hidden Palace): which release to target and why.
+   A build that carries symbols can be the better first target. Weigh it against the release the developer owns.
 6. **sdk** — for the detected SDK stamp (`medium.json psyq.version`). Start from its rows in
    `profiles/psx/psyq.toml`. Then find the matching triples (compiler + aspsx + flags) it lacks, and where each was
    proven.
 7. **names** — where the game's own words come from. Search for a game wiki, the manual and a strategy guide.
-   Search for symbols in another release too: a debug build, a prototype, another platform. Rules for a lead:
-   - A wiki or a manual becomes a `link` row. A symbol file becomes a `facts` row with `tier = "optional"`.
+   Symbols in another build belong to question 8. Rules for a lead:
+   - A wiki or a manual becomes a `link` row.
    - Each row has `topics = ["names"]` and a `covers` value that names the release it speaks for.
    - A source of names proves no address and no behaviour. It gives the word for a thing that the bytes prove.
    - A name from another release is a lead until an address or a string of this release agrees with it.
+8. **builds** — another build of this program that carries more than the target does. Hand the agent the
+   `debug_artifacts` rows of `medium.json` as facts: S2 scanned the developer's own disc. The agent searches the
+   other classes of the table below, in its order.
+   - A lead records the build's id, in the form that the scout's file gives.
+   - A lead records what the build carries: names, function boundaries, file layout, types.
+   - Its `how to verify` is a byte check. N function bodies are byte-identical at the mapped addresses of both builds.
+   - The agent reads pages only. It fetches no disc image, no symbol file and no patch, and it writes no download URL.
+   - The agent also searches archive.org, by metadata calls only. The search is
+     `https://archive.org/advancedsearch.php?q=<title>+prototype&fl[]=identifier&fl[]=title&fl[]=mediatype&rows=25&output=json`.
+     `https://archive.org/metadata/<identifier>` then gives an item's files, their sizes and their SHA-1 values.
+   - An item is checked when the build's page confirms it: the page states one of its SHA-1 values, or links to it.
+     Skip every ROM set, Redump mirror and retail image. The rule: [docs/REFS.md](../../../docs/REFS.md), "Oracle
+     builds".
+   - A checked item goes to the report's table `## archive.org items`, with the hash that confirmed it. A document
+     item (a manual, a guide book) becomes a `link` row.
+   - A lead's row holds the build's date, its page and the hashes that the page states. It holds no identifier.
+   - Leaked source code and SDK internals are never a source. Such a find is one line under Dead ends, with that reason.
+   - A build is never a `[[ref]]` row of its own. The profile's `oracle-build` row covers it. The page that describes
+     it becomes a `link` row.
+   - A page that refuses the agent goes to the report's "For a person to read" table.
+   - tcrf.net refuses every agent: its live pages are never fetched, and those of `datacrystal.tcrf.net` neither.
 
 **GitHub search.** Right after the decomp.dev lookup, run
 `"$PSXD" ghsearch --title "<title>" --serial "<serial>" --exe <TARGET_BINARY>`. Add `--exclude "<value>"` (quoted)
@@ -74,6 +98,22 @@ github.md row: example/quest-fan-art | CC-BY-4.0 | 2024-03-09 | name | "fan art"
 ```
 
 </example>
+
+The classes of a **builds** lead, best first (the projects' READMEs, read 2026-10-13):
+
+| Class | It carries | Who used one |
+|---|---|---|
+| the target disc itself (`debug_artifacts`) | names, boundaries, types, file layout | Caesar0007/NFSHS-PSX-decomp: a symbol file on the retail disc |
+| another region's retail disc | the same, for that region's build | diabpsx/psx_decomp: the Japanese disc |
+| a prototype or a review build | the same, for an earlier build | FedericoMilesi/soul-re: a prototype built two weeks before release |
+| a debug build | names and types | OpenDriver2/REDRIVER2, TOMB5/TOMB5 |
+| a demo disc | often an earlier build of the same code | no project read so far |
+| a port to another platform | names and structure, never addresses | Xeeynamo/sotn-decomp: PSP and Saturn builds beside the PS1 target |
+| a sibling game's symbols | library and engine names | diabpsx/psx_decomp: library names from a sibling game's PC beta |
+| regional releases as lineage witnesses | dates, and the age of the SDK | sushi-shi/kings-field-2-decomp: RCS id strings date the SDK |
+
+Which source wins for a name, and the trap of a prototype's addresses: [docs/REFS.md](../../../docs/REFS.md), "Oracle
+builds".
 
 Brief each agent with: the question, the title/serial/region, today's date, the output path
 `.run/bootstrap/research/<question>.md`, and "shallow" (default) or "deep" (`--deep`: extended search, more sources).

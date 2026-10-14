@@ -415,6 +415,87 @@ def settings_due(repo: pathlib.Path) -> str | None:
     return text
 
 
+# ---- the firewall's block for a debug file of any build (config/firewall.txt): S9 writes it, upgrade's
+# `firewall-debug` adds it. The kit's audit matches a `glob:` line with fnmatch.fnmatchcase, whose `*` crosses `/`, so
+# each line refuses the extension in any folder and in any letter case ------------------------------------------------
+FIREWALL = "config/firewall.txt"
+FIREWALL_DEBUG_GLOBS = ("*.[Ss][Yy][Mm]", "*.[Cc][Pp][Ee]", "*.[Pp][Dd][Bb]", "*.[Dd][Bb][Gg]")
+FIREWALL_DEBUG = ("# ---- psxdecomp: a debug file of any build (a symbol file, a linker's debug executable) ----\n"
+                  "# A link map (.MAP) has no line here: a game tracks text files of that name. The checksum file\n"
+                  "# (config/oracle.<id>.sha1, written by psxdecomp's `oracle add`) covers a supplied copy.\n"
+                  + "".join("glob:  %s\n" % g for g in FIREWALL_DEBUG_GLOBS))
+
+
+def firewall_lines(text: str, kind: str) -> list[str]:
+    """The values of one rule kind in a firewall file, read as the kit's audit reads them (`#` starts a comment)."""
+    rows = (l.split("#", 1)[0].partition(":") for l in text.splitlines())
+    return [value.strip() for k, _, value in rows if k.strip() == kind]
+
+
+def firewall_debug_due(text: str) -> bool:
+    return not set(FIREWALL_DEBUG_GLOBS) <= set(firewall_lines(text, "glob"))
+
+
+def with_firewall_debug(text: str) -> str:
+    return text.rstrip("\n") + "\n\n" + FIREWALL_DEBUG if firewall_debug_due(text) else text
+
+
+def firewall_debug_hits(repo: pathlib.Path) -> list[str]:
+    """The tracked files that a line of the block refuses: with one of these, the block would break the audit."""
+    import fnmatch
+    r = git(repo, "ls-files", "-z", check=False)
+    return sorted(p for p in r.stdout.split("\0") if p and any(fnmatch.fnmatchcase(p, g) for g in FIREWALL_DEBUG_GLOBS))
+
+
+# ---- the local record: <git-common-dir>/psxdecomp/local.toml, the paths of this machine (`[dump] path`, and
+# `[builds] <id>` for each other build of the game). Git cannot track a file of its own directory, and each worktree of
+# the clone reads the same one (scripts/publish.py keeps psxdecomp/public.git in that folder) -------------------------
+LOCAL_REL = "psxdecomp/local.toml"
+LOCAL_HEAD = ("# psxdecomp: the paths of this machine (`psxd oracle add`, `link` and `record --dump` write them). The file\n"
+              "# lies in the git directory: git cannot track it, and each worktree of this clone reads it.\n")
+
+
+def local_path(repo) -> pathlib.Path | None:
+    """The local record's path; None when `repo` is not the top folder of a git work tree."""
+    r = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel", check=False)
+    out = r.stdout.splitlines()
+    if r.returncode != 0 or len(out) != 2 or os.path.realpath(out[1]) != os.path.realpath(str(repo)):
+        return None
+    return pathlib.Path(out[0]) / LOCAL_REL
+
+
+def local_read(repo) -> dict:
+    """The local record as tables; {} when there is none."""
+    p = local_path(repo)
+    if p is None or not p.is_file():
+        return {}
+    try:
+        doc = load_toml(p)
+    except tomllib.TOMLDecodeError as e:
+        raise Fail("%s is not TOML (%s): repair it or remove it" % (p, e))
+    return {t: rows for t, rows in doc.items() if isinstance(rows, dict)}
+
+
+def local_set(repo, table: str, key: str, value: str | None) -> pathlib.Path:
+    """Write `key = "value"` into `[table]` of the local record (None removes the key). Returns the file's path."""
+    p = local_path(repo)
+    if p is None:
+        raise Fail("%s is not the top folder of a git work tree: a path of this machine is kept in the git directory" % repo)
+    doc = local_read(repo)
+    rows = doc.setdefault(table, {})
+    rows.pop(key, None)
+    if value is not None:
+        rows[key] = str(value)
+
+    def k(name):
+        return name if re.fullmatch(r"[A-Za-z0-9_-]+", name) else json.dumps(name)
+
+    write(p, LOCAL_HEAD + "".join("\n[%s]\n%s" % (k(t), "".join(
+        "%s = %s\n" % (k(n), json.dumps(str(v), ensure_ascii=False)) for n, v in sorted(rows.items())))
+        for t, rows in sorted(doc.items()) if rows))
+    return p
+
+
 # ---- the profile's rules (profiles/psx/rules/<id>.md, each a body with no title line): the game's own rules_add.py
 # writes rules/<id>.md and its row of rules/INDEX.md. Never `promote`: a headline stays out of the project-architect
 # skill, and no rule text goes in the card. S10 and upgrade's `<x>-rule` actions both go through here ----------------

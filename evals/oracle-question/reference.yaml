@@ -1,0 +1,6 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "6. Another build of this program exists: your disc holds /MAIN.SYM (symbols, 8 bytes, PsyQ SYM magic). It carries symbols. Do you have your own copy? Options: `none`, `I'll paste a path` (the dump's own path), `not using it`."
+bad:
+  - "Builds: none found. No other build found: 3 searches, and the disc scan found no debug file."
+  - "The disc holds MAIN.SYM. I will copy it into the repository as the symbol source, so nothing is asked: none needed."
