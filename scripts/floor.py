@@ -2278,14 +2278,13 @@ def transition(repo, base: Tree, head: Tree, online: bool = False) -> tuple[list
 
 def state(repo, tree: Tree, here: bool = True, base: Tree | None = None) -> list[tuple[str, str]]:
     """[(check, detail)] for a tree as it stands: its baseline, its ledgers (`base`: the tree the change starts
-    from, whose assembly rows are not opened again), and (`here`: the work tree holds this tree) its plan, its
-    toolchain pins, its README and its category ids."""
+    from, whose assembly rows are not opened again), and (`here`: the work tree holds this tree) the game's own
+    debt scanner, its README and its category ids."""
     out = [("debt", f) for f in state_findings(repo, tree)[0]]
     out += [("names", d) for lv, d in names_findings(repo, tree, base) if lv == "FAIL"]
     if not here:
         return out
     out += own_debt(repo, tree)
-    out += [("toolchain", "%s: %s" % (name, d)) for st, name, d in toolchain_rows(repo) or () if st == "FAIL"]
     for check, rel, args in (("readme", "README.md", ["lint", "README.md"]),
                              ("categories", "config/categories.tsv", ["categories", "config/categories.tsv", "--history"])):
         if tree.has(rel):
@@ -2399,7 +2398,7 @@ def cmd_gate(repo, mode: str, rng: str | None = None, part: str = "all") -> int:
         if passed is None:
             here = mode in ("staged", "bank") or _rev(repo, "HEAD") == head.source
             if not here:
-                infos.append("the work tree is not at %s: its plan, README and category ids are not read" % head.source[:10])
+                infos.append("the work tree is not at %s: its README and category ids are not read" % head.source[:10])
             fails += state(repo, head, here, base)
             if mode in ("bank", "push") and not fails:
                 fails += game_check(repo, head)

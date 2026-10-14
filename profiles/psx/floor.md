@@ -133,7 +133,7 @@ The gate refuses these things, and no other. Established decompilation projects 
 | assembly that stands for a function: an assembly statement with an instruction or data, or an assembly file, with no evidence row | `debt` |
 | a new pin, `goto` or barrier with no `// !FAKE: <reason>` comment | `debt` |
 | a rise of a kind that the developer set to `down` | `debt` |
-| a baseline, a ledger, a README or a tool pin that is not in order | `debt`, `names`, `readme`, `toolchain`, `categories`, `style`, `own-debt` |
+| a baseline, a ledger or a README that is not in order | `debt`, `names`, `readme`, `categories`, `style`, `own-debt` |
 
 - The gate judges a change against a tree that the change cannot rewrite. An edited baseline or tool decides nothing.
 - The two ends of a change decide. A merge in progress is judged against `HEAD`, as any other change.
@@ -309,6 +309,7 @@ The rule is `rules/NAME1.md`. `python3 tools/psxd_floor.py names` checks two tab
 - A `sha256` row passes when the file at `path` has the hash `pin`.
 - The command runs no tool of the game. A path that is not on this machine is `MISSING`, not a failure. A folder of
   the game that is not a checkout of the tool is `MISSING` too.
+- The doctor's `toolchain` row runs the same check. The gate does not run it.
 
 ## Other builds of the game
 
