@@ -23,9 +23,10 @@ are printed as commands for the developer (their own installers, their own gates
 psxdecomp also delivers the readability floor: `fin-rule` and `name-rule` (rules/FIN1.md and rules/NAME1.md, written
 as `ste-rule` is), `names-ledger` (the header lines of config/names.tsv and config/asm-evidence.tsv, once) and
 `debt-baseline` (config/debt-baseline.txt, once, last, with the starting mode of each debt kind); `debt-recount`
-rewrites a baseline of an earlier psxdecomp in version 2 (the rows of now, a policy line for each kind that has none;
-the game's own lines stay); `asm-ledger` adds the `verified_by` column to the header line of an assembly ledger that
-an earlier psxdecomp wrote (the rows stay); `floor-public` is the manual line of split mode, and
+rewrites a baseline of an earlier psxdecomp in version 2 (the totals of now, a policy line for each kind that has
+none; the game's own lines stay); `asm-ledger` adds the `verified_by` column to the header line of an assembly ledger that
+an earlier psxdecomp wrote (the rows stay); `trial-tool` writes tools/psxd_trial.py for a record that names
+`[trial] probe`; `floor-public` is the manual line of split mode, and
 `floor-cpp` the manual line for the preprocess command of the record (`[floor] cpp`). A game with `[own] names` gets none of the
 actions that key replaces. `[own] debt` is additive: the game's scanner runs beside psxdecomp's count, so the baseline
 and the two ledgers of the count are delivered all the same, and only the rule text (`fin-rule`) is withheld.
@@ -50,7 +51,8 @@ the public repository's byte check (written only when absent: it carries the gam
 read stays a {{PLACEHOLDER}} and a `manual` action), and docs/ops/psxdecomp-split.md, the release operator's card
 (profiles/psx/split-mode.md, owned; never public, docs/ops/ is denied).
 
-Every file psxdecomp delivers has one delivery class, in one table (DELIVERY): `owned` (rewritten when it differs from
+Every file psxdecomp delivers has one delivery class, in one table (DELIVERY), except tools/psxd_trial.py
+(`trial-tool` above), which is written again when it differs from scripts/trial.py. The classes: `owned` (rewritten when it differs from
 the plugin's; its sha256 is recorded in the record's [delivered], and a copy that was edited in the game since then is
 a `manual` action that `apply --take KEY` overwrites), `once` (written when absent, then the game's), `rule` (written
 by the game's own tools/rules_add.py), `merge` (add-only into a file the game shares). A game that has its own
@@ -91,6 +93,7 @@ import fetch_refs  # noqa: E402
 import floor  # noqa: E402
 import install  # noqa: E402
 import oracle  # noqa: E402
+import plan as roadmap  # noqa: E402
 import publish  # noqa: E402
 
 PROFILE_REFS = common.PLUGIN_ROOT / "profiles" / "psx" / "refs.toml"
@@ -99,6 +102,7 @@ BUILD_WF = ".github/workflows/build.yml"
 PROFILE_BUILD = common.PLUGIN_ROOT / "profiles" / "psx" / "build.yml"
 
 FLOOR_DOC = "docs/ops/psxdecomp-floor.md"
+TRIAL_TOOL = "tools/psxd_trial.py"
 CAMPAIGN_DOC = "docs/ops/psxdecomp-campaign.md"
 MATCHER_SKILL = ".claude/skills/matcher"
 MATCHER_LINE = ('PY tools/skill_add.py matcher --from %s#Matcher --description "<at most 120 characters>"' % CAMPAIGN_DOC)
@@ -135,7 +139,7 @@ OWNED = {d.path: common.PLUGIN_ROOT / d.src for d in DELIVERY if d.cls == "owned
 SPLIT_OWNED = {d.path: common.PLUGIN_ROOT / d.src for d in DELIVERY if d.cls == "owned" and d.split}
 # an owned action's plan line: (its label, what the files are)
 OWNED_WHAT = {"publish": ("publish", "the README standard's lint and its CI"),
-              "floor": ("floor", "the roadmap, tooling and readability checks, and their reference"),
+              "floor": ("floor", "the tooling and readability checks, and the floor's reference"),
               "campaign": ("campaign", "the campaign templates: the bank and wave ledgers, the budgets, the give-up "
                            "report, a matcher workflow"),
               "split-doc": ("split", "the release operator's card: ship, the push gate, contributor PRs")}
@@ -421,7 +425,7 @@ def plan(repo: pathlib.Path) -> list[dict]:
                 "psxdecomp %s's (%s)" % (label, " and ".join(edited), "it" if len(edited) == 1 else "them", key,
                                          "it" if len(edited) == 1 else "them", common.plugin_version(), what),
                 "an owned file with local changes is never overwritten unasked", key + "-edited")
-    if (floor.phase_state(repo)[8] == "open" and not {"campaign", "matcher"} & own_keys(repo)
+    if (roadmap.phase_state(repo)[8] == "open" and not {"campaign", "matcher"} & own_keys(repo)
             and not (repo / MATCHER_SKILL).exists() and (repo / "tools/skill_add.py").is_file()):
         add("manual", "matcher: offered, not installed. `%s` makes a skill of the \"Matcher workflow\" section. It also "
             "adds a line to the card and a description that every session loads: the developer decides" % MATCHER_LINE,
@@ -553,10 +557,17 @@ def plan(repo: pathlib.Path) -> list[dict]:
             "pin, goto, barrier and asm are then read in the text that the compiler gets; without it they are read in the raw "
             "text, where a macro can hide one", "floor-cpp")
     if (repo / floor.BASELINE).is_file() and recount_due(repo):
-        add("psxdecomp", "debt-recount: rewrite %s in version 2 (the rows of now; %s; the lines of the game stay)"
+        add("psxdecomp", "debt-recount: rewrite %s in version 2 (the totals of now; %s; the lines of the game stay)"
             % (floor.BASELINE, recount_due(repo)),
-            "from psxdecomp 0.6.0 the baseline holds a policy line for each kind, and `debt` fails without one",
+            "from psxdecomp 0.6.0 the baseline holds a policy line and one total for each kind, and `debt` fails "
+            "without a policy line",
             "debt-recount")
+    trial = common.PLUGIN_ROOT / "scripts" / "trial.py"
+    if floor.record_table(floor.Tree(repo), "trial").get("probe") and not (
+            (repo / TRIAL_TOOL).is_file() and (repo / TRIAL_TOOL).read_bytes() == trial.read_bytes()):
+        add("psxdecomp", "trial-tool: write %s, the trial helper (`[trial] probe` of %s names the game's probe)"
+            % (TRIAL_TOOL, install.RECORD), "`python3 %s <file>` takes out the pins and barriers that the match does not "
+            "need" % TRIAL_TOOL, "trial-tool")
     if (repo / PUBLIC_LIST).is_file():
         listed = publish.parse_public_paths(common.read(repo / PUBLIC_LIST))
         need = [floor.VENDORED] + [d.path for d in DELIVERY if d.key in ("names-ledger", "debt-baseline") and d.own not in own]
@@ -833,6 +844,9 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
                            "change, then apply again" % (refused[0], ", …" if len(refused) > 1 else ""))
         else:
             w(floor.BASELINE, floor.recount_text(repo)[0])
+    if "trial-tool" in acts:
+        st = common.write(repo / TRIAL_TOOL, common.read(common.PLUGIN_ROOT / "scripts" / "trial.py"), dry=dry, mode=0o755)
+        written.append("%s%s %s" % ("would be " if dry else "", st, TRIAL_TOOL))
     if "git-hooks" in acts:
         names = publish.hooks_due(repo)[0]
         written.append("%s git hook(s) %s" % ("would write" if dry else "wrote", ", ".join(names if dry else publish.install_hooks(repo))))
@@ -855,8 +869,9 @@ def asm_header_due(repo: pathlib.Path) -> bool:
 
 
 def recount_due(repo: pathlib.Path) -> str | None:
-    """Why the baseline needs `debt --recount`, or None: it is a version 1 file, or a kind has no policy line. A
-    baseline that does not parse is the game's to repair (the doctor's `debt` row says where)."""
+    """Why the baseline needs `debt --recount`, or None: it is a version 1 file, a kind has no policy line, or it
+    holds a row per file. A baseline that does not parse is the game's to repair (the doctor's `debt` row says
+    where)."""
     try:
         bl = floor.parse_baseline(common.read(repo / floor.BASELINE) if (repo / floor.BASELINE).is_file() else None)
     except floor.Fail:
@@ -865,6 +880,8 @@ def recount_due(repo: pathlib.Path) -> str | None:
         return "it is a version 1 file in `mode %s`, and each kind gets its starting mode" % bl.old_mode
     if bl.version == 2 and bl.lacks():
         return "a policy line for %s" % ", ".join(bl.lacks())
+    if bl.by_file:
+        return "it holds a row for each file, and one total for each kind replaces them"
     return None
 
 
@@ -1111,13 +1128,13 @@ def self_test_record(repo: pathlib.Path) -> bool:
             (repo / rel).write_bytes(held)
         rec.write_text(plain, encoding="utf-8")
         ok &= own_key == "debt" or act_key in keys() or (repo / rel).is_file()   # the control: without the key it is due
-    (repo / floor.PLAN).write_text(floor.self_plan(closed=8))              # phase 1.8 open: the matcher is offered
+    (repo / roadmap.PLAN).write_text(roadmap.self_plan(closed=8))              # phase 1.8 open: the matcher is offered
     common.write(repo / "tools/skill_add.py", "pass\n")
     rec.write_text(plain, encoding="utf-8")
     offered = "matcher" in keys()
     rec.write_text(record_set(plain, "own", "matcher", ".claude/skills/mine"), encoding="utf-8")
     ok &= offered and "matcher" not in keys()
-    (repo / floor.PLAN).unlink()
+    (repo / roadmap.PLAN).unlink()
     (repo / "tools/skill_add.py").unlink()
     rec.write_text(plain, encoding="utf-8")
     for own_key, (path2, value2) in OWN_DETECT.items():                    # each detect path proposes its key
@@ -1395,7 +1412,7 @@ def self_test() -> int:
         ok &= (repo / floor.NAMES).read_text() == "\t".join(floor.NAME_COLUMNS) + "\n"
         ok &= (repo / floor.ASM_EVIDENCE).read_text() == "\t".join(floor.ASM_COLUMNS) + "\n"
         base = (repo / floor.BASELINE).read_text()
-        ok &= base.endswith("mode reservation count\n") and "skip " not in base and base.startswith("# %s: " % floor.BASELINE)
+        ok &= base.endswith("mode filename count\n") and "skip " not in base and base.startswith("# %s: " % floor.BASELINE)
         ok &= "debt-recount" not in keys and recount_due(repo) is None
         ok &= "asm-ledger" not in keys | keys2
         (repo / floor.ASM_EVIDENCE).write_text("# ours\n" + "\t".join(floor.ASM_COLUMNS_OLD) + "\nmain\tboot\tsrc/boot.s\thand-asm\td.md:1\t2026-01-02\n")
@@ -1408,26 +1425,35 @@ def self_test() -> int:
         ok &= "version 1 file in `mode admit`" in next(x["what"] for x in plan(repo) if x["key"] == "debt-recount")
         apply(repo, False, False)
         again = (repo / floor.BASELINE).read_text()
-        ok &= again.endswith("mode reservation count\n") and "# a note of the game\n" in again and recount_due(repo) is None
+        ok &= again.endswith("mode filename count\n") and "# a note of the game\n" in again and recount_due(repo) is None
         (repo / floor.BASELINE).write_text(base)
         ok &= "would be created %s" % floor.BASELINE in dry and dry.index("would be created %s" % floor.NAMES) < dry.index(
             "would be created %s" % floor.BASELINE)
         ok &= (repo / floor.VENDORED).read_bytes() == OWNED[floor.VENDORED].read_bytes() and os.access(repo / floor.VENDORED, os.X_OK)
         ok &= (repo / FLOOR_DOC).read_bytes() == OWNED[FLOOR_DOC].read_bytes()
+        ok &= "trial-tool" not in keys | keys2 and not (repo / TRIAL_TOOL).exists()   # no probe: no trial tool
+        rec = common.read(repo / install.RECORD)
+        common.write(repo / install.RECORD, rec + "\n[trial]\nprobe = 'make probe'\n")
+        ok &= "trial-tool" in {x["key"] for x in plan(repo)}
+        apply(repo, False, False)
+        ok &= (repo / TRIAL_TOOL).read_bytes() == (common.PLUGIN_ROOT / "scripts/trial.py").read_bytes() and os.access(repo / TRIAL_TOOL, os.X_OK)
+        ok &= "trial-tool" not in {x["key"] for x in plan(repo)}
+        common.write(repo / install.RECORD, rec)
+        (repo / TRIAL_TOOL).unlink()
         ok &= "campaign" in keys and (repo / CAMPAIGN_DOC).read_bytes() == OWNED[CAMPAIGN_DOC].read_bytes()
         ok &= "matcher" not in keys2                                     # no plan: phase 1.8 is not open
-        (repo / floor.PLAN).write_text(floor.self_plan(closed=8))
+        (repo / roadmap.PLAN).write_text(roadmap.self_plan(closed=8))
         ok &= "matcher" not in {x["key"] for x in plan(repo)}            # no skill_add.py: nothing to offer
         common.write(repo / "tools/skill_add.py", "")
         offer = next((x for x in plan(repo) if x["key"] == "matcher"), None)
         ok &= offer is not None and offer["owner"] == "manual" and MATCHER_LINE in offer["what"]
-        (repo / floor.PLAN).write_text(floor.self_plan(closed=7))        # 1.8 waits for 1.7: not offered yet
+        (repo / roadmap.PLAN).write_text(roadmap.self_plan(closed=7))        # 1.8 waits for 1.7: not offered yet
         ok &= "matcher" not in {x["key"] for x in plan(repo)}
-        (repo / floor.PLAN).write_text(floor.self_plan(closed=8))
+        (repo / roadmap.PLAN).write_text(roadmap.self_plan(closed=8))
         (repo / MATCHER_SKILL).mkdir(parents=True)                      # the skill exists: not offered again
         ok &= "matcher" not in {x["key"] for x in plan(repo)}
         (repo / MATCHER_SKILL).rmdir()
-        (repo / floor.PLAN).unlink()
+        (repo / roadmap.PLAN).unlink()
         (repo / "tools/skill_add.py").unlink()
         ok &= (repo / floor.GUARD).read_text() == common.read(common.PROFILE_GUARD)
         (repo / floor.GUARD).write_text("# the game's own rules\n")      # once: never rewritten

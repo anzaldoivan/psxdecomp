@@ -164,9 +164,9 @@ your-game/
   README.md               the project's front page, on the README standard, with the AI policy
   config/discs.tsv        the disc, serial and executable rows the README's disc table shows
   tools/psxd_publish.py   the README lint and the decomp.dev report checks, run by the game's CI
-  tools/psxd_floor.py     the roadmap lint, the readability debt count and the guard hook
+  tools/psxd_floor.py     the readability debt count, the gate and the guard hook
   docs/ops/psxdecomp-floor.md  what to do after the bootstrap, the phase numbering, every check of the floor
-  config/debt-baseline.txt     the readability debt of each source file (a matched file is not a finished one)
+  config/debt-baseline.txt     the readability debt of the source, one total per kind (a matched file is not a finished one)
   config/guard.tsv        what an agent session may not edit or run here
   config/public-paths.txt optional, split mode: the paths the public repo shows ([docs/PUBLISHING.md](docs/PUBLISHING.md#split-mode-a-public-trunk-a-private-workspace-a-private-store))
   config/psxdecomp.toml   the bootstrap record: pins, profile, PsyQ lead

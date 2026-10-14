@@ -94,4 +94,4 @@ graders:
     target: last_message
     pattern: "\\bS8\\b|--resume"
     flags: "i"
-expected_outcome: The skill sees a plain session at NEXT S7, reads the kit's intake file that `install where` prints, writes PROJECT_CONTEXT.md with the eleven ladder phases, commits it, marks S7 and stops at --until S7. psxdecomp's `floor.py ladder PROJECT_CONTEXT.md` then exits 0.
+expected_outcome: The skill sees a plain session at NEXT S7, reads the kit's intake file that `install where` prints, writes PROJECT_CONTEXT.md with the eleven ladder phases, commits it, marks S7 and stops at --until S7. psxdecomp's `plan.py ladder PROJECT_CONTEXT.md` then exits 0.

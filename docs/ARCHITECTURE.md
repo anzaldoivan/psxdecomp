@@ -18,7 +18,7 @@ pinned installers. After S10 the repository needs nothing from the plugin.
   ├─ S8 install.py → the kit's install.py --answers (dry run, then run; digest-checked) + the README standard
   ├─ S9 fetch_refs.py → refs/ (git-ignored, searchable via .ignore) + docs/ops/refs.md (committed)
   └─ S10 doctor.py + oracle.py (the oracle-build record) + config/psxdecomp.toml + tools/psxd_publish.py (the README lint, vendored; its CI)
-         + tools/psxd_floor.py (the floor, vendored: roadmap lint, debt baseline, guard hook) + docs/ops/psxdecomp-floor.md
+         + tools/psxd_floor.py (the floor, vendored: debt baseline, gate, guard hook) + docs/ops/psxdecomp-floor.md
 ```
 
 A game may also run in split mode: a public trunk, a private `-dev` workspace and a private `-private` store for the
@@ -77,7 +77,7 @@ commit and the kit's content digest: the kit is not yet a git repository of its 
 
 | Tier | When | What |
 |---|---|---|
-| 0 | every push | Manifests validate. Schemas hold: profile, answers, refs, compat, eval cases. Skills are invocation-only. Links resolve. The repo's own firewall passes with its control. Every script's `--self-test` passes, and the writing count does not rise (`tests/golden/style.txt`) |
+| 0 | every push | Manifests validate. Schemas hold: profile, answers, refs, compat, eval cases. Skills are invocation-only. Links resolve. The repo's own firewall passes with its control. Every script's `--self-test` and the floor tool's scenarios (`tests/test_floor.py`) pass, and the writing count does not rise (`tests/golden/style.txt`) |
 | 1 | every push | `install.py run` on the homebrew fixture: the tree equals the golden tree, and a second run changes nothing. The S5 dry run lists what S5 writes. The firewall control fails on the planted blob. A wrong PA3 or kit is refused. Every stage resumes, and so does an S10 that failed. The dump is never copied |
 | 1b | weekly | the fixture exe: extract → splat split → all-asm build → sha1 equal, in the profile container |
 | 1c | every push | split mode end to end on the fixture (`tests/test_split_e2e.py`) |

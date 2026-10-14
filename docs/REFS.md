@@ -90,9 +90,8 @@ searches for the others, and the S4 gate asks the developer.
   (`psxdecomp/local.toml`). A path with a space breaks Make and a sourced shell file, and no tool here reads a
   `.env` file.
 - **No symbol dump as text.** The text of a symbol file is a file of the build, whatever tool wrote it. A hash and
-  a path rule do not see it. The gate's `symdump` check refuses it (`tools/psxd_floor.py`). diabpsx/psx_decomp
-  commits such a text (`rom/DIABPSX-SYM.txt`, read 2026-10-13), and we do not follow it. A link map as text has no
-  check yet ([ECOSYSTEM.md](ECOSYSTEM.md), K35).
+  a path rule do not see it. No check of psxdecomp reads for it ([ECOSYSTEM.md](ECOSYSTEM.md), K35).
+  `docs/ops/psxdecomp-floor.md` states the rule.
 - **Pages only.** A scout reads the page that describes a build. It fetches no disc image, no symbol file and no
   patch. No committed file holds a download URL for one.
 - **archive.org: the check-out rule.** An agent searches archive.org through its metadata API and reads metadata only.

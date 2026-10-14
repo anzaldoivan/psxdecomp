@@ -1619,8 +1619,8 @@ def debt_gate(x: pathlib.Path) -> list[str]:
     """The debt check of the public README workflow, run on an exported tree before it is released: a FAIL line when
     the tree holds the floor's tool and no baseline, or a baseline that is not equal to its source. A tree without the
     tool has no such check in its CI, and passes. The check is run by the floor tool beside this file, not by the
-    tree's copy. A row of a file that the tree does not publish is no finding: the tool leaves it out where the
-    public list does."""
+    tree's copy. In the public tree a total under its row is no finding: the row counts the files that the tree does
+    not publish too."""
     if not (x / FLOOR_TOOL).is_file():
         return []
     r = subprocess.run([sys.executable, "-I", str(sibling()), "debt", "--repo", "."], cwd=x, capture_output=True,
@@ -5196,8 +5196,7 @@ def _hooks_self_test(check, td: str) -> None:
         put(VENDORED, pathlib.Path(__file__).read_text(encoding="utf-8"))
         put("src/walk.c", walk)
         put("src/stubs.c", 'INCLUDE_ASM("asm/nonmatchings/stubs", Run);\n')
-        put("config/psxdecomp.toml", "[psxdecomp]\nversion = \"0.6.0\"\n\n[trial]\nprobe = '%s tools/probe.py'\n" % sys.executable)
-        put("tools/probe.py", "import sys\nsys.exit(0)\n")          # every function matches: no pin is needed
+        put("config/psxdecomp.toml", "[psxdecomp]\nversion = \"0.6.0\"\n")
         git("add", "-A")
         floor("debt", "--recount")
         git("add", "-A")

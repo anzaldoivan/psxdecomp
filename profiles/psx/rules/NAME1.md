@@ -17,11 +17,11 @@ A name is a claim about what the code does. A byte-identical build proves the be
 | `loadmap` | a load address or an overlay table entry |
 | `exe-header` | a field of the executable header |
 | `prior-art` | a name in a project that `docs/prior-art.md` lists, with its commit |
-| `debug-symbol` | a symbol in a debug build or in another release of the game |
+| `debug-symbol` | a symbol of a debug file of the target build itself |
 | `refs` | a row of `config/refs.toml`: a manual, a wiki or a symbol file that gives the game's own word |
 | `human` | a decision that a person wrote down, in a file of the repository |
 | `test` | a test or a script whose result shows what the code does |
-| `oracle` | another build of the game, such as a debug build or a port, that holds the same code |
+| `oracle` | another build of the game, after a byte check of the function at both addresses. Before it, the row is `provisional` |
 | `debugger` | a note of a debugger or emulator session that shows the behaviour |
 
 This rule is the default. When `docs/prior-art.md` records the conventions of an upstream project, those conventions

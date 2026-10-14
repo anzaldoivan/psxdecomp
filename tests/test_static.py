@@ -17,6 +17,7 @@ import common
 import fetch_refs
 import floor
 import oracle
+import plan
 import publish
 
 
@@ -155,25 +156,25 @@ def test_eval_cases():
 
 def test_s7_ladder_eval_reads_the_ladder():
     """The `s7-ladder` case grades the constitution a real S7 writes. It has one file grader for each of the eleven
-    ladder phases. They pass on a text that names the phases as floor.LADDER holds them, in the list form and in the
+    ladder phases. They pass on a text that names the phases as plan.LADDER holds them, in the list form and in the
     kit's table form. A text that lacks any one phase fails the grader of that phase, and so do prose that only
     holds the words and the two-phase fixture constitution: the canned fixture can never stand in for the intake."""
     yaml = pytest.importorskip("yaml")
     d = yaml.safe_load((ROOT / "evals/s7-ladder/case.yaml").read_text())
     gs = [g for g in d["graders"] if g["type"] == "regex" and isinstance(g.get("target"), dict)]
-    assert len(gs) == len(floor.LADDER) and all(g["target"] == {"source": "file", "path": floor.CONTEXT} for g in gs), gs
-    lines = ["- **Phase 1.%d %s** — milestone: m" % (n, name) for n, name, _, _ in floor.LADDER]
-    rows = ["| %d | **%s** | m |" % (n, name) for n, name, _, _ in floor.LADDER]
+    assert len(gs) == len(plan.LADDER) and all(g["target"] == {"source": "file", "path": plan.CONTEXT} for g in gs), gs
+    lines = ["- **Phase 1.%d %s** — milestone: m" % (n, name) for n, name, _, _ in plan.LADDER]
+    rows = ["| %d | **%s** | m |" % (n, name) for n, name, _, _ in plan.LADDER]
     for full in ("\n".join(lines), "\n".join(rows)):
-        assert floor.ladder_missing(full) == [] and all(_passes(g, full) for g in gs), [g["name"] for g in gs if not _passes(g, full)]
+        assert plan.ladder_missing(full) == [] and all(_passes(g, full) for g in gs), [g["name"] for g in gs if not _passes(g, full)]
     for n in range(len(lines)):
         less = "\n".join(l for i, l in enumerate(lines) if i != n)
         failed = [g["name"] for g in gs if not _passes(g, less)]
-        assert failed == [gs[n]["name"]] and floor.ladder_missing(less) == [n], (n, failed)
+        assert failed == [gs[n]["name"]] and plan.ladder_missing(less) == [n], (n, failed)
     prose = "The kit's ladder: governance and the firewall, extraction, the oracles and the load map, the all-assembly " \
             "baseline, the compiler pinned by evidence, the census, the multipliers, the codegen map, the campaign, " \
             "publish, readability.\n10 things to do.\n"
-    assert not any(_passes(g, prose) for g in gs) and floor.ladder_missing(prose) == list(range(11))
+    assert not any(_passes(g, prose) for g in gs) and plan.ladder_missing(prose) == list(range(11))
     fixture = (ROOT / "fixtures/PROJECT_CONTEXT.fixture.md").read_text()
     assert not all(_passes(g, fixture) for g in gs)
     last = {g["name"]: g for g in d["graders"] if g.get("target") == "last_message"}
@@ -451,7 +452,7 @@ def test_builds_question_reaches_the_gate():
         text = (ROOT / "scripts" / ("%s.py" % script)).read_text()
         assert "with_firewall_debug(" in text and "[Ss][Yy][Mm]" not in text, script
     usage = (ROOT / "scripts/psxd").read_text()
-    assert "|oracle>" in usage and "psxd oracle record --repo . --dump <dump> " in usage
+    assert "|oracle|plan|trial>" in usage and "psxd oracle record --repo . --dump <dump> " in usage
     assert all(w in usage for w in ("psxd oracle add --repo . --id <id> --path <copy> --expect <sha1>", "psxd oracle list",
                                     "psxd oracle locate --id <id>", "psxd oracle link --id <id> --path <copy>"))
     text = (ROOT / "scripts/oracle.py").read_text()
@@ -470,11 +471,9 @@ def test_builds_question_reaches_the_gate():
     assert all(w in page for w in ("psxd oracle add --repo . --id <id> --path <your copy> --expect <sha1>",
                                    "psxd oracle link --repo . --id <id> --path <your copy>", "psxd oracle locate --repo . --id <id>",
                                    "`disks/builds/<id>/`", "`config/oracle.<id>.sha1`", "`config/oracle.toml`", "The game does not hold it",
-                                   "`symdump`", "`.SYM`, `.CPE`,\n  `.PDB` or `.DBG`"))
-    gate_doc = (ROOT / "profiles/psx/floor.md").read_text().split("## The gate of the floor", 1)[1].split("\n## ", 1)[0]
-    assert "`symdump`" in gate_doc and "64 lines in a row" in gate_doc and floor.SYMDUMP_CAP == 64
-    assert '("symdump", f) for f in symdump_findings(tree)' in (ROOT / "scripts/floor.py").read_text()
-    assert "symdump" in (ROOT / "docs/ECOSYSTEM.md").read_text().split("## Proposed to upstreams", 1)[1]
+                                   "Never commit the text of a symbol file", "`.SYM`, `.CPE`,\n  `.PDB` or `.DBG`"))
+    # no check reads for a symbol dump: the rule is written, and the check is a proposal to the kit (K35)
+    assert "No check of psxdecomp reads for it" in (ROOT / "docs/ECOSYSTEM.md").read_text().split("## Proposed to upstreams", 1)[1]
     doc = fetch_refs.load_doc(ROOT / "profiles/psx/refs.toml")
     rows = {r["name"]: r for r in doc["rows"]}
     assert rows["oracle-build"]["class"] == "byo" and not rows["oracle-build"]["url"]
@@ -487,7 +486,7 @@ def test_builds_question_reaches_the_gate():
     assert any("prototype's symbols speak for the prototype" in t["what"] for t in doc["traps"])
     policy = (ROOT / "docs/REFS.md").read_text().split("## Oracle builds", 1)[1].split("\n## ", 1)[0]
     assert all(w in policy for w in ("`PSXDECOMP_BYO_ORACLE_PATH`", "no disc image", "leaked source code", "byte check",
-                                     "`disks/builds/<id>/`", "`psxdecomp/local.toml`", "no `.env` file", "`symdump`",
+                                     "`disks/builds/<id>/`", "`psxdecomp/local.toml`", "no `.env` file", "No check of psxdecomp reads for it",
                                      "`scripts/oracle.py`", "`docs/ops/psxdecomp-floor.md`", "`common.FIREWALL_DEBUG`"))
     assert "proto-2001-10-30" not in policy and "psxd oracle locate" not in policy   # the mechanism has its homes
     # the check-out rule's five points, where an item is named, and a site that refuses agents
@@ -822,6 +821,11 @@ def test_digests_equal_the_sources():
 
 # ---- the floor (scripts/floor.py, vendored into a game as tools/psxd_floor.py) --------------------------------------
 
+def _plan(*args):
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", **GIT_ENV)
+    return subprocess.run([PY, str(ROOT / "scripts/plan.py"), *map(str, args)], capture_output=True, text=True, env=env)
+
+
 def _floor(*args, cwd=None, stdin=None, env=None):
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", **GIT_ENV, **(env or {}))
     env.pop("CLAUDE_PROJECT_DIR", None)
@@ -836,11 +840,11 @@ def test_floor_is_vendorable():
     text = (ROOT / "scripts/floor.py").read_text()
     mods = set(re.findall(r"^\s*(?:import|from) ([\w.]+)", text, re.M))
     assert mods == {"__future__", "argparse", "bisect", "concurrent.futures", "contextlib", "fnmatch", "hashlib", "io", "json", "os",
-                    "pathlib", "re", "shlex", "shutil", "signal", "subprocess", "sys", "tempfile", "time", "urllib.request"}, mods
+                    "pathlib", "re", "shlex", "signal", "subprocess", "sys", "tempfile", "time", "urllib.request"}, mods
     assert floor.VENDORED == "tools/psxd_floor.py"
     assert floor.VERSION == publish.VERSION == common.plugin_version()          # a game's tool changes only to a later one
     assert _floor("--version").stdout.strip() == floor.VERSION
-    assert len(floor.LADDER) == 11 and [r[0] for r in floor.LADDER] == list(range(11))
+    assert len(plan.LADDER) == 11 and [r[0] for r in plan.LADDER] == list(range(11))
 
 
 def test_vendored_tools_run_alone(tmp_path):
@@ -857,7 +861,7 @@ def test_vendored_tools_run_alone(tmp_path):
     r = alone(floor.VENDORED, "--self-test")
     assert r.returncode == 0 and r.stdout.strip().endswith("SELF-TEST OK"), r.stdout[-600:] + r.stderr[-600:]
     for args in ((publish.VENDORED, "lint", "README.md"), (publish.VENDORED, "style"), (floor.VENDORED, "debt"),
-                 (floor.VENDORED, "plan"), (floor.VENDORED, "names")):
+                 (floor.VENDORED, "names")):
         r = alone(*args)
         assert r.returncode in (0, 1) and "Traceback" not in r.stderr and "Error" not in r.stderr, (args, r.stderr[-400:])
     event = json.dumps({"hook_event_name": "PostToolUse", "tool_name": "Write", "cwd": str(game),
@@ -939,23 +943,22 @@ def test_public_list_holds_the_tools_of_the_public_workflow(tmp_path):
 
 def test_release_gate_runs_the_debt_check(tmp_path):
     """publish.debt_gate: the release gate refuses a tree whose debt baseline is missing or not equal to its source,
-    with the command that updates it. An equal baseline passes, and so does one that holds a row of a file the tree
-    does not publish. A tree without the floor's tool has no such check in its public CI, and passes."""
+    with the command that updates it. An equal baseline passes, and so does a public tree whose totals count a file
+    that it does not publish. A tree without the floor's tool has no such check in its public CI, and passes."""
     tree = _style_repo(tmp_path, {"src/a.c": floor.C_DEBT["goto"][0], floor.VENDORED: (ROOT / "scripts/floor.py").read_text()})
     assert (publish.FLOOR_TOOL, publish.DEBT_BASELINE) == (floor.VENDORED, floor.BASELINE)
     got = publish.debt_gate(tree)
     assert len(got) == 1 and "no %s" % floor.BASELINE in got[0] and publish.PUBLIC_PATHS_REL in got[0], got
     base = floor.first_baseline(tree)
     (tree / floor.BASELINE).parent.mkdir()
-    (tree / floor.BASELINE).write_text(base.replace("1 goto src/a.c\n", ""))
+    (tree / floor.BASELINE).write_text(base.replace("1 goto\n", ""))
     got = publish.debt_gate(tree)
     assert len(got) == 1 and "DEBT CHECK FAIL (1 rise(s)" in got[0] and "`debt --update` rewrites the rows" in got[0], got
     (tree / floor.BASELINE).write_text(base)
     assert publish.debt_gate(tree) == []
     (tree / floor.BASELINE).write_text(base.replace("1 goto", "2 goto"))         # a stale row fails too
-    assert len(publish.debt_gate(tree)) == 1 and "stale goto src/a.c" in publish.debt_gate(tree)[0]
-    (tree / floor.BASELINE).write_text(base + "1 goto src/private.c\n")          # a row of a file that is not published
-    assert len(publish.debt_gate(tree)) == 1                                     # with no public list it is a stale row
+    assert len(publish.debt_gate(tree)) == 1 and "stale goto: 1, its row is 2" in publish.debt_gate(tree)[0]
+    # a public list that names each source file makes the tree public: its row may count a file that it does not hold
     (tree / publish.PUBLIC_PATHS_REL).write_text("src/a.c\nconfig/\ntools/\n")
     run(["git", "-C", tree, "add", publish.PUBLIC_PATHS_REL])
     assert publish.debt_gate(tree) == []
@@ -1042,41 +1045,41 @@ def test_release_workflow_refuses_a_tag_off_main():
 
 
 def test_plan_grammar_cases(tmp_path):
-    """`floor.py plan` on synthetic plans: the ladder as written passes; a slice stands for its phase; a merge with a
+    """`plan.py` on synthetic plans: the ladder as written passes; a slice stands for its phase; a merge with a
     `## Changes` line passes; a dropped phase exits 1 with a `ladder` FAIL; a generation-2 plan reads the ladder from
     the closed generation's record; a line with a lost key exits 1 with a `grammar` FAIL."""
-    repo = _style_repo(tmp_path, {"GENERATION_PLAN.md": floor.self_plan(closed=0)})
-    plan = repo / "GENERATION_PLAN.md"
-    r = _floor("plan", "--repo", repo)
+    repo = _style_repo(tmp_path, {"GENERATION_PLAN.md": plan.self_plan(closed=0)})
+    plan_md = repo / "GENERATION_PLAN.md"
+    r = _plan("--repo", repo)
     assert r.returncode == 0 and r.stdout.endswith("PLAN OK (0 fail, 0 warn)\n"), r.stdout
     assert "PLAN INFO state: generation 1; ladder phases open 0; pending 1,2,3,4,5,6,7,8,9,10\n" in r.stdout, r.stdout
-    slices = [floor._phase("1.8.1", "The campaign, slice 1", milestone="0 stubs", depends="1.7"),
-              floor._phase("1.8.2", "The campaign, slice 2", depends="1.8.1")]
-    plan.write_text(floor.self_plan(closed=0, drop=(8,), extra=slices).replace("depends: 1.8 |", "depends: 1.8.2 |"))
-    assert _floor("plan", "--repo", repo).returncode == 0
-    dropped = floor.self_plan(closed=0, drop=(6,)).replace("depends: 1.6 |", "depends: 1.5 |")
-    plan.write_text(dropped)
-    r = _floor("plan", "--repo", repo)
+    slices = [plan._phase("1.8.1", "The campaign, slice 1", milestone="0 stubs", depends="1.7"),
+              plan._phase("1.8.2", "The campaign, slice 2", depends="1.8.1")]
+    plan_md.write_text(plan.self_plan(closed=0, drop=(8,), extra=slices).replace("depends: 1.8 |", "depends: 1.8.2 |"))
+    assert _plan("--repo", repo).returncode == 0
+    dropped = plan.self_plan(closed=0, drop=(6,)).replace("depends: 1.6 |", "depends: 1.5 |")
+    plan_md.write_text(dropped)
+    r = _plan("--repo", repo)
     assert r.returncode == 1 and "PLAN FAIL ladder: no line 1.6 (The multipliers)" in r.stdout, r.stdout
     assert r.stdout.endswith("PLAN FAIL (1 fail, 0 warn)\n"), r.stdout
-    plan.write_text(dropped + "- 2026-01-02 developer: phases 1.5 and 1.6 merged into 1.5 — a small game\n")
-    assert _floor("plan", "--repo", repo).returncode == 0
-    plan.write_text(floor.self_plan(closed=0).replace(" | scope: s", "", 1))
-    r = _floor("plan", "--repo", repo)
+    plan_md.write_text(dropped + "- 2026-01-02 developer: phases 1.5 and 1.6 merged into 1.5 — a small game\n")
+    assert _plan("--repo", repo).returncode == 0
+    plan_md.write_text(plan.self_plan(closed=0).replace(" | scope: s", "", 1))
+    r = _plan("--repo", repo)
     assert r.returncode == 1 and "PLAN FAIL grammar: line 11 (1.0): no `scope:`" in r.stdout, r.stdout
-    plan.write_text("# Generation 2 — next\n\nGoal: g\nDone-criteria: d\n\n## Phases\n\n%s\n\n## Changes\n"
-                    % floor._phase("2.1", "The round-trip disc"))
-    r = _floor("plan", "--repo", repo)
+    plan_md.write_text("# Generation 2 — next\n\nGoal: g\nDone-criteria: d\n\n## Phases\n\n%s\n\n## Changes\n"
+                    % plan._phase("2.1", "The round-trip disc"))
+    r = _plan("--repo", repo)
     assert r.returncode == 0 and "PLAN WARN ladder: generation 2 and no phase-ends/GenerationEnd_1.md" in r.stdout
     (repo / "phase-ends").mkdir()
     (repo / "phase-ends/GenerationEnd_1.md").write_text("# GenerationEnd\n\n## Phases\n" + "".join(
-        "- 1.%d | %s | milestone: m\n" % (n, name) for n, name, _, _ in floor.LADDER))
-    r = _floor("plan", "--repo", repo)
+        "- 1.%d | %s | milestone: m\n" % (n, name) for n, name, _, _ in plan.LADDER))
+    r = _plan("--repo", repo)
     assert r.returncode == 0 and r.stdout.endswith("PLAN OK (0 fail, 0 warn)\n"), r.stdout
-    plan.unlink()
-    r = _floor("plan", "--repo", repo)
+    plan_md.unlink()
+    r = _plan("--repo", repo)
     assert r.returncode == 0 and r.stdout.startswith("PLAN INFO plan: no GENERATION_PLAN.md"), r.stdout
-    assert _floor("ladder", ROOT / "fixtures/PROJECT_CONTEXT.fixture.md").returncode == 1      # the fixture names two
+    assert _plan("ladder", ROOT / "fixtures/PROJECT_CONTEXT.fixture.md").returncode == 1      # the fixture names two
 
 
 def test_debt_kinds(tmp_path):
@@ -1087,42 +1090,31 @@ def test_debt_kinds(tmp_path):
     repo = _style_repo(tmp_path, files)
     bl = floor.parse_baseline(floor.first_baseline(repo))
     want = {(k, "src/%s.c" % kind): n for kind, (_, got) in floor.C_DEBT.items() for k, n in got.items()}
-    assert bl.rows == want and bl.skip == [] and len(bl.head) == len(floor.BASELINE_HEAD), bl.rows   # no stub header here: no skip line
-    assert {k for k, _ in bl.rows} == set(floor.KINDS) - {"unbased", "filename", "flag", "reservation"} and not bl.lacks()
+    assert bl.totals == {k: n for k, n in floor._kind_totals(want).items() if n} and bl.skip == [] and len(bl.head) == len(floor.BASELINE_HEAD), bl.totals   # no stub header here: no skip line
+    assert set(bl.totals) == set(floor.KINDS) - {"filename"} and not bl.lacks() and not bl.by_file
     assert bl.summary() == "down: pin-unmarked, goto-unmarked, barrier-unmarked, asm; count: pin, goto, barrier, " \
-                           "offset, address, cast, field, macro, placeholder, placeholder-use, unbased, struct, extern, " \
-                           "filename, flag, reservation"
+                           "offset, address, cast, field, placeholder, placeholder-use, struct, extern, filename"
     (repo / "config").mkdir()
     (repo / floor.BASELINE).write_text(floor.first_baseline(repo))
     r = _floor("debt", "--repo", repo)
     assert r.returncode == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); down: pin-unmarked" in r.stdout, r.stdout
-    _floor("names", "--init", "--repo", repo)                           # the ledger exists: every other name is unbased
-    r = _floor("debt", "--repo", repo)
-    assert r.returncode == 1 and "DEBT FAIL rise unbased src/clean.c: 1, its row is 0\n" in r.stdout, r.stdout
 
 
-def test_debt_bodies(tmp_path):
+def test_debt_bodies():
     """The counts by function body: on every C fixture of this repository the sum of a file's bodies is its count,
-    each file of the corpus is one body, and a pin, a goto and an offset read never fall outside a body.
-    `debt --bodies` prints the buckets of a revision as well."""
+    each file of the corpus is one body, and a pin, a goto and an offset read never fall outside a body."""
     files = sorted((ROOT / "fixtures").glob("**/*.c")) + sorted((ROOT / "fixtures").glob("**/*.h"))
     assert len(files) > 100
     for f in files:
         text, total = f.read_text(), {}
-        bodies = floor.file_bodies("src/t.c", text, based=set())
+        bodies = floor.file_bodies("src/t.c", text)
         for got in bodies.values():
             for kind, n in got.items():
                 total[kind] = total.get(kind, 0) + n
-        assert total == floor.file_debt("src/t.c", text, based=set()), f
+        assert total == floor.file_debt("src/t.c", text), f
         assert not set(bodies.get(floor.SCOPE, {})) & {"pin", "pin-unmarked", "goto", "offset", "asm"}, (f, bodies)
         if f.suffix == ".c":
             assert len([n for n in bodies if n != floor.SCOPE]) == 1, (f, sorted(bodies))
-    repo = _style_repo(tmp_path, {"src/a.c": floor.C_BODIES["two plain bodies"][0]})
-    (repo / "src/a.c").write_text(floor.C_CLEAN)
-    r = _floor("debt", "--bodies", "--rev", "HEAD", "--repo", repo)
-    assert r.returncode == 0 and "DEBT BODY src/a.c A: offset 1\nDEBT BODY src/a.c B: goto 1\n" in r.stdout, r.stdout
-    assert "DEBT BODIES 1 file(s), 2 function bodies, 2 with debt, 0 count(s) at file scope" in r.stdout
-    assert "DEBT BODIES 1 file(s), 1 function bodies, 0 with debt" in _floor("debt", "--bodies", "--repo", repo).stdout
 
 
 def _stubs(*names):
@@ -1178,7 +1170,7 @@ def test_gate_modes(tmp_path):
     (side / "src/stubs.c").write_text(_stubs())
     git("add", "-A", cwd=side)
     r = _floor("gate", "--bank", "--repo", side)                                 # the bank writes the rows of the new file
-    assert r.returncode == 0 and "1 goto src/b.c\n" in (side / floor.BASELINE).read_text(), r.stdout
+    assert r.returncode == 0 and "2 goto\n" in (side / floor.BASELINE).read_text(), r.stdout
     git("commit", "-qam", "a new body on the side", cwd=side)
     # a merge: both sides added a body and a row
     (repo / "src/c.c").write_text(floor.C_DEBT["goto"][0].replace("Walk", "Jump"))
@@ -1195,7 +1187,7 @@ def test_gate_modes(tmp_path):
     assert r.returncode != 0 and refusal in r.stdout + r.stderr, r.stdout + r.stderr
     (repo / "src/a.c").write_text(floor.C_DEBT["goto"][0])
     r = _floor("debt", "--update", "--repo", repo)
-    assert r.returncode == 0 and "1 goto src/b.c\n" in (repo / floor.BASELINE).read_text(), r.stdout
+    assert r.returncode == 0 and "3 goto\n" in (repo / floor.BASELINE).read_text(), r.stdout
     git("add", "-A")
     git("commit", "-qm", "the merge")
     assert len(git("rev-list", "--parents", "-n", "1", "HEAD").stdout.split()) == 3
@@ -1306,7 +1298,7 @@ def test_debt_against_rev(tmp_path):
     `debt --against` prints what differs from a revision. `style --against` judges the prose by the ratchet, the
     `skip` lines and the public list of the revision: a raised row, a new `skip` line and a file that left the public
     list change nothing."""
-    files = {"src/a.c": floor.C_DEBT["goto"][0], "src/m.c": floor.C_DEBT["macro"][0],
+    files = {"src/a.c": floor.C_DEBT["goto"][0], "src/m.c": floor.C_DEBT["struct"][0],
              "src/o.c": "s32 Walk(void *p) {\n    return HP(p);\n}\n",
              "include/h.h": "#define HP(p) \\\n    (*(s16 *)((u8 *)(p) + 0x10))\n",
              "README.md": "# G\n\nOne; two.\n", "docs/a.md": "Clean.\n",
@@ -1314,7 +1306,7 @@ def test_debt_against_rev(tmp_path):
     repo = _style_repo(tmp_path, files)
     debt = lambda *a: _floor("debt", "--repo", repo, *a)  # noqa: E731
     totals = lambda r: re.search(r"totals: ([^(]+) \(", r.stdout)[1]  # noqa: E731
-    want = "goto 1, offset 2, macro 3"
+    want = "goto 1, offset 2, struct 1"
     assert [totals(debt()), totals(debt("--staged")), totals(debt("--rev", "HEAD"))] == [want] * 3
     assert "counted in the index" in debt("--staged").stdout and "counted in HEAD" in debt("--rev", "HEAD").stdout
     run(["git", "-C", repo, "config", "core.autocrlf", "true"])                 # a Windows checkout of the same commit
@@ -1332,7 +1324,7 @@ def test_debt_against_rev(tmp_path):
     assert "0 finding(s) against HEAD" in r.stdout, r.stdout
     assert totals(debt("--staged")) == want                                     # not added yet
     run(["git", "-C", repo, "add", "src/a.c"])
-    assert totals(debt("--staged")) == "goto 2, offset 2, macro 3" and totals(debt("--rev", "HEAD")) == want
+    assert totals(debt("--staged")) == "goto 2, offset 2, struct 1" and totals(debt("--rev", "HEAD")) == want
     assert debt("--staged", "--update").returncode == 1 and debt("--rev", "nowhere").returncode == 1
     # the ratchet of the change cannot admit what the base's ratchet refuses
     (repo / "README.md").write_text("# G\n\nOne; two; three.\n")
@@ -1390,24 +1382,24 @@ def test_debt_baseline_command(tmp_path):
     assert r.returncode == 1 and "DEBT FAIL no %s" % floor.BASELINE in r.stdout, r.stdout
     assert debt("--update").returncode == 1 and not base.exists()
     r = debt("--recount")
-    assert r.returncode == 0 and "DEBT RECOUNT written" in r.stdout and base.read_text().endswith("1 goto src/a.c\n")
+    assert r.returncode == 0 and "DEBT RECOUNT written" in r.stdout and base.read_text().endswith("1 goto\n")
     first = base.read_text()
-    assert "mode pin-unmarked down\n" in first and "mode pin count\n" in first and "mode unbased count\n" in first
+    assert "mode pin-unmarked down\n" in first and "mode pin count\n" in first and "mode filename count\n" in first
     assert debt().returncode == 0
     run(["git", "-C", repo, "add", "-A"])
     run(["git", "-C", repo, "-c", "commit.gpgsign=false", "commit", "-qm", "the baseline"])
     (repo / "src/a.c").write_text(more)
     r = debt()
-    assert r.returncode == 1 and "DEBT FAIL rise goto src/a.c: 2, its row is 1\n" in r.stdout, r.stdout
+    assert r.returncode == 1 and "DEBT FAIL rise goto: 2, its row is 1\n" in r.stdout, r.stdout
     r = debt("--update", "--admit")
     assert r.returncode == 2 and "unrecognized arguments: --admit" in r.stderr and base.read_text() == first, r.stderr
     r = debt("--update")                                                        # a counted kind: the row follows the tree
-    assert r.returncode == 0 and "DEBT INFO goto src/a.c: 1 -> 2\n" in r.stdout and debt("--against", "HEAD").returncode == 0, r.stdout
+    assert r.returncode == 0 and "DEBT INFO goto: 1 -> 2\n" in r.stdout and debt("--against", "HEAD").returncode == 0, r.stdout
     base.write_text(first)
     (repo / "src/a.c").write_text(floor.C_DEBT["goto-unmarked"][0])
     r = debt("--update")
     assert r.returncode == 1 and refusal in r.stdout and "DEBT UPDATE refused" in r.stdout and base.read_text() == first, r.stdout
-    base.write_text(first.replace("1 goto src/a.c", "1 goto src/a.c\n1 goto-unmarked src/a.c"))   # the row written by hand
+    base.write_text(first.replace("1 goto\n", "1 goto\n1 goto-unmarked\n"))   # the row written by hand
     assert debt().returncode == 0
     r = debt("--against", "HEAD")
     assert r.returncode == 1 and refusal in r.stdout, r.stdout
@@ -1432,7 +1424,7 @@ def test_debt_baseline_command(tmp_path):
     assert r.returncode == 0 and "goto-unmarked is over by 1: the change's `raise` line(s) allow 3" in r.stdout, r.stdout
     (repo / "src/a.c").write_text(floor.C_CLEAN)
     r = debt()
-    assert r.returncode == 1 and "DEBT FAIL stale goto src/a.c: 0, its row is 1" in r.stdout, r.stdout
+    assert r.returncode == 1 and "DEBT FAIL stale goto: 0, its row is 1" in r.stdout, r.stdout
     assert debt("--down", "goto").returncode == 1 and debt("--update").returncode == 0 and debt("--down", "goto").returncode == 0
     assert "mode goto down\n" in base.read_text()
 
@@ -1536,16 +1528,16 @@ def test_guard_profile_files():
 
 
 def test_floor_doc_names_the_ladder():
-    """profiles/psx/floor.md is the one home of the numbering: its table holds floor.LADDER row for row (the id 1.n,
+    """profiles/psx/floor.md is the one home of the numbering: its table holds plan.LADDER row for row (the id 1.n,
     the kit's name, the words the milestone keeps), it starts with "After the bootstrap", and it documents every plan
     check and every guard column."""
     doc = (ROOT / "profiles/psx/floor.md").read_text()
-    for n, name, _, must in floor.LADDER:
+    for n, name, _, must in plan.LADDER:
         assert "| 1.%d | %s | %s|" % (n, name, "`%s` " % must if must else "") in doc, n
     heads = [l[3:] for l in doc.splitlines() if l.startswith("## ")]
     assert heads[:2] == ["After the bootstrap", "Numbering"], heads
     for check in ("grammar", "ladder", "numbering", "frozen", "criteria", "paths", "markers"):
-        assert "| `%s` | " % check in doc and "  %s " % check in floor.__doc__, check
+        assert "| `%s` | " % check in doc and "  %s " % check in plan.__doc__, check
     assert all("| `%s` |" % c in doc for c in floor.GUARD_COLUMNS)
     import upgrade
     assert all("| `%s` |" % k in doc for k in upgrade.OWN_KEYS)
@@ -1570,7 +1562,8 @@ def test_readability_rule_files():
         assert publish.lint_style("# %s — %s\n" % (rid, row[2])) == [], (rid, publish.lint_style("# %s — %s\n" % (rid, row[2])))
     assert "`python3 %s debt`" % floor.VENDORED in fin and floor.BASELINE in fin
     name = (ROOT / "profiles/psx/rules/NAME1.md").read_text()
-    assert all("| `%s` |" % c in name for c in floor.EVIDENCE) and floor.NAMES in name
+    assert floor.NAMES in name and "| `oracle` | another build of the game, after a byte check of the function at both addresses" in name
+    assert "| `debug-symbol` | a symbol of a debug file of the target build itself |" in name
     doc = (ROOT / "profiles/psx/floor.md").read_text()
     assert all("| `%s` |" % k in doc for k in floor.KINDS)
     assert "`%s`" % " ".join(floor.NAME_COLUMNS) in doc and "`%s`" % " ".join(floor.ASM_COLUMNS) in doc
@@ -1641,7 +1634,7 @@ def test_readme_workflow_names_the_ladder():
     stages = re.findall(r"(?m)^\d\. \*\*(\w+) \(1\.(\d+)(?: to 1\.(\d+))?\)\.\*\*", section)
     assert [s[0] for s in stages] == ["Foundation", "Compiler", "Instruments", "Campaign", "Publication", "Readability"]
     covered = [n for _, a, b in stages for n in range(int(a), int(b or a) + 1)]
-    assert covered == [n for n, _, _, _ in floor.LADDER], covered
+    assert covered == [n for n, _, _, _ in plan.LADDER], covered
     assert "(profiles/psx/floor.md#numbering)" in section and "## Numbering" in (ROOT / "profiles/psx/floor.md").read_text()
     assert "A matched function is not a finished one." in section and "```mermaid" in section
 

@@ -9,7 +9,7 @@ committed.
   reached through a pinned register, a `goto`, an offset cast or a type of its own, or the same masked words through
   another symbol or a bare address.
 - `trial/<id>/pinned.c` is one function that matches itself with two register pins. The match needs one of them.
-  The trial tool of the floor (`scripts/floor.py trial`) must drop the other one, and keep and mark the first.
+  The trial tool (`scripts/trial.py`) must drop the other one, and keep and mark the first.
 - `probe.py` compiles and compares: words with relocated fields masked, and then the relocations themselves, which
   the mask hides. `lint.py` finds the constructs the twins are made of. `corpus.py check` is tier 5a: every truth
   matches itself, every mutant fails, every twin matches and is flagged, no truth is flagged.

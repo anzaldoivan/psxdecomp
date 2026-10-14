@@ -92,7 +92,7 @@ Do not name a compiler defect as a blocker without a small file that reproduces 
 6. Change one thing for each attempt, and record its score.
 7. Stop at the budget: 20 minutes, or ten attempts in a row with no better score.
 8. On a match, move the function into `src/` and run the acceptance gate.
-9. Run `python3 tools/psxd_floor.py trial <file>`. It removes each pin that the match does not need.
+9. With a probe, run `python3 tools/psxd_trial.py <file>`. It removes each pin that the match does not need.
 10. Run `python3 tools/psxd_floor.py gate --bank` before the commit that banks the function.
 11. With no match, write the give-up report and keep the best draft in the sandbox.
 12. Never weaken a gate to pass it, and never bank on a build that you did not run.

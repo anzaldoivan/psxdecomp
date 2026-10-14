@@ -103,12 +103,12 @@ def test_s10_writes_the_deny_rules_and_doctor_checks_them(game, tmp_path):
 
 
 def test_ladder_matches_kit(kit):
-    """floor.LADDER is the pinned kit's ladder: each phase's name is in row n of the ladder table of intake.decomp.md,
+    """plan.LADDER is the pinned kit's ladder: each phase's name is in row n of the ladder table of intake.decomp.md,
     its name words match that name, and each required milestone word is in row n of that table or of the
     `verified by` table. The kit's own table names all eleven phases."""
     import pathlib
 
-    import floor
+    import plan
     part = (pathlib.Path(kit) / "intake.decomp.md").read_text().split("## Part B", 1)[1].split("\n## Part C", 1)[0]
     rows = {}
     for line in part.splitlines():
@@ -116,10 +116,10 @@ def test_ladder_matches_kit(kit):
         if m:
             rows.setdefault(int(m[1]), []).append(m[2])
     assert sorted(rows) == list(range(11)) and all(len(v) == 2 for v in rows.values()), sorted(rows)
-    for n, name, words, must in floor.LADDER:
+    for n, name, words, must in plan.LADDER:
         assert name in rows[n][0] and re.search(words, name, re.I), (n, name)
         assert not must or must in " ".join(rows[n]), (n, must)
-    assert floor.ladder_missing(part) == []
+    assert plan.ladder_missing(part) == []
 
 
 def test_roadmap_row_waits_before_the_plan(game):
@@ -258,7 +258,7 @@ def test_s10_writes_the_guard_beside_the_style_hook(game, tmp_path):
     assert re.search(r"DOCTOR publish-tool\s+OK\s+5 owned file\(s\)", r.stdout), r.stdout
     assert (game / upgrade.CAMPAIGN_DOC).read_bytes() == (ROOT / "profiles/psx/campaign.md").read_bytes()
     assert not (game / upgrade.MATCHER_SKILL).exists() and not (game / "config/bank.tsv").exists()
-    assert run([PY, floor.VENDORED, "plan"], cwd=game).stdout.startswith("PLAN INFO plan: no GENERATION_PLAN.md")
+    assert run([PY, ROOT / "scripts/plan.py", "--repo", game]).stdout.startswith("PLAN INFO plan: no GENERATION_PLAN.md")
 
     def hook(repo, **inp):
         event = {"hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": inp, "cwd": str(repo)}
@@ -283,8 +283,8 @@ def test_s10_writes_the_debt_baseline_and_debt_passes(game):
     a source file gains a `goto`."""
     import floor
     bl = floor.parse_baseline((game / floor.BASELINE).read_text())
-    assert (bl.rows, bl.skip, bl.version, bl.lacks()) == ({}, [], 2, []), vars(bl)             # no stub header yet: no skip line
-    assert bl.policy("pin-unmarked") == "down" and bl.policy("pin") == "count" and bl.policy("unbased") == "count", vars(bl)
+    assert (bl.totals, bl.skip, bl.version, bl.lacks()) == ({}, [], 2, []), vars(bl)             # no stub header yet: no skip line
+    assert bl.policy("pin-unmarked") == "down" and bl.policy("pin") == "count" and bl.policy("placeholder") == "count", vars(bl)
     assert (game / floor.NAMES).read_text() == "\t".join(floor.NAME_COLUMNS) + "\n"
     assert (game / floor.ASM_EVIDENCE).read_text() == "\t".join(floor.ASM_COLUMNS) + "\n"
     for rid in ("FIN1", "NAME1"):
@@ -304,9 +304,7 @@ def test_s10_writes_the_debt_baseline_and_debt_passes(game):
         src.write_text(floor.C_DEBT["goto"][0])
         run(["git", "-C", game, "add", "-f", "src/probe.c"])
         r = run([PY, floor.VENDORED, "debt"], cwd=game, check=False)
-        assert r.returncode == 1 and "DEBT FAIL rise goto src/probe.c: 1, its row is 0\n" in r.stdout, r.stdout
-        r = run([PY, floor.VENDORED, "debt"], cwd=game, check=False)
-        assert "DEBT FAIL rise unbased src/probe.c: 1, its row is 0\n" in r.stdout, r.stdout   # the ledger exists
+        assert r.returncode == 1 and "DEBT FAIL rise goto: 1, its row is 0\n" in r.stdout, r.stdout
     finally:
         run(["git", "-C", game, "rm", "-q", "-f", "--cached", "src/probe.c"])
         src.unlink()
@@ -332,17 +330,13 @@ def test_fresh_game_passes_its_gate(game):
         assert r.returncode == 1 and "GATE FAIL debt: pin-unmarked is `down` and its total rose: 0 -> 1" in r.stdout, r.stdout
     finally:
         src.unlink()
-    ledger = game / floor.NAMES                                  # a names row that points at nothing is a warning, never a failure
+    ledger = game / floor.NAMES                                  # a names row is the game's record: no check opens it
     head = ledger.read_text()
     try:
         ledger.write_text(head + "function\tmain\t\t\tPlayer_Hp\taccepted\tstring:src/gone.c:4\tits string\n")
-        r = run([PY, floor.VENDORED, "names"], cwd=game, check=False)
-        assert r.returncode == 0 and "NAMES WARN %s: line 2: the evidence of Player_Hp points at nothing: src/gone.c is no " \
-            "file of this tree" % floor.NAMES in r.stdout, r.stdout
-        assert "Player_Hp is accepted as a function, and the source defines no such function" in r.stdout
         run(["git", "-C", game, "add", floor.NAMES])
         r = gate("--staged")
-        assert r.returncode == 0 and "GATE WARN names: %s: line 2: the evidence of Player_Hp points at nothing" % floor.NAMES in r.stdout, r.stdout
+        assert (r.returncode, r.stdout) == (0, "GATE OK (staged)\n"), r.stdout
     finally:
         ledger.write_text(head)
         run(["git", "-C", game, "add", floor.NAMES])
@@ -352,7 +346,7 @@ def test_fresh_game_passes_its_gate(game):
 def test_a_matched_function_is_committed_and_pushed_under_any_name(game, tmp_path):
     """No check asks for a name. In a clone of the game with its git hooks, three functions are committed and pushed:
     one under its address name, one under a guessed name with no row, one under a name with a `provisional` row. The
-    baseline's rows show them (`placeholder`, `unbased`), and neither the commit hook nor the push hook refuses."""
+    baseline's rows show the address name (`placeholder`), and neither the commit hook nor the push hook refuses."""
     import floor
     clone, remote = tmp_path / "clone", tmp_path / "remote.git"
     git = lambda *a, check=True: run(["git", "-C", clone, "-c", "user.name=t", "-c", "user.email=t@example.invalid",  # noqa: E731
@@ -372,9 +366,9 @@ def test_a_matched_function_is_committed_and_pushed_under_any_name(game, tmp_pat
         f.write("function\tmain\t\tfunc_80012400\tEnemy_Walk\tprovisional\thuman:src/names.c:9\tit moves the enemy; one source\n")
     git("add", "-f", "src/names.c", floor.NAMES)
     r = run([PY, floor.VENDORED, "gate", "--bank"], cwd=clone, check=False)
-    assert r.returncode == 0 and "the rows of now written" in r.stdout, r.stdout + r.stderr
+    assert r.returncode == 0 and "the totals of now written" in r.stdout, r.stdout + r.stderr
     rows = (clone / floor.BASELINE).read_text()
-    assert "1 placeholder src/names.c\n" in rows and "2 unbased src/names.c\n" in rows, rows
+    assert "1 placeholder\n" in rows, rows
     git("add", "-A")
     r = git("commit", "-qm", "three functions that match, named as far as anyone knows", check=False)
     assert r.returncode == 0, r.stdout + r.stderr
@@ -384,27 +378,30 @@ def test_a_matched_function_is_committed_and_pushed_under_any_name(game, tmp_pat
 
 
 def test_trial_in_a_game(game):
-    """The trial tool in a bootstrapped game, with a probe that stands for the game's own. `trial` drops the pin
-    that the match does not need and marks the other one. It writes no ledger: the marker is the record."""
+    """The trial tool in a bootstrapped game, with a probe that stands for the game's own. The game has no trial tool
+    until its record names `[trial] probe`: then /psxdecomp:upgrade writes tools/psxd_trial.py (`trial-tool`). The
+    tool drops the pin that the match does not need and marks the other one. It writes no ledger: the marker is the
+    record."""
     import floor
-    assert not (game / "config/trials.tsv").exists()
-    record, src, probe = game / floor.RECORD, game / "src/sum.c", game / ".run/probe.py"
+    import trial
+    record, src, probe, tool = game / floor.RECORD, game / "src/sum.c", game / ".run/probe.py", game / "tools/psxd_trial.py"
     kept = record.read_text()
-    trial = lambda *a: run([PY, floor.VENDORED, "trial", *a], cwd=game, check=False)  # noqa: E731
+    assert not tool.exists() and "trial-tool" not in run([PY, ROOT / "scripts/upgrade.py", "plan", "--repo", game]).stdout
     try:
         src.parent.mkdir(exist_ok=True)
-        src.write_text(floor.C_TRIAL)
-        assert "no [trial] probe" in trial("src/sum.c").stdout
+        src.write_text(trial.C_TRIAL)
         probe.write_text("import sys\nsys.exit(0 if 'asm(\"$16\")' in open(sys.argv[1]).read() else 1)\n")
         record.write_text(kept + "\n[trial]\nprobe = '%s .run/probe.py'\n" % PY)
-        r = trial("src/sum.c")
-        assert r.returncode == 0 and "TRIAL OK (1 function(s), 3 tried, 2 removed, 1 kept; 6 probe(s))" in r.stdout, r.stdout
+        r = run([PY, ROOT / "scripts/upgrade.py", "apply", "--repo", game])
+        assert "created tools/psxd_trial.py" in r.stdout and tool.read_bytes() == (ROOT / "scripts/trial.py").read_bytes(), r.stdout
+        r = run([PY, tool, "src/sum.c"], cwd=game, check=False)
+        assert r.returncode == 0 and "TRIAL OK (1 function(s), 3 tried, 2 removed, 1 kept; 6 probe(s))" in r.stdout, r.stdout + r.stderr
         text = src.read_text()
         assert "// !FAKE: pin:$16:i: " in text and "$17" not in text and "__asm__" not in text and "    register s32 t = 0;" in text, text
         assert floor.file_debt("src/sum.c", text) == {"pin": 1} and not (game / "config/trials.tsv").exists()
     finally:
         record.write_text(kept)
-        for f in (src, probe):
+        for f in (src, probe, tool):
             f.unlink(missing_ok=True)
     assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
 
@@ -782,27 +779,6 @@ def test_audit_refuses_a_listing_of_any_build(game, tmp_path):
     r = _audit(repo)
     assert r.returncode == 1 and "OFFENDER docs/proto-notes.txt: disassembly-shaped content: 70 contiguous lines (cap 64)" in \
         r.stdout + r.stderr, r.stdout + r.stderr
-
-
-def test_gate_refuses_a_staged_symbol_dump(game, tmp_path):
-    """The audit's rules see no symbol dump that a tool wrote as text: no path rule, no hash, no listing shape. The
-    game's own gate does. A staged text file with 70 lines of a PsyQ symbol dump fails `gate --staged` on `symdump`,
-    and the audit passes the same tree. With 60 lines the check is silent."""
-    repo = _copy(game, tmp_path)
-    line = ("000008: $80010000 1 __SN_ENTRY_POINT\n", "00001d: $00000000 94 Def class TPDEF type UCHAR size 0 name u_char\n")
-    dump = lambda n: "Header : MND version 1\nTarget unit 0\n" + "".join(line[i % 2] for i in range(n))  # noqa: E731
-
-    def gate():
-        run(["git", "-C", repo, "add", "-f", "docs/proto-symbols.txt"])
-        return run([PY, "tools/psxd_floor.py", "gate", "--staged"], cwd=repo, check=False)
-
-    (repo / "docs/proto-symbols.txt").write_text(dump(70))
-    r = gate()
-    assert r.returncode == 1 and "GATE FAIL symdump: docs/proto-symbols.txt: 70 lines in a row have the shape of a PsyQ symbol " \
-        "dump (cap 64)" in r.stdout, r.stdout + r.stderr
-    assert _audit(repo).returncode == 0                                          # what the audit alone lets through
-    (repo / "docs/proto-symbols.txt").write_text(dump(60))
-    assert "symdump" not in gate().stdout
 
 
 def test_s10_records_the_disc_scan(game):

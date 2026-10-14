@@ -2,7 +2,7 @@
 
 ## Before a change
 
-- Tier 0: `pytest -q tests/test_static.py tests/test_scripts.py` (free, no network beyond `claude plugin validate`).
+- Tier 0: `pytest -q tests/test_static.py tests/test_scripts.py tests/test_floor.py` (free, no network beyond `claude plugin validate`).
 - Tier 1: `pytest -q tests/test_pipeline.py tests/test_split_e2e.py`. It fetches the kit at its `compat.toml` pin; `PSXDECOMP_KIT` points it
   at a local copy instead. CI runs it the same way.
 - CI (`.github/workflows/ci.yml`) runs tier 0 on Linux and macOS with Python 3.12 and 3.14, tier 1 on Linux, and
