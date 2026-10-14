@@ -84,10 +84,14 @@ Options: `none`, `I'll paste a path`, `not using it` (the developer types the re
   Write its class into `PSXDECOMP_BYO_ORACLE_CLASS`: `region`, `prototype`, `review`, `debug`, `demo`, `port`,
   `revision` or `sibling`. The dump's own path needs none of the three.
 - With a path, write the SHA-1 values that the build's page states into `PSXDECOMP_BYO_ORACLE_SHA1`, separated by
-  spaces. S10 hashes the copy before anything else reads it, and it refuses a copy where no file has a stated hash.
+  spaces. S10 hashes the copy before it records anything from it, and it refuses a copy where no file has a stated hash.
   A page that states no hash: leave the key out, and say so in the row.
+- With a path, run `"$PSXD" oracle measure --id <id> --path <the path> --dump <DUMP_PATH>`. It prints one
+  `ORACLE measure` line: the share of the target's executable that the build holds, and the floors. The class stays
+  the one that the page states.
 - Write the answer into the lead's row of `prior-art.md`: `byo path given`, `no copy`, or `rejected` with the reason.
-  The row holds the build's id, its page and the stated hashes.
+  The row holds the build's id, its page and the stated hashes. With a path, it also holds the measure command, its
+  date and its line (the form of `report-template.md`, L3).
 
 When neither place has a row, ask nothing. Say it in one line, with the searches that ran:
 

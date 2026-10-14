@@ -3,6 +3,7 @@
   "files": {
     ".github/workflows/psxdecomp-readme.yml": "e9d3f804fafd86930432b25af7c83f54f21fb81929750f5e84cec680585dfb35",
     "tools/psxd_floor.py": "5273a8d6193058b749a82f9e12f3654ce74ddd206109a0ba334d3d61592fea74",
+    "tools/psxd_img.py": "bdf2bc1b413b99d74af2be75ecb7c18acda84dad7f7cb02eeb206cde8435ff46",
     "tools/psxd_publish.py": "a51fdae0b7509591d72f0799ca7d99bf2bbd4b909e6fd8f0e512b3bcf47d54b1"
   }
 }

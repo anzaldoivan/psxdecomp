@@ -3,6 +3,7 @@
 #   psxd preflight --target .     psxd identify <dump>     psxd install stage S5     psxd fetch_refs --lint
 #   psxd oracle record --repo . --dump <dump>     psxd oracle add --repo . --id <id> --path <copy> --expect <sha1>
 #   psxd oracle list     psxd oracle locate --id <id>     psxd oracle link --id <id> --path <copy>
+#   psxd oracle measure --id <id> --path <copy> --dump <dump>
 # The interpreter: $CLAUDE_PLUGIN_OPTION_PYTHON_PATH, else the newest python3.N on PATH, else python3.
 here=$(cd "$(dirname "$0")" && pwd)
 name=$1; shift 2>/dev/null

@@ -228,6 +228,7 @@ tools/pa3_update.py
 tools/phaseend_index.py
 tools/plan_edit.py
 tools/psxd_floor.py
+tools/psxd_img.py
 tools/psxd_publish.py
 tools/research_add.py
 tools/rules_add.py

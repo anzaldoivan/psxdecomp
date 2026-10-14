@@ -4,6 +4,8 @@ A name is a claim about what the code does. A byte-identical build proves the be
    that matches is banked and pushed under the name it has: no check asks for a name. A wrong name is debt.
 2. Record the name in `config/names.tsv` in the commit that uses it. `python3 tools/psxd_floor.py names` checks the file.
 3. Give the evidence as `<class>:<path>:<line>`. The line must show the fact to a reader who opens the file.
+   For `string`, you can cite a line of `config/oracle.strnames.tsv`. `python3 tools/psxd_img.py show <key>` prints
+   the text of its key.
 4. Use `provisional` for a name that one source supports. Use `accepted` when a person or a second source agrees.
 5. Mark a name that proved wrong as `rejected`, and write the reason. Do not use that name again.
 6. Give an SDK function the exact name of its library signature. Do not invent a name for it.

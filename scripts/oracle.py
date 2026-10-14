@@ -6,6 +6,7 @@
     oracle.py list   [--repo R]
     oracle.py locate --id ID [--repo R]
     oracle.py link   --id ID --path P [--repo R]
+    oracle.py measure --id ID [--path P] [--dump D] [--repo R] [--dry-run]
     oracle.py --self-test
 
 An oracle build is another build of the game's program that carries more than the target: symbols, a link map
@@ -43,6 +44,15 @@ and git ignores (`disks/builds/<id>/` is the home). Any other path inside is ref
 build is not on this machine. `link` registers a copy on another machine: a file of the copy must have a stated hash
 of the build, or (a build with none) a hash of its committed checksum file.
 
+`measure` maps the build's executable onto the dump's (scripts/img.py, the core that games hold as
+tools/psxd_img.py) and prints one line: the share of the dump's executable words that the build holds, the runs, and
+the strings that the build has and the dump lacks, with the floors of the method (docs/REFS.md, "Oracle builds"). A
+share is a measure, never a class. `--path` (default: the registered copy) is the executable, a disc image or a folder;
+`--dump` (default: the registered dump) the same for retail. It writes `.run/bootstrap/oracle/<id>.measure.tsv` (keys
+and addresses) and `<id>.strings.txt` (the text, ignored), and `measured` in the build's table when config/oracle.toml
+holds the id. `--id retail` scans the dump's executable alone: the functions that load a string, the references, and
+whether a text is Shift-JIS.
+
 `build_items` reads the `build` identifiers of a scout report's table `## archive.org items`: S10 refuses to commit
 a file that holds one. After `add`, tools/audit_public.py runs: exit 1 when it fails.
 """
@@ -63,6 +73,7 @@ import tomllib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common  # noqa: E402
 import identify  # noqa: E402
+import img  # noqa: E402
 
 RECORD = "config/psxdecomp.toml"
 BUILDS = "config/oracle.toml"
@@ -77,7 +88,7 @@ BUILDS_HEAD = ("# %s: the other builds of this game that a developer supplied (p
                "# table per build id, and one checksum file each (config/oracle.<id>.sha1). `expect`: the SHA-1 values that\n"
                "# the build's page states. `image`: the file that doctor looks for in a registered copy. No byte and no path\n"
                "# of a build is here: a path lies in the git directory of each clone (`psxd oracle list`).\n" % BUILDS)
-BUILD_KEYS = ("id", "class", "carries", "page", "expect", "checked", "files", "matched", "image", "image_size")
+BUILD_KEYS = ("id", "class", "carries", "page", "expect", "checked", "files", "matched", "image", "image_size", "measured")
 CLASSES = ("region", "prototype", "review", "debug", "demo", "port", "revision", "sibling")
 CAP = 50 << 20                                   # the audit refuses a tracked file over 50 MiB whatever it holds
 IMAGE_EXT = (".cue", ".bin", ".iso", ".img")
@@ -86,6 +97,8 @@ ADD_COMMAND = "psxd oracle add --repo . --id <id> --path <path> --expect <sha1>"
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 RETAIL = "retail"                                # the id of the dump: `locate --id retail`
+MEASURED = ".run/bootstrap/oracle"
+FLOORS = "floor: an unrelated PsyQ game maps 22-25%, a sister game 64-65%"   # docs/REFS.md, "Oracle builds"
 ITEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{4,}$")       # an archive.org identifier; the header row is not one
 
 
@@ -432,6 +445,110 @@ def link(repo, bid: str, path) -> str:
     return "%s: %s; path registered for this clone" % (bid, how)
 
 
+def image_exe(path: pathlib.Path, probe) -> bytes:
+    """The boot executable of a disc image (its SYSTEM.CNF), read as S2 reads it."""
+    try:
+        cue = path.suffix.lower() == ".cue"
+        tracks = probe.parse_cue(str(path)) if cue else [{"number": 1, "mode": "", "file": str(path), "index01": 0}]
+        trk = probe.DataTrack(tracks[0]["file"], tracks[0]["mode"], probe.toc(tracks)[0]["start"] if cue else 0)
+    except (ValueError, OSError, KeyError, IndexError, TypeError) as e:
+        raise common.Fail("%s: no data track (%s)" % (path, e))
+    try:
+        files = probe.iso_files(trk)[0]
+        cnf = probe.find_file(files, "SYSTEM.CNF")
+        boot = cnf and probe.find_file(files, probe.parse_system_cnf(
+            trk.extent(cnf["lba"], cnf["size"]).decode("ascii", "replace"))["boot_file"])
+        if not boot:
+            raise common.Fail("%s: no SYSTEM.CNF, or its boot file is not on the disc" % path)
+        return trk.extent(boot["lba"], boot["size"])
+    except (ValueError, OSError, struct.error, IndexError) as e:
+        raise common.Fail("%s: no ISO 9660 volume (%s)" % (path, e))
+    finally:
+        trk.close()
+
+
+def head(path: pathlib.Path) -> bytes:
+    with open(path, "rb") as f:
+        return f.read(8)
+
+
+def boot_exe(path: pathlib.Path, probe) -> bytes:
+    """The PS-X EXE of a copy: the file itself, the boot file of a disc image, or in a folder the boot file of its
+    SYSTEM.CNF, else of its disc image, else its one executable."""
+    if not path.exists():
+        raise common.Fail("%s does not exist" % path)
+    if path.is_file():
+        if head(path) == probe.EXE_MAGIC:
+            return path.read_bytes()
+        if path.suffix.lower() in IMAGE_EXT:
+            return image_exe(path, probe)
+        raise common.Fail("%s is no PS-X EXE and no disc image" % path)
+    files = copy_files(path, probe)
+    for cnf in sorted((p for p in files if p.name.upper() == "SYSTEM.CNF"), key=lambda p: len(p.parts)):
+        boot = probe.parse_system_cnf(common.read(cnf))["boot_file"].upper()
+        hit = [p for p in files if p.is_relative_to(cnf.parent) and p.relative_to(cnf.parent).as_posix().upper() == boot]
+        if boot and hit:
+            return hit[0].read_bytes()
+    for p in sorted((p for p in files if p.suffix.lower() in IMAGE_EXT), key=lambda p: p.suffix.lower() != ".cue"):
+        try:                                      # a .BIN is often game data, not a disc image
+            return image_exe(p, probe)
+        except common.Fail:
+            continue
+    exes = [p for p in files if head(p) == probe.EXE_MAGIC]
+    if len(exes) != 1:
+        raise common.Fail("%s holds %d PS-X EXE files and no SYSTEM.CNF: give the executable's path" % (path, len(exes)))
+    return exes[0].read_bytes()
+
+
+def exe_of(path, probe) -> bytes:
+    exe = boot_exe(pathlib.Path(os.path.expanduser(str(path))).resolve(), probe)
+    if not exe.startswith(probe.EXE_MAGIC) or len(exe) < 0x800:
+        raise common.Fail("%s: the boot file is no PS-X EXE" % path)
+    return exe
+
+
+def measure(repo, bid: str, path=None, dump=None, dry: bool = False) -> tuple[list[str], str]:
+    """Map a build's executable onto the dump's (module docstring). Returns (one `created|changed <path>` line for
+    config/oracle.toml, the summary line)."""
+    repo = pathlib.Path(repo).resolve()
+    probe = identify.load_probe("psx")[1]
+    paths = registered(repo)
+    dump = dump or paths.get(RETAIL)
+    if not dump:
+        raise common.Fail("no dump: give --dump <your dump> (or register it: `%s`)" % COMMAND)
+    retail = exe_of(dump, probe)
+    written = []
+    if bid == RETAIL:
+        rows, text = img.exe_scan(retail)
+        body = ("# %s/retail.measure.tsv -- psxd oracle measure --id retail: keys and addresses, no text\n# %s\n"
+                % (MEASURED, img.COLUMNS["strnames"]) + "".join("\t".join(r) + "\n" for r in rows))
+        line = "measure retail: %s; Shift-JIS %s" % (img.name_counts(rows).split(", retail")[0],
+                                                     "yes" if any(r[6] == "sjis" for r in rows) else "no")
+    else:
+        check_id(bid)
+        path = path or paths.get(bid)
+        if not path:
+            raise common.Fail("`%s` has no registered copy: give --path <the build's copy>" % bid)
+        build = exe_of(path, probe)
+        mrows, srows, text, (m, n, runs, s, c) = img.exe_measure(retail, build)
+        body = ("# %s/%s.measure.tsv -- psxd oracle measure --id %s: keys and addresses, no text\n"
+                "# map: %s | string: %s\n" % (MEASURED, bid, bid, img.COLUMNS["map"], img.COLUMNS["strings"])
+                + "".join("map\t%s\n" % "\t".join(r) for r in mrows) + "".join("string\t%s\n" % "\t".join(r) for r in srows))
+        share = "exe %.1f%%" % (100 * m / n if n else 0)
+        line = "measure %s: exe %d of %d words in %d runs (%s); build-only strings %d (%d with a reference); %s" % (
+            bid, m, n, runs, share[4:], s, c, FLOORS)
+        rows = builds(repo)
+        b = next((x for x in rows if x["id"] == bid), None)
+        if b is not None and b.get("measured") != share:
+            st = common.write(repo / BUILDS, builds_text([x for x in rows if x["id"] != bid] + [dict(b, measured=share)]),
+                              dry=dry)
+            written.append("%s%s %s" % ("would be " if dry else "", st, BUILDS))
+    if not dry:
+        common.write(repo / MEASURED / ("%s.measure.tsv" % bid), body)
+        common.write(repo / MEASURED / ("%s.strings.txt" % bid), "".join(text))
+    return written, line
+
+
 def scan_line(table: dict) -> str:
     if "disc_debug_files" not in table:
         return "disc: not scanned"
@@ -449,7 +566,7 @@ def audit(repo: pathlib.Path) -> tuple[int, str] | None:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", nargs="?", choices=["record", "add", "list", "locate", "link"])
+    ap.add_argument("cmd", nargs="?", choices=["record", "add", "list", "locate", "link", "measure"])
     ap.add_argument("--repo", default=".")
     src = ap.add_mutually_exclusive_group()
     src.add_argument("--dump")
@@ -467,8 +584,8 @@ def main(argv=None) -> int:
     if a.self_test:
         return self_test()
     if not a.cmd:
-        ap.error("the command is one of record, add, list, locate, link")
-    if a.cmd in ("add", "link", "locate") and not a.id:
+        ap.error("the command is one of record, add, list, locate, link, measure")
+    if a.cmd in ("add", "link", "locate", "measure") and not a.id:
         ap.error("`%s` needs --id" % a.cmd)
     if a.cmd in ("add", "link") and not a.path:
         ap.error("`%s` needs --path" % a.cmd)
@@ -497,6 +614,14 @@ def main(argv=None) -> int:
             return 0
         if a.cmd == "link":
             print("ORACLE %s" % link(repo, a.id, a.path))
+            return 0
+        if a.cmd == "measure":
+            written, line = measure(repo, a.id, a.path, a.dump, a.dry_run)
+            print("ORACLE %s" % line)
+            for x in written:
+                print("  %s" % x)
+            if written and not a.dry_run:
+                print("NEXT commit %s" % BUILDS)
             return 0
         if a.cmd == "add":
             written, line = add(repo, a.id, a.path, a.expect, a.cls, a.carries, a.page, a.dry_run)
@@ -677,14 +802,14 @@ def self_test() -> int:
         ok &= registered(own) == {RETAIL: paths["cue"]} and refused(add, own, "proto-a", paths["cue"])
         ok &= not (own / BUILDS).exists()
         # another build as a disc image: the image's files and each file of its volume
-        img = fresh(td, "image")
-        add(img, "demo-1999-01-01", paths["cue"], cls="demo")
-        got = hashes(img, "demo-1999-01-01")
+        disc = fresh(td, "image")
+        add(disc, "demo-1999-01-01", paths["cue"], cls="demo")
+        got = hashes(disc, "demo-1999-01-01")
         ok &= got.get(hashlib.sha1(make_disc.SYM).hexdigest()) == make_disc.SYM_NAME
         ok &= got.get(identify.identify(paths["cue"])[0]["exe"]["sha1"]) == "HELLO.EXE"
         ok &= {"HOMEBREW.cue", "HOMEBREW (Track 1).bin", "HOMEBREW (Track 2).bin", "SYSTEM.CNF"} <= set(got.values())
-        ok &= add(img, "demo-1999-01-01", paths["cue"])[0] == [] and hashes(img, "demo-1999-01-01") == got   # a name with spaces survives a merge
-        ok &= table(img) is None
+        ok &= add(disc, "demo-1999-01-01", paths["cue"])[0] == [] and hashes(disc, "demo-1999-01-01") == got   # a name with spaces survives a merge
+        ok &= table(disc) is None
         print("  a disc image: %d hashes (%s)" % (len(got), ", ".join(sorted(set(got.values())))))
         # --expect: a stated hash matches a file of the copy, or the copy is refused before any write
         chk, proto2 = fresh(td, "check"), out / "REVIEW.SYM"
@@ -719,6 +844,28 @@ def self_test() -> int:
             ok &= len(stated(disc, [sha1_file(track)])) == 1 and len(copy_files(disc, identify.load_probe("psx")[1])) == 4
         finally:
             common.write(paths["cue"], sheet)
+        # measure: a second build against the dump; its share goes into the build's table, its text into no table
+        meas, proto = fresh(td, "measure"), pathlib.Path(make_disc.build_proto(str(out / "proto")))
+        ok &= refused(measure, meas, "proto-1999-01-01", proto) and refused(measure, meas, "Bad", proto, paths["cue"])
+        written, line = measure(meas, "proto-1999-01-01", proto.parent, paths["cue"])       # no record: the lines only
+        ok &= written == [] and line.startswith("measure proto-1999-01-01: exe 512 of 512 words in 1 runs (100.0%); "
+                                                "build-only strings 1 (1 with a reference); floor: ")
+        add(meas, "proto-1999-01-01", str(proto.parent), cls="prototype")
+        ok &= measure(meas, "proto-1999-01-01", dump=paths["cue"], dry=True)[0] == ["would be changed %s" % BUILDS]
+        ok &= "measured" not in build(meas, "proto-1999-01-01")
+        written, _ = measure(meas, "proto-1999-01-01", dump=paths["cue"])
+        ok &= written == ["changed %s" % BUILDS] and build(meas, "proto-1999-01-01")["measured"] == "exe 100.0%"
+        ok &= build(meas, "proto-1999-01-01")["class"] == "prototype"                    # a share is never a class
+        ok &= measure(meas, "proto-1999-01-01", dump=paths["cue"])[0] == []
+        held = {p.name: common.read(p) for p in (meas / MEASURED).iterdir()}
+        ok &= sorted(held) == ["proto-1999-01-01.measure.tsv", "proto-1999-01-01.strings.txt"]
+        ok &= "proto build" in held["proto-1999-01-01.strings.txt"] and "proto build" not in held["proto-1999-01-01.measure.tsv"]
+        first = make_disc.exe_image()
+        ws = img.words(first[2048:])
+        back = first[:2048] + struct.pack("<%dI" % len(ws), *ws[::-1])                  # the negative control
+        ok &= img.exe_measure(back, proto.read_bytes())[3][0] <= 16
+        ok &= measure(meas, RETAIL, dump=paths["cue"])[1] == "measure retail: 0 functions, 0 references (direct 0, table 0); Shift-JIS no"
+        print("  %s" % line.split("; floor")[0])
         # the identifiers of a report's table: the build rows only, with or without code marks
         report = ("# builds\n## Leads\n| a | b |\n## archive.org items\n"
                   "| identifier | kind (build or document) | confirmed by | file | SHA-1 |\n|---|---|---|---|---|\n"

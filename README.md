@@ -165,6 +165,7 @@ your-game/
   config/discs.tsv        the disc, serial and executable rows the README's disc table shows
   tools/psxd_publish.py   the README lint and the decomp.dev report checks, run by the game's CI
   tools/psxd_floor.py     the readability debt count, the gate and the guard hook
+  tools/psxd_img.py       the map of another build, its strings, and the strings that name a function
   docs/ops/psxdecomp-floor.md  what to do after the bootstrap, the phase numbering, every check of the floor
   config/debt-baseline.txt     the readability debt of the source, one total per kind (a matched file is not a finished one)
   config/guard.tsv        what an agent session may not edit or run here

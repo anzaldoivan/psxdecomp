@@ -19,6 +19,7 @@ pinned installers. After S10 the repository needs nothing from the plugin.
   ├─ S9 fetch_refs.py → refs/ (git-ignored, searchable via .ignore) + docs/ops/refs.md (committed)
   └─ S10 doctor.py + oracle.py (the oracle-build record) + config/psxdecomp.toml + tools/psxd_publish.py (the README lint, vendored; its CI)
          + tools/psxd_floor.py (the floor, vendored: debt baseline, gate, guard hook) + docs/ops/psxdecomp-floor.md
+         + tools/psxd_img.py (the map of another build, vendored)
 ```
 
 A game may also run in split mode: a public trunk, a private `-dev` workspace and a private `-private` store for the
@@ -64,6 +65,14 @@ templates the kit's S2 writes, byte for byte, and its negative control proves it
 commit and the kit's content digest: the kit is not yet a git repository of its own. `common.resolve_pa3` and
 `resolve_kit` refuse anything else. `--force-untested` proceeds and records a deviation in the game repo's
 `config/psxdecomp.toml`.
+
+## The oracle tables: one core, a contract
+
+`scripts/img.py` maps another build onto the retail build. The plugin runs it at S3 (`oracle measure --id retail`),
+S4 and S10 (`oracle measure`, the executables only), and a game holds it as `tools/psxd_img.py`. Each game writes its
+load map and its census in its own format. So the core reads two contract files that a game writes, and no format of
+a game. The contract is in `profiles/psx/floor.md` ("The tables of a build"). The floors are in [REFS.md](REFS.md)
+("Oracle builds").
 
 ## Portability
 

@@ -110,6 +110,15 @@ searches for the others, and the S4 gate asks the developer.
   same rule in their READMEs.
 - **A build speaks for itself only.** A name moves to the target after a byte check of the function body at both
   addresses. Until then it is a lead. The order of sources and the trap live in the profile's file, like every other.
+- **A share is a measure, not a class.** `psxd oracle measure` maps the build's executable onto the target's. The
+  method is `scripts/img.py` (its docstring, "map"). It prints the share of the target's words that the build holds,
+  with two floors. The floors (2026-10-14, three PsyQ games, four builds) have two controls. A build against itself
+  maps 100%, and its words reversed map 0.1 to 0.2%.
+  - An unrelated PsyQ game maps 22 to 25%: the shared SDK.
+  - A sister game of the same engine maps 64 to 65%.
+
+  A share under about 30% cannot be told apart from the SDK. From phase 1.5, the census's `game` lane separates two
+  builds: another game maps 0.1 to 0.2% there. The record's `class` stays the class that the build's page states.
 - **No symbol parser of our own.** `ghidra-psx-ldr` (core) imports a PsyQ symbol file into Ghidra, and `psx-mnd-sym`
   (optional) dumps one to text or to a C header.
 - **A site that refuses agents is never fetched live.** tcrf.net is one, with its subdomains (its stated policy,

@@ -16,6 +16,7 @@ import answers
 import common
 import fetch_refs
 import floor
+import img
 import oracle
 import plan
 import publish
@@ -808,7 +809,7 @@ def test_digests_equal_the_sources():
     assert (ROOT / "digests.json").read_text() == digests.document(), "run `python3 tools/digests.py --write`"
     doc = json.loads(digests.document())
     assert doc["version"] == floor.VERSION == common.plugin_version()
-    assert set(doc["files"]) == {floor.VENDORED, publish.VENDORED, floor.README_WORKFLOW} == set(digests.FILES)
+    assert set(doc["files"]) == {floor.VENDORED, publish.VENDORED, img.VENDORED, floor.README_WORKFLOW} == set(digests.FILES)
     for dst, src in digests.FILES.items():
         assert upgrade.OWNED[dst] == ROOT / src, dst
     assert floor.DIGESTS_URL % "0.6.0" == "https://raw.githubusercontent.com/anzaldoivan/psxdecomp/v0.6.0/digests.json"
@@ -842,9 +843,24 @@ def test_floor_is_vendorable():
     assert mods == {"__future__", "argparse", "bisect", "concurrent.futures", "contextlib", "fnmatch", "hashlib", "io", "json", "os",
                     "pathlib", "re", "shlex", "signal", "subprocess", "sys", "tempfile", "time", "urllib.request"}, mods
     assert floor.VENDORED == "tools/psxd_floor.py"
-    assert floor.VERSION == publish.VERSION == common.plugin_version()          # a game's tool changes only to a later one
+    assert floor.VERSION == publish.VERSION == img.VERSION == common.plugin_version()   # a game's tool changes only to a later one
     assert _floor("--version").stdout.strip() == floor.VERSION
     assert len(plan.LADDER) == 11 and [r[0] for r in plan.LADDER] == list(range(11))
+
+
+def test_img_is_vendorable():
+    """scripts/img.py, delivered as tools/psxd_img.py: standard library only; the MIT notice of the spimdisasm port in
+    the file, above the ported function, and its row in THIRD_PARTY.md; the names ledger's path and columns are the
+    floor's, and a build id is oracle.py's (the vendored file imports neither)."""
+    text = (ROOT / "scripts/img.py").read_text()
+    mods = set(re.findall(r"^\s*(?:import|from) ([\w.]+)", text, re.M))
+    assert mods == {"argparse", "bisect", "collections", "hashlib", "pathlib", "re", "struct", "sys", "tempfile"}, mods
+    notice = text.index("# spimdisasm_size ports decodeBytesToStrings of spimdisasm 1.42.4")
+    assert "MIT License. Copyright (c) 2022 Decompollaborate." in text[notice:notice + 300]
+    assert "THE SOFTWARE IS PROVIDED \"AS IS\"" in text[notice:text.index("def spimdisasm_size")]
+    assert "spimdisasm 1.42.4" in (ROOT / "THIRD_PARTY.md").read_text() and "scripts/img.py" in (ROOT / "THIRD_PARTY.md").read_text()
+    assert img.VENDORED == "tools/psxd_img.py" and img.NAME_COLUMNS == floor.NAME_COLUMNS and img.NAMES == floor.NAMES
+    assert img.BUILD_ID.pattern in oracle.ID_RE.pattern
 
 
 def test_vendored_tools_run_alone(tmp_path):
@@ -855,11 +871,25 @@ def test_vendored_tools_run_alone(tmp_path):
     (game / "tools").mkdir()
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", **GIT_ENV)
     env.pop("CLAUDE_PROJECT_DIR", None)
-    for src, dst in (("scripts/floor.py", floor.VENDORED), ("scripts/publish.py", publish.VENDORED)):
+    for src, dst in (("scripts/floor.py", floor.VENDORED), ("scripts/publish.py", publish.VENDORED),
+                     ("scripts/img.py", img.VENDORED)):
         (game / dst).write_bytes((ROOT / src).read_bytes())
     alone = lambda *a, **kw: subprocess.run([PY, "-I", *a], cwd=game, capture_output=True, text=True, env=env, **kw)  # noqa: E731
-    r = alone(floor.VENDORED, "--self-test")
-    assert r.returncode == 0 and r.stdout.strip().endswith("SELF-TEST OK"), r.stdout[-600:] + r.stderr[-600:]
+    for tool in (floor.VENDORED, img.VENDORED):
+        r = alone(tool, "--self-test")
+        assert r.returncode == 0 and r.stdout.strip().endswith("SELF-TEST OK"), r.stdout[-600:] + r.stderr[-600:]
+    exe = bytearray(2048) + b"".join(w.to_bytes(4, "little") for w in img.filler(1, 40) + img.body(0x8001, 0, 8))
+    exe[:8], exe[0x18:0x1C] = b"PS-X EXE", (0x80010000).to_bytes(4, "little")
+    (game / "retail").mkdir()
+    (game / "config").mkdir(exist_ok=True)
+    (game / "retail/GAME.EXE").write_bytes(bytes(exe))
+    (game / img.UNITS).write_text("# %s\n# %s\nexe\tGAME.EXE\t0x800\t0x80010000\t52\texe\n" % (img.UNITS, "\t".join(img.UNIT_COLUMNS)))
+    for args in ((img.VENDORED, "proto", "--id", "self", "--build", "retail", "--exe", "GAME.EXE", "--retail", "retail"),
+                 (img.VENDORED, "strnames", "--retail", "retail"), (img.VENDORED, "strnames", "--check", "--retail", "retail")):
+        r = alone(*args)
+        assert r.returncode == 0 and "Traceback" not in r.stderr, (args, r.stdout[-400:], r.stderr[-400:])
+    assert "exe 52 of 52 words in 1 runs (100%)" in alone(img.VENDORED, "proto", "--id", "self", "--build", "retail",
+                                                           "--exe", "GAME.EXE", "--retail", "retail").stdout
     for args in ((publish.VENDORED, "lint", "README.md"), (publish.VENDORED, "style"), (floor.VENDORED, "debt"),
                  (floor.VENDORED, "names")):
         r = alone(*args)

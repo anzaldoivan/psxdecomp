@@ -91,6 +91,7 @@ import common  # noqa: E402
 import doctor  # noqa: E402
 import fetch_refs  # noqa: E402
 import floor  # noqa: E402
+import img  # noqa: E402
 import install  # noqa: E402
 import oracle  # noqa: E402
 import plan as roadmap  # noqa: E402
@@ -117,6 +118,7 @@ DELIVERY = (
     Delivery("publish", "owned", publish.WORKFLOW, "profiles/psx/psxdecomp-readme.yml", None, False),
     Delivery("floor", "owned", floor.VENDORED, "scripts/floor.py", None, False),
     Delivery("floor", "owned", FLOOR_DOC, "profiles/psx/floor.md", None, False),
+    Delivery("img", "owned", img.VENDORED, "scripts/img.py", None, False),
     Delivery("campaign", "owned", CAMPAIGN_DOC, "profiles/psx/campaign.md", "campaign", False),
     Delivery("split-doc", "owned", "docs/ops/psxdecomp-split.md", "profiles/psx/split-mode.md", None, True),
     Delivery("guard", "once", floor.GUARD, "profiles/psx/guard.tsv", None, False),
@@ -142,6 +144,7 @@ OWNED_WHAT = {"publish": ("publish", "the README standard's lint and its CI"),
               "floor": ("floor", "the tooling and readability checks, and the floor's reference"),
               "campaign": ("campaign", "the campaign templates: the bank and wave ledgers, the budgets, the give-up "
                            "report, a matcher workflow"),
+              "img": ("img", "the map of another build, its strings, and the strings that name a function"),
               "split-doc": ("split", "the release operator's card: ship, the push gate, contributor PRs")}
 # [own]: what a game may hold itself. A key's value is a path in the repository, or the command that runs its own tool.
 OWN_KEYS = ("debt", "names", "gate", "toolchain", "campaign", "matcher")

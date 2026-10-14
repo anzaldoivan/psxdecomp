@@ -17,6 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 FILES = {                                              # the path in a game: the source in the plugin
     "tools/psxd_floor.py": "scripts/floor.py",
+    "tools/psxd_img.py": "scripts/img.py",
     "tools/psxd_publish.py": "scripts/publish.py",
     ".github/workflows/psxdecomp-readme.yml": "profiles/psx/psxdecomp-readme.yml",
 }
