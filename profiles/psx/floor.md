@@ -214,10 +214,11 @@ The tool finds the other kinds with patterns over the raw text. They are counted
 | `placeholder-use` | each other place where such a name stands |
 | `struct` | a struct, union or enum body outside an `include/` folder |
 | `extern` | an `extern` declaration or a prototype in a C file |
-| `filename` | a source file named by an address or a number, such as `func_80012344.c` or `misc12.c` |
+| `filename` | a source file named by an address or a number, such as `func_80012344.c` or `misc12.c`. A suffix after a placeholder name counts too: `func_800EFE70_ovl02.c`, `func_80023E04.inc.c` |
 
 - A pattern is a count, not a proof. Code in another spelling is not counted.
-- A file name with a suffix after the address, such as `func_800EFE70_ovl02.c`, is not counted as `filename`.
+- To lower the count, put a body that several overlays share in one file with a role name. The folder names the
+  overlay, not the file name.
 - For these kinds the tool reads each tracked file with a C suffix. It does not read `asm/`, `build/`, `expected/`,
   `extracted/`, `refs/`, `tools/`, `docs/`, `config/`, `tests/`, `fixtures/` and `cookbook/`.
 - It does not read the work folders of a campaign: `drafts/`, `waves/`, `repro/`, `scratch/` and `sandbox/`.

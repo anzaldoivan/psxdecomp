@@ -441,15 +441,19 @@ def self_test_files(check) -> None:
         repo = floor._repo(td)
         put = lambda rel, text: ((repo / rel).parent.mkdir(parents=True, exist_ok=True), (repo / rel).write_text(text))  # noqa: E731
         unmarked = floor.C_DEBT["goto-unmarked"][0]
-        for rel in ("src/walk.c", "lib/walk.c", "asm/walk.c", "tools/walk.c", "src/func_80012344.c", "src/misc12.c"):
+        named = ("src/func_80012344.c", "src/misc12.c", "src/func_800EFE70_ovl02.c", "src/D_800EEC60_ovl00.c",
+                 "src/shared/func_80023E04.inc.c")
+        for rel in ("src/walk.c", "src/funcs.c", "lib/walk.c", "asm/walk.c", "tools/walk.c") + named:
             put(rel, unmarked.replace("Walk", "W_" + re.sub(r"\W", "_", rel)))
         put("src/hand.asm", "nop\n")
         floor._git(repo, "add", "-A")
         got = floor.debt_bodies(repo)
-        check("code in any folder counts; the splitter's and the tools' folders do not", sorted(got) == [
-            "lib/walk.c", "src/func_80012344.c", "src/hand.asm", "src/misc12.c", "src/walk.c"], sorted(got))
-        check("a file named by an address or a number", got["src/func_80012344.c"][floor.SCOPE] == {"filename": 1}
-              and got["src/misc12.c"][floor.SCOPE] == {"filename": 1} and floor.SCOPE not in got["src/walk.c"], got["src/misc12.c"])
+        check("code in any folder counts; the splitter's and the tools' folders do not", sorted(got) == sorted(
+            ("lib/walk.c", "src/funcs.c", "src/hand.asm", "src/walk.c") + named), sorted(got))
+        check("a file named by an address or a number, also with a suffix after a placeholder name",
+              all(got[p].get(floor.SCOPE) == {"filename": 1} for p in named)
+              and floor.SCOPE not in got["src/walk.c"] and floor.SCOPE not in got["src/funcs.c"],
+              {p: got[p].get(floor.SCOPE) for p in named + ("src/funcs.c",)})
         check("an assembly file by another suffix", got["src/hand.asm"] == {floor.SCOPE: {"asm": 1}}, got["src/hand.asm"])
         floor._commit(repo, "the tree")
         check("a revision and the index hold the same files", floor.debt_bodies(repo, tree=floor.Tree(repo, "HEAD")) == got
