@@ -439,9 +439,10 @@ SCOPE = ""                                             # the name of a file's bu
 def extents(code: str) -> list[tuple[str, int, int]]:
     """[(name, start, end)] of the function bodies of a stripped text, in order: where an assembly row finds its
     function, and where a trial finds the crutches of one. A body starts at a definition in column 0 (DEF_FUNC) and
-    ends behind its matching brace. A definition inside an open body is dropped. Two heads with nothing between them but space are one body (an `#if` that
-    chooses the head: the directives are blank here). A body whose braces never close ends at the next definition in
-    column 0. What no body holds is the file's own scope. No check depends on this reading."""
+    ends behind its matching brace. A definition inside an open body is dropped.
+    Two heads with nothing between them but space are one body (an `#if` that chooses the head: the directives are
+    blank here). A body whose braces never close ends at the next definition in column 0. What no body holds is the
+    file's own scope. No check depends on this reading."""
     heads = [m for m in DEF_FUNC.finditer(code) if m.group(1) not in NOT_A_NAME]
     out, i = [], 0
     while i < len(heads):

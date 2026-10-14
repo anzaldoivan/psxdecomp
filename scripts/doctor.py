@@ -267,7 +267,7 @@ def roadmap_row(repo: pathlib.Path) -> tuple[str, str]:
     worst = [f for f in found if f[0] == ("FAIL" if st == "FAIL" else "WARN")]
     if not worst:
         return "OK", "%s: %s" % (plan.PLAN, info.get("state", count))
-    return st, "%s: %s — %s%s (`psxd plan --repo .` lists them)" % (
+    return st, "%s: %s — %s%s (`\"${CLAUDE_PLUGIN_ROOT}/scripts/psxd\" plan --repo .` lists them)" % (
         plan.PLAN, count, "; ".join("%s: %s" % f[1:] for f in worst[:2]), "; …" if len(worst) > 2 else "")
 
 
@@ -1376,7 +1376,7 @@ def self_test_roadmap() -> bool:
     return (wait[0] == "WAIT" and "names 1 of the 11 ladder phases" in wait[1] and rc == 0
             and last == "DOCTOR OK (0 warn, 1 not due)" and good[0] == "OK" and "ladder phases open 0" in good[1]
             and warn[0] == "WARN" and "criteria: no `Done-criteria:` line" in warn[1]
-            and fail[0] == "FAIL" and "ladder: no line 1.4" in fail[1] and "psxd plan --repo ." in fail[1])
+            and fail[0] == "FAIL" and "ladder: no line 1.4" in fail[1] and "/scripts/psxd\" plan --repo ." in fail[1])
 
 
 # A preprocessor for the self-tests (this one and tests/test_floor.py), so that they need none on the machine: it

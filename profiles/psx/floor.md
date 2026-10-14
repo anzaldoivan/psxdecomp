@@ -228,10 +228,10 @@ The tool finds the other kinds with patterns over the raw text. They are counted
 - `config/debt-baseline.txt` holds one `<count> <kind>` row for each kind above zero: the total of the tree.
 - The diff of that file shows the debt that a commit brings.
 - The check fails when a total is over its row. It also fails when a row is over its total.
-- In the public tree of a game in split mode, a total under its row is no failure. The row also counts the files
-  that the public tree does not hold.
-- A commit on the public main that adds a file that `config/public-paths.txt` does not name makes the public tree a
-  full check again.
+- The tool takes a tree as the public tree of a game in split mode when `config/public-paths.txt` names each of its
+  files. In that tree, a total under its row is no failure, because the row also counts the files that the public
+  tree does not hold.
+- If a commit on the public main adds a file that the list does not name, a total under its row fails again.
 - A file of an earlier psxdecomp holds a row for each file. The tool adds them up. `debt --recount` writes totals.
 - The check also fails with no baseline, and with no policy line for a kind.
 - Run `debt --update` in the commit that changes a count, or bank with `gate --bank`.
