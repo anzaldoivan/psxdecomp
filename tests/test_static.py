@@ -1095,10 +1095,9 @@ def test_debt_kinds(tmp_path):
     assert r.returncode == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); down: pin-unmarked" in r.stdout, r.stdout
 
 
-def test_debt_bodies(tmp_path):
+def test_debt_bodies():
     """The counts by function body: on every C fixture of this repository the sum of a file's bodies is its count,
-    each file of the corpus is one body, and a pin, a goto and an offset read never fall outside a body.
-    `debt --bodies` prints the buckets of a revision as well."""
+    each file of the corpus is one body, and a pin, a goto and an offset read never fall outside a body."""
     files = sorted((ROOT / "fixtures").glob("**/*.c")) + sorted((ROOT / "fixtures").glob("**/*.h"))
     assert len(files) > 100
     for f in files:
@@ -1111,12 +1110,6 @@ def test_debt_bodies(tmp_path):
         assert not set(bodies.get(floor.SCOPE, {})) & {"pin", "pin-unmarked", "goto", "offset", "asm"}, (f, bodies)
         if f.suffix == ".c":
             assert len([n for n in bodies if n != floor.SCOPE]) == 1, (f, sorted(bodies))
-    repo = _style_repo(tmp_path, {"src/a.c": floor.C_BODIES["two plain bodies"][0]})
-    (repo / "src/a.c").write_text(floor.C_CLEAN)
-    r = _floor("debt", "--bodies", "--rev", "HEAD", "--repo", repo)
-    assert r.returncode == 0 and "DEBT BODY src/a.c A: offset 1\nDEBT BODY src/a.c B: goto 1\n" in r.stdout, r.stdout
-    assert "DEBT BODIES 1 file(s), 2 function bodies, 2 with debt, 0 count(s) at file scope" in r.stdout
-    assert "DEBT BODIES 1 file(s), 1 function bodies, 0 with debt" in _floor("debt", "--bodies", "--repo", repo).stdout
 
 
 def _stubs(*names):

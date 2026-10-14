@@ -9,9 +9,6 @@
     floor.py debt [--staged | --rev REV] [--against BASE]
                                           count the index or the revision REV in the work tree's place (no checkout);
                                           --against: judge the change since the revision BASE by BASE's own policy
-    floor.py debt --bodies [--staged | --rev REV]
-                                          the same counts by function body: one `DEBT BODY <path> <function>` line per
-                                          body with debt, `(file scope)` for what no body holds; no check
     floor.py debt --files [--public] [--staged | --rev REV]
                                           the state of each C file: `stubs` (a function is still assembly), `matched`
                                           (every function is in C, and debt is left) or `finished` (no debt of any
@@ -829,8 +826,7 @@ SCOPE = ""                                             # the name of a file's bu
 
 def extents(code: str) -> list[tuple[str, int, int]]:
     """[(name, start, end)] of the function bodies of a stripped text, in order: where the count of a file is shown
-    by function (`debt --bodies`), where an assembly row finds its function, and where a trial finds the crutches of
-    one. A body starts at a definition in column 0 (DEF_FUNC) and ends behind its matching brace. A definition
+    by function, where an assembly row finds its function, and where a trial finds the crutches of one. A body starts at a definition in column 0 (DEF_FUNC) and ends behind its matching brace. A definition
     inside an open body is dropped. Two heads with nothing between them but space are one body (an `#if` that
     chooses the head: the directives are blank here). A body whose braces never close ends at the next definition in
     column 0. What no body holds is the file's own scope. No check depends on this reading."""
@@ -1647,29 +1643,6 @@ def debt_status(repo, source: str | None = None) -> dict:
     the index or a revision in the work tree's place (the baseline is read from the same source)."""
     fails, st = state_findings(repo, Tree(repo, source))
     return dict(st, fails=fails)
-
-
-def cmd_bodies(repo, source: str | None = None) -> int:
-    """`debt --bodies`: the counts of each function body and of each file's scope, one line per bucket with debt."""
-    try:
-        tree = Tree(repo, source)
-        bodies = debt_bodies(repo, parse_baseline(tree.read(BASELINE)).skip, tree)
-    except Fail as e:
-        print("DEBT FAIL %s" % e)
-        return 1
-    n = with_debt = at_scope = 0
-    for p in sorted(bodies):
-        for name in sorted(bodies[p]):
-            got = bodies[p][name]
-            n += name != SCOPE
-            if got:
-                with_debt += name != SCOPE
-                at_scope += sum(got.values()) if name == SCOPE else 0
-                print("DEBT BODY %s %s: %s" % (p, name or "(file scope)", ", ".join(
-                    "%s %d" % (k, got[k]) for k in KINDS if got.get(k))))
-    print("DEBT BODIES %d file(s), %d function bodies, %d with debt, %d count(s) at file scope; totals: %s" % (
-        len(bodies), n, with_debt, at_scope, _totals(debt_counts(repo, bodies=bodies))))
-    return 0
 
 
 def public_view(tree: Tree) -> Tree:
@@ -3451,13 +3424,6 @@ def self_test_bodies(check) -> None:
             "DEBT FILES 2 C file(s): 0 finished, 1 matched, 1 with stubs\n") and "src/one.c: goto 1\n" in out, out)
         _git(repo, "rm", "-q", "-f", "--cached", PUBLIC_PATHS)
         (repo / PUBLIC_PATHS).unlink()
-        for name in ("half.c", "done.c", "table.c"):
-            (repo / "src" / name).unlink()
-        _git(repo, "add", "-A", "src")
-        rc, out = _capture(cmd_bodies, repo)
-        check("debt --bodies prints each bucket", rc == 0 and "DEBT BODY src/one.c Step: goto 1\n" in out
-              and "DEBT BODY src/boot.s (file scope): asm 1\n" in out
-              and "DEBT BODIES 3 file(s), 2 function bodies, 2 with debt, 1 count(s) at file scope; totals: goto 2, asm 1\n" in out, out)
 
 
 # A preprocessor for the self-test, so that it needs none on the machine: it follows `#include "…"`, replaces the
@@ -4433,7 +4399,6 @@ def main(argv=None) -> int:
     ap.add_argument("--version", action="version", version=VERSION)
     ap.add_argument("--rev", help="debt: count this revision")
     ap.add_argument("--against", metavar="BASE", help="debt: report the counts that differ from this revision's")
-    ap.add_argument("--bodies", action="store_true", help="debt: the counts of each function body, no check")
     ap.add_argument("--files", action="store_true", help="debt: the state of each C file: stubs, matched or finished")
     ap.add_argument("--public", action="store_true", help="debt --files: of the files that config/public-paths.txt lists only")
     ap.add_argument("--self-test", action="store_true")
@@ -4453,8 +4418,6 @@ def main(argv=None) -> int:
     if a.cmd == "debt":
         if a.staged and a.rev:
             ap.error("debt: --staged or --rev, not both")
-        if a.bodies:
-            return cmd_bodies(a.repo, INDEX if a.staged else a.rev)
         if a.files:
             return cmd_files(a.repo, INDEX if a.staged else a.rev, a.public)
         return cmd_debt(a.repo, update=a.update, down=a.down, source=INDEX if a.staged else a.rev,
