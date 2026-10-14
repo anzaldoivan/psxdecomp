@@ -217,6 +217,7 @@ The tool finds the other kinds with patterns over the raw text. They are counted
 | `filename` | a source file named by an address or a number, such as `func_80012344.c` or `misc12.c` |
 
 - A pattern is a count, not a proof. Code in another spelling is not counted.
+- A file name with a suffix after the address, such as `func_800EFE70_ovl02.c`, is not counted as `filename`.
 - For these kinds the tool reads each tracked file with a C suffix. It does not read `asm/`, `build/`, `expected/`,
   `extracted/`, `refs/`, `tools/`, `docs/`, `config/`, `tests/`, `fixtures/` and `cookbook/`.
 - It does not read the work folders of a campaign: `drafts/`, `waves/`, `repro/`, `scratch/` and `sandbox/`.
@@ -229,6 +230,8 @@ The tool finds the other kinds with patterns over the raw text. They are counted
 - The check fails when a total is over its row. It also fails when a row is over its total.
 - In the public tree of a game in split mode, a total under its row is no failure. The row also counts the files
   that the public tree does not hold.
+- A commit on the public main that adds a file that `config/public-paths.txt` does not name makes the public tree a
+  full check again.
 - A file of an earlier psxdecomp holds a row for each file. The tool adds them up. `debt --recount` writes totals.
 - The check also fails with no baseline, and with no policy line for a kind.
 - Run `debt --update` in the commit that changes a count, or bank with `gate --bank`.
