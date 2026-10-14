@@ -437,9 +437,9 @@ SCOPE = ""                                             # the name of a file's bu
 
 
 def extents(code: str) -> list[tuple[str, int, int]]:
-    """[(name, start, end)] of the function bodies of a stripped text, in order: where the count of a file is shown
-    by function, where an assembly row finds its function, and where a trial finds the crutches of one. A body starts at a definition in column 0 (DEF_FUNC) and ends behind its matching brace. A definition
-    inside an open body is dropped. Two heads with nothing between them but space are one body (an `#if` that
+    """[(name, start, end)] of the function bodies of a stripped text, in order: where an assembly row finds its
+    function, and where a trial finds the crutches of one. A body starts at a definition in column 0 (DEF_FUNC) and
+    ends behind its matching brace. A definition inside an open body is dropped. Two heads with nothing between them but space are one body (an `#if` that
     chooses the head: the directives are blank here). A body whose braces never close ends at the next definition in
     column 0. What no body holds is the file's own scope. No check depends on this reading."""
     heads = [m for m in DEF_FUNC.finditer(code) if m.group(1) not in NOT_A_NAME]
@@ -1152,13 +1152,14 @@ def first_baseline(repo) -> str:
 
 
 def projection(tree: Tree) -> bool:
-    """The tree is the public tree of a game in split mode: config/public-paths.txt exists and lists each source file
-    of the tree. Its baseline holds the totals of the files that it does not publish as well."""
+    """The tree is the public tree of a game in split mode: config/public-paths.txt exists and lists each file of the
+    tree (a dev tree always holds a file that is never public). Its baseline counts the files that it does not
+    publish as well."""
     public = tree.read(PUBLIC_PATHS)
     if public is None:
         return False
     listed = [l.strip() for l in lines(public) if l.strip() and not l.lstrip().startswith("#")]
-    return all(any(entry_match(e, p) for e in listed) for p in tree.paths if is_source(p))
+    return all(any(entry_match(e, p) for e in listed) for p in tree.paths)
 
 
 def state_findings(repo, tree: Tree | None = None) -> tuple[list[str], dict]:
@@ -1772,7 +1773,7 @@ def markers(text: str) -> dict[int, tuple[str, bool]]:
 
 
 def _crutches(text: str, code: str) -> list[dict]:
-    """The crutches of a text, in order, each with its marker: `crutches` without the function, the id and the hash.
+    """The crutches of a text, in order, each with its marker: `trial.crutches` without the function and the id.
     A marker covers one crutch: the one on its line, or the one on the line below when the marker stands alone."""
     plain = uncommented(text)
     found = []
@@ -2283,39 +2284,6 @@ def _commit(repo, msg) -> None:
          "--quiet", "-m", msg)
 
 
-# A preprocessor for the self-test, so that it needs none on the machine: it follows `#include "…"`, replaces the
-# object-like macros it has read, prints a line marker at each change of file, and blanks every other directive. With
-# PSXD_SELF_CPP_LOG set it writes each unit it is run for into that file.
-CPP_SELF = r'''import os, re, sys
-defs = {}
-def emit(path, out):
-    out.append('# 1 "%s"' % path)
-    for n, line in enumerate(open(path, encoding="utf-8").read().split("\n"), 1):
-        inc = re.match(r'\s*#\s*include\s*"([^"]+)"', line)
-        define = re.match(r"\s*#\s*define\s+(\w+)\s+(.*)", line)
-        if inc:
-            found = next((p for p in (os.path.join(os.path.dirname(path), inc[1]), os.path.join("include", inc[1])) if os.path.isfile(p)), None)
-            if found is None:
-                sys.exit("%s:%d: fatal error: %s: No such file or directory" % (path, n, inc[1]))
-            emit(os.path.normpath(found), out)
-            out.append('# %d "%s" 2' % (n + 1, path))
-        elif define:
-            defs[define[1]] = define[2]
-            out.append("")
-        elif line.lstrip().startswith("#"):
-            out.append("")
-        else:
-            for name, body in defs.items():
-                line = re.sub(r"\b%s\b" % name, body, line)
-            out.append(line)
-if os.environ.get("PSXD_SELF_CPP_LOG"):
-    open(os.environ["PSXD_SELF_CPP_LOG"], "a").write(sys.argv[1] + "\n")
-out = []
-emit(sys.argv[1], out)
-print("\n".join(out))
-'''
-
-
 def _capture(fn, *args, **kw) -> tuple[int, str]:
     import contextlib
     import io
@@ -2348,7 +2316,7 @@ def self_test() -> int:
     for kind, (text, want) in C_DEBT.items():
         check("one planted file: " + kind, file_debt("src/a.c", text) == want, file_debt("src/a.c", text))
     global _sibling_run
-    keep, saved = _sibling_run, os.environ.get("CLAUDE_PROJECT_DIR")
+    keep = _sibling_run
     _sibling_run = lambda repo, *args: (0, [])  # noqa: E731    the other tool's checks are its own
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -2378,8 +2346,6 @@ def self_test() -> int:
             check("guard: a path that no rule names", guard_decision(edit, rules, root) is None)
     finally:
         _sibling_run = keep
-        if saved is not None:
-            os.environ["CLAUDE_PROJECT_DIR"] = saved
     print("floor %s" % ("SELF-TEST OK" if not bad else "SELF-TEST FAILED (%d)" % len(bad)))
     return 1 if bad else 0
 

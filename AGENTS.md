@@ -25,8 +25,8 @@ design and test tiers: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - README standard and decomp.dev reports: [docs/PUBLISHING.md](docs/PUBLISHING.md); its code: `scripts/publish.py`
   (vendored into games byte for byte: stdlib only, no plugin import).
 - The floor (roadmap, tooling, readability debt, guard): `profiles/psx/floor.md`, which holds the phase numbering.
-  Its code: `scripts/floor.py` (vendored the same way), with `scripts/plan.py`, `scripts/trial.py` and
-  `tests/test_floor.py`. What S10 and upgrade deliver, and how: `upgrade.DELIVERY`.
+  Its code: `scripts/floor.py` (vendored the same way), `scripts/plan.py` and `scripts/trial.py`. What S10 and
+  upgrade deliver, and how: `upgrade.DELIVERY`.
 
 ## Rules
 

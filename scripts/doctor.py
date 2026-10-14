@@ -291,7 +291,7 @@ def floor_rows(repo: pathlib.Path) -> list[tuple[str, tuple[str, str]]]:
     except floor.Fail as e:
         debt = e
     return [("gate", gate_row(repo, state, rec)), ("toolchain", toolchain_row(repo, state, own)),
-            ("names", names_row(repo, state, own, debt)), ("debt", debt_row(repo, state, own, debt)),
+            ("names", names_row(repo, state, own)), ("debt", debt_row(repo, state, own, debt)),
             ("cpp", cpp_row(repo, state))]
 
 
@@ -351,7 +351,7 @@ def toolchain_row(repo: pathlib.Path, state: dict, own: dict) -> tuple[str, str]
     return "OK", "docs/ops/compiler-pin.md; %s" % what
 
 
-def names_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, str]:
+def names_row(repo: pathlib.Path, state: dict, own: dict) -> tuple[str, str]:
     """Due when phase 1.4 is closed: config/names.tsv and config/asm-evidence.tsv parse (or `[own] names`). FAIL on a
     file that cannot be read and on an assembly row that points at nothing, at any time; WARN when a ledger is
     absent."""
@@ -1379,6 +1379,39 @@ def self_test_roadmap() -> bool:
             and fail[0] == "FAIL" and "ladder: no line 1.4" in fail[1] and "psxd plan --repo ." in fail[1])
 
 
+# A preprocessor for the self-tests (this one and tests/test_floor.py), so that they need none on the machine: it
+# follows `#include "…"`, replaces the object-like macros it has read, prints a line marker at each change of file,
+# and blanks every other directive. With PSXD_SELF_CPP_LOG set it writes each unit it is run for into that file.
+CPP_SELF = r'''import os, re, sys
+defs = {}
+def emit(path, out):
+    out.append('# 1 "%s"' % path)
+    for n, line in enumerate(open(path, encoding="utf-8").read().split("\n"), 1):
+        inc = re.match(r'\s*#\s*include\s*"([^"]+)"', line)
+        define = re.match(r"\s*#\s*define\s+(\w+)\s+(.*)", line)
+        if inc:
+            found = next((p for p in (os.path.join(os.path.dirname(path), inc[1]), os.path.join("include", inc[1])) if os.path.isfile(p)), None)
+            if found is None:
+                sys.exit("%s:%d: fatal error: %s: No such file or directory" % (path, n, inc[1]))
+            emit(os.path.normpath(found), out)
+            out.append('# %d "%s" 2' % (n + 1, path))
+        elif define:
+            defs[define[1]] = define[2]
+            out.append("")
+        elif line.lstrip().startswith("#"):
+            out.append("")
+        else:
+            for name, body in defs.items():
+                line = re.sub(r"\b%s\b" % name, body, line)
+            out.append(line)
+if os.environ.get("PSXD_SELF_CPP_LOG"):
+    open(os.environ["PSXD_SELF_CPP_LOG"], "a").write(sys.argv[1] + "\n")
+out = []
+emit(sys.argv[1], out)
+print("\n".join(out))
+'''
+
+
 def self_test_floor() -> bool:
     """The five floor rows by phase: all WAIT before their phase, then WARN or FAIL for what is missing, then OK; an
     [own] key answers its row; a malformed ledger fails at any time."""
@@ -1406,7 +1439,7 @@ def self_test_floor() -> bool:
         ok &= "the tree holds: goto 1)" in mid["debt"][1]
         ok &= first["cpp"][0] == "WAIT" and "phase 1.4 closes" in first["cpp"][1]
         ok &= mid["cpp"][0] == "WARN" and "no `[floor] cpp`" in mid["cpp"][1] and "under `[floor]`" in mid["cpp"][1]
-        common.write(repo / "tools/cpp.py", floor.CPP_SELF)
+        common.write(repo / "tools/cpp.py", CPP_SELF)
         common.write(repo / floor.RECORD, "[floor]\ncpp = '%s tools/cpp.py {file}'\n" % sys.executable)
         ok &= rows()["cpp"][0] == "OK" and "runs here (tried on src/a.c)" in rows()["cpp"][1]
         common.write(repo / floor.RECORD, "[floor]\ncpp = '/nowhere/psxd-no-such-cpp {file}'\n")

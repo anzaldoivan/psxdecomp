@@ -18,7 +18,7 @@ pinned installers. After S10 the repository needs nothing from the plugin.
   ├─ S8 install.py → the kit's install.py --answers (dry run, then run; digest-checked) + the README standard
   ├─ S9 fetch_refs.py → refs/ (git-ignored, searchable via .ignore) + docs/ops/refs.md (committed)
   └─ S10 doctor.py + oracle.py (the oracle-build record) + config/psxdecomp.toml + tools/psxd_publish.py (the README lint, vendored; its CI)
-         + tools/psxd_floor.py (the floor, vendored: roadmap lint, debt baseline, guard hook) + docs/ops/psxdecomp-floor.md
+         + tools/psxd_floor.py (the floor, vendored: debt baseline, gate, guard hook) + docs/ops/psxdecomp-floor.md
 ```
 
 A game may also run in split mode: a public trunk, a private `-dev` workspace and a private `-private` store for the

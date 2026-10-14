@@ -1,6 +1,5 @@
-"""The scenarios of the floor tool (scripts/floor.py, tools/psxd_floor.py in a game). They lived in its --self-test
-until psxdecomp 0.6.0; the tool keeps a short smoke test. Each scenario is one test: the first check that fails names
-itself in the assertion."""
+"""The scenarios of the floor tool (scripts/floor.py, tools/psxd_floor.py in a game). The tool keeps a short smoke
+test. Each scenario is one test: the first check that fails names itself in the assertion."""
 import contextlib
 import hashlib
 import json
@@ -13,6 +12,7 @@ import tempfile
 
 import pytest
 
+import doctor
 import floor
 
 
@@ -229,9 +229,15 @@ def self_test_debt(check) -> None:
         check("a total over the tree is stale", rc == 1 and "DEBT FAIL stale offset: 0, its row is 3" in out, out)
         (repo / floor.PUBLIC_PATHS).write_text("# the list\nsrc/\ninclude/\nconfig/\n")
         floor._git(repo, "add", floor.PUBLIC_PATHS)
-        check("and not in a public tree, where the list names each source file", run()[0] == 0, run()[1])
+        check("and not in a public tree, where the list names each file", run()[0] == 0, run()[1])
         (repo / floor.PUBLIC_PATHS).write_text("src/walk.c\nsrc/boot.s\ninclude/\nconfig/\n")
-        check("a tree with a source file that the list does not name is dev's: stale", run()[0] == 1)
+        check("a tree with a file that the list does not name is dev's: stale", run()[0] == 1)
+        (repo / floor.PUBLIC_PATHS).write_text("src/\ninclude/\nconfig/\n")
+        (repo / "CLAUDE.md").write_text("never public\n")
+        floor._git(repo, "add", "CLAUDE.md")
+        check("dev's tree that publishes all of src/ still holds a file that is never public: stale", run()[0] == 1)
+        floor._git(repo, "rm", "-q", "-f", "--cached", "CLAUDE.md")
+        (repo / "CLAUDE.md").unlink()
         floor._git(repo, "rm", "-q", "-f", "--cached", floor.PUBLIC_PATHS)
         (repo / floor.PUBLIC_PATHS).unlink()
         run(recount=True)
@@ -480,7 +486,7 @@ def self_test_view(check) -> None:
             return got
 
         cpp = "[psxdecomp]\nversion = \"0.6.0\"\n\n[floor]\ncpp = '%s tools/cpp.py {file}'\n" % sys.executable
-        put("tools/cpp.py", floor.CPP_SELF)
+        put("tools/cpp.py", doctor.CPP_SELF)
         put("include/m.h", "#define AGAIN goto again\n")
         put("src/unit.c", '#include "m.h"\n#include "shared/body.c"\ns32 Two(s32 n) {\n#include "pins.def"\n    return n;\n}\n')
         put("src/shared/body.c", "s32 One(s32 n) {\nagain:\n    if (n--) AGAIN;\n    return n;\n}\n")

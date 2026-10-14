@@ -7,7 +7,7 @@ tools, a guard for generated files, and a debt count. This file is the reference
 
 1. Start a bare `claude` session in the repository. Project Architect's planner drafts `GENERATION_PLAN.md`.
 2. Read the draft against the ladder in "Numbering". Approve it only when each ladder phase has a line.
-3. Run `psxd plan --repo .`. Have the planner correct each `FAIL` before the first phase starts.
+3. Run `/psxdecomp:doctor`. Have the planner correct each `FAIL` of the `roadmap` row before the first phase starts.
 4. Let the router run one approved phase at a time. A phase closes when its `verified by:` commands pass.
 5. Run `/psxdecomp:doctor` when a phase closes. A `WAIT` row names the phase that makes it due.
 6. Read `docs/prior-art.md` before phase 1.2. Read `docs/ops/refs.md` before phase 1.4.
@@ -40,8 +40,8 @@ tools, a guard for generated files, and a debt count. This file is the reference
 
 ## The roadmap checks
 
-`psxd plan --repo .` reads `GENERATION_PLAN.md` and writes nothing. The doctor's `roadmap` row runs the same checks.
-A `FAIL` fails the doctor. The gate does not run them.
+The doctor's `roadmap` row reads `GENERATION_PLAN.md` and writes nothing. A `FAIL` fails the doctor. The gate does
+not run these checks.
 
 | Check | Level | The finding |
 |---|---|---|
@@ -225,7 +225,7 @@ The tool finds the other kinds with patterns over the raw text. They are counted
 - A pointer sum with a variable is not an `offset`. The address ranges are main RAM, the scratchpad, the I/O
   ports and the BIOS. The value `0x80000000` counts only behind a pointer cast, because it is also the sign mask.
 - `config/debt-baseline.txt` holds one `<count> <kind>` row for each kind above zero: the total of the tree.
-- The diff of that file shows the debt that a commit brings. `debt --files` prints the counts of each file.
+- The diff of that file shows the debt that a commit brings.
 - The check fails when a total is over its row. It also fails when a row is over its total.
 - In the public tree of a game in split mode, a total under its row is no failure. The row also counts the files
   that the public tree does not hold.
@@ -256,7 +256,7 @@ The baseline holds one policy line for each kind. `debt --recount` writes the st
 - `debt --raise <kind> <n> --reason <text>` writes a `raise` line. Only the developer runs it.
 - The gate refuses a new `raise` line in an agent session. The developer commits it from a terminal.
 - The gate refuses a new row of `config/asm-evidence.tsv` in an agent session in the same way.
-- `debt --files` prints the state of each C file: `stubs`, `matched` or `finished`.
+- `debt --files` prints the state of each C file, `stubs`, `matched` or `finished`, and its counts.
 - A finished file has every function in C and no debt of any kind.
 - The README shows that count in a generated block. The README lint refuses the count in any other place.
 

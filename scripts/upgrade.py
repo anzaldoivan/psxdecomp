@@ -51,7 +51,9 @@ the public repository's byte check (written only when absent: it carries the gam
 read stays a {{PLACEHOLDER}} and a `manual` action), and docs/ops/psxdecomp-split.md, the release operator's card
 (profiles/psx/split-mode.md, owned; never public, docs/ops/ is denied).
 
-Every file psxdecomp delivers has one delivery class, in one table (DELIVERY): `owned` (rewritten when it differs from
+Every file psxdecomp delivers but one has one delivery class, in one table (DELIVERY). The exception is
+tools/psxd_trial.py (`trial-tool`): it is written only for a record that names `[trial] probe`, and written again when
+it differs from the plugin's scripts/trial.py. The classes: `owned` (rewritten when it differs from
 the plugin's; its sha256 is recorded in the record's [delivered], and a copy that was edited in the game since then is
 a `manual` action that `apply --take KEY` overwrites), `once` (written when absent, then the game's), `rule` (written
 by the game's own tools/rules_add.py), `merge` (add-only into a file the game shares). A game that has its own

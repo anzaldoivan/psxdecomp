@@ -10,7 +10,7 @@ A finished file meets six conditions:
 5. Plain C. No assembly without a row in `config/asm-evidence.tsv`.
 6. Formatted. The formatter of the repository makes no change.
 
-`python3 tools/psxd_floor.py debt` counts conditions 2 to 5 for each file against `config/debt-baseline.txt`.
+`python3 tools/psxd_floor.py debt` counts conditions 2 to 5 against `config/debt-baseline.txt`.
 
 - Run `python3 tools/psxd_floor.py debt --update` in the commit that changes a count. A row that is not equal fails.
 - Bank a function when it matches. Its cleanup is separate work after the bank, and a later commit lowers the count.
