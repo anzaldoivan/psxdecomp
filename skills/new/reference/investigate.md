@@ -35,7 +35,9 @@ Inputs: the title, region/version and serial (from `.run/bootstrap/interview.jso
    A build that carries symbols can be the better first target. Weigh it against the release the developer owns.
 6. **sdk** — for the detected SDK stamp (`medium.json psyq.version`). Start from its rows in
    `profiles/psx/psyq.toml`. Then find the matching triples (compiler + aspsx + flags) it lacks, and where each was
-   proven.
+   proven. Add one line from `"$PSXD" oracle measure --id retail --dump <DUMP_PATH>`. It counts the functions that
+   load a string and their references, and it says Shift-JIS yes or no. Add the RCS ids that S2 counts
+   (`medium.json debug_artifacts.rcs_ids`).
 7. **names** — where the game's own words come from. Search for a game wiki, the manual and a strategy guide.
    Symbols in another build belong to question 8. Rules for a lead:
    - A wiki or a manual becomes a `link` row.

@@ -7,6 +7,7 @@ CC0 1.0. Deterministic (fixed dates). Output goes to the folder given (a temp di
 committed: the repository's own audit refuses disc images and executables.
 
     python3 make_disc.py <out_dir>        -> HOMEBREW.cue, HOMEBREW (Track 1).bin, HOMEBREW (Track 2).bin, hello.exe
+    python3 make_disc.py --proto <out_dir> -> PROTO.EXE: a second build (build_proto)
 """
 import os
 import struct
@@ -20,6 +21,8 @@ BOOT = "HELLO.EXE"
 MARKER = b"psxdecomp homebrew fixture (CC0)"
 SYM_NAME = "MAIN.SYM"
 SYM = b"MND\x01" + bytes(4)                     # the header of an empty PsyQ symbol file: no symbol in it
+PROTO = "PROTO.EXE"
+PROTO_TEXT = b"proto build %d\0\0"             # a string that the second build has and the first lacks
 
 
 def exe_image() -> bytes:
@@ -31,6 +34,30 @@ def exe_image() -> bytes:
     struct.pack_into("<II", hdr, 0x30, 0x801FFFF0, 0)
     hdr[0x4C:0x4C + len(MARKER)] = MARKER
     return bytes(hdr) + text
+
+
+def proto_image() -> bytes:
+    """A second build: 20 words of other code, then the first build's text (at another address), then a function
+    (scripts/img.py's self-test maker) that builds the address of PROTO_TEXT, a zero word, then the text."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+    import img
+    first = exe_image()
+    at = LOAD + 4 * 20 + len(first) - 2048 + 4 * 13
+    text = b"".join(struct.pack("<I", w) for w in img.filler(3, 20) + img.body((at + 0x8000) >> 16, at & 0xFFFF, 0x4000)
+                    + (0,))
+    text = text[:80] + first[2048:] + text[80:] + PROTO_TEXT
+    text += b"\0" * (-len(text) % 2048)
+    hdr = bytearray(first[:2048])
+    struct.pack_into("<I", hdr, 0x1C, len(text))
+    return bytes(hdr) + text
+
+
+def build_proto(out_dir: str) -> str:
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, PROTO)
+    with open(path, "wb") as f:
+        f.write(proto_image())
+    return path
 
 
 def both16(v):
@@ -129,7 +156,9 @@ def build(out_dir: str) -> dict:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("usage: make_disc.py <out_dir>")
+    if sys.argv[1:2] == ["--proto"] and len(sys.argv) == 3:
+        sys.exit(print("proto %s" % build_proto(sys.argv[2])))
+    if len(sys.argv) != 2 or sys.argv[1].startswith("-"):
+        sys.exit("usage: make_disc.py [--proto] <out_dir>")
     for k, v in build(sys.argv[1]).items():
         print("%s %s" % (k, v))

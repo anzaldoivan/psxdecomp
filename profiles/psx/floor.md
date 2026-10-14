@@ -300,6 +300,8 @@ The rule is `rules/NAME1.md`. `python3 tools/psxd_floor.py names` checks two tab
 - `evidence` is `<class>:<path>:<line>`. `rules/NAME1.md` lists the classes.
 - The tool reads only that `config/names.tsv` is its table. It does not open the evidence of a name.
 - A file that the tool cannot read as its table fails. A row of the assembly ledger that points at nothing also fails.
+- `python3 tools/psxd_img.py promote <unit> <vram> <name>` writes a `provisional` row with the evidence
+  `string:config/oracle.strnames.tsv:<line>`.
 - The `class` of an assembly row is `sdk-object`, `hand-asm` or `data-in-text`.
 - The `evidence` of an assembly row is `<path>:<line>`. `verified_by` names the person who read it.
 - The path is a file of the repository with that line. A file under `refs/<name>/` needs a `[[ref]]` table of that
@@ -356,6 +358,28 @@ checksum file for each such build that a developer supplies. It keeps no byte of
   `.PDB` or `.DBG` file, and a listing of 64 lines.
 - Never commit the text of a symbol file. Keep it in `disks/builds/<id>/`.
 - A name from another build is a lead. It moves to the target after a byte check of the function at both addresses.
+- `psxd oracle measure --repo . --id <id>` maps the build's executable onto your disc's. It writes the share into
+  `measured`. A share is a measure, not a class.
+
+### The tables of a build
+
+`tools/psxd_img.py` maps a build onto the target, unit by unit, and finds the strings that name a function. It reads
+two files that the game writes:
+
+| Phase | File | Columns | Tracked |
+|---|---|---|---|
+| 1.2 | `config/oracle.units.tsv`, from the game's load-map tool | `unit file offset vram words class` | yes |
+| 1.5 | `.run/oracle/functions.tsv`, from the game's census | `unit vram words name lane state` | no |
+
+- Each file starts with two `#` lines: the tool that wrote it, then the columns, separated by tabs.
+- `class` is `exe` (one row: the executable, offset `0x800`) or `code`. `lane` is `game` or `lib`.
+- `config/oracle.retail` holds one line: the folder of the target's files, relative to the repository.
+- `proto --id <id> --build <folder> --exe <path>` writes `config/oracle.<id>.map.tsv`, `.strings.tsv` and, with the
+  census list, `.functions.tsv`.
+- `strnames` writes `config/oracle.strnames.tsv`. Without the census list, it finds each function start by a scan.
+  `strnames --check` compares the table and `config/oracle.strnames.aliases.tsv` with the files, and writes nothing.
+- The tables hold keys and addresses. The text goes to an ignored file. `show <key>` prints it.
+- `measure <retail exe> <build exe>` prints the line of `psxd oracle measure` for two executables.
 
 ## A tool of the game's own
 

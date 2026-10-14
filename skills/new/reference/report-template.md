@@ -23,7 +23,7 @@ Classes: `adapt` · `copyleft` (adapt only into a licence-compatible repo) · `f
 |---|---|---|---|---|---|
 | L1 | Compiler: <triple> (a sibling's pin) | owner/repo@<sha> | lead | Verify: the 1.4 ladder runs it first; a probe matches or refutes | 1.4 |
 | L2 | SDK: PsyQ <v> — <n> `Ps` stamps | own bytes (S2) | consistent-with-bytes | `medium.json psyq`; ghidra_psx_ldr's detection at import is the final word | 1.2 |
-| L3 | Oracle build `<id>`: carries <names, boundaries, types> | <the page that describes it> (the build: `byo`, <no copy / byo path given>) | lead | Verify: <n> function bodies are byte-identical at the mapped addresses of both builds | 1.2 |
+| L3 | Oracle build `<id>`: carries <names, boundaries, types> | <the page that describes it> (the build: `byo`, <no copy / byo path given>) | lead | `psxd oracle measure --id <id> --path <path> --dump <dump>` (<date>) writes `.run/bootstrap/oracle/<id>.measure.tsv`: `ORACLE measure <id>: exe <m> of <n> words in <r> runs (<p>%); …`. Function rows at phase 1.5: the byte check of REFS, <n> bodies byte-identical at the mapped addresses of both builds | 1.2 |
 
 ## Conventions and contribution rules seen
 

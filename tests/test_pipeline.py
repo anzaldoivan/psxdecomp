@@ -5,6 +5,7 @@ import os
 import pathlib
 import re
 import shutil
+import struct
 
 import pytest
 
@@ -255,7 +256,7 @@ def test_s10_writes_the_guard_beside_the_style_hook(game, tmp_path):
     assert {floor.VENDORED, upgrade.FLOOR_DOC, floor.GUARD, upgrade.OPS_INDEX, common.SETTINGS} <= handoff, handoff
     r = run([PY, ROOT / "scripts/doctor.py", "--repo", game, "--offline"], check=False)
     assert re.search(r"DOCTOR guard\s+OK\s+all 2 hook group\(s\)", r.stdout), r.stdout
-    assert re.search(r"DOCTOR publish-tool\s+OK\s+5 owned file\(s\)", r.stdout), r.stdout
+    assert re.search(r"DOCTOR publish-tool\s+OK\s+6 owned file\(s\)", r.stdout), r.stdout
     assert (game / upgrade.CAMPAIGN_DOC).read_bytes() == (ROOT / "profiles/psx/campaign.md").read_bytes()
     assert not (game / upgrade.MATCHER_SKILL).exists() and not (game / "config/bank.tsv").exists()
     assert run([PY, ROOT / "scripts/plan.py", "--repo", game]).stdout.startswith("PLAN INFO plan: no GENERATION_PLAN.md")
@@ -849,6 +850,34 @@ def test_oracle_add_refuses_a_tracked_copy(game, tmp_path):
         r.stdout + r.stderr, r.stdout + r.stderr
     r = _oracle(repo, "add", "--id", "proto-1999-01-01", "--path", proto)        # and the command says so itself
     assert r.returncode == 1 and "FAIL the audit refuses the tree" in r.stdout, r.stdout
+
+
+def test_oracle_measure_of_a_second_build(game, tmp_path):
+    """S4's measure on the fixture's second build (make_disc.py --proto: the first build's text moved by 20 words, one
+    more function and its string): the line with the floors, `measured` in the build's table and no class from it,
+    the reversed control near 0, and the string's text in no table (G12)."""
+    repo = _copy(game, tmp_path)
+    proto = pathlib.Path(run([PY, ROOT / "fixtures/homebrew-psx/make_disc.py", "--proto", tmp_path / "proto"]).stdout.split()[1])
+    r = _oracle(repo, "measure", "--id", "proto-1999-01-01", "--path", proto.parent)
+    assert r.returncode == 0 and r.stdout == (
+        "ORACLE measure proto-1999-01-01: exe 512 of 512 words in 1 runs (100.0%); build-only strings 1 (1 with a "
+        "reference); floor: an unrelated PsyQ game maps 22-25%, a sister game 64-65%\n"), r.stdout + r.stderr
+    assert _oracle(repo, "add", "--id", "proto-1999-01-01", "--path", proto.parent, "--class", "prototype").returncode == 0
+    r = _oracle(repo, "measure", "--id", "proto-1999-01-01")                       # the registered copy and dump
+    assert "  changed config/oracle.toml\nNEXT commit config/oracle.toml\n" in r.stdout, r.stdout
+    assert {k: oracle.builds(repo)[0][k] for k in ("class", "measured")} == {"class": "prototype", "measured": "exe 100.0%"}
+    first = pathlib.Path(oracle.registered(repo)[oracle.RETAIL])
+    exe = oracle.boot_exe(first, oracle.identify.load_probe("psx")[1])
+    words = struct.unpack("<%dI" % ((len(exe) - 2048) // 4), exe[2048:])
+    back = tmp_path / "back" / "BACK.EXE"
+    back.parent.mkdir()
+    back.write_bytes(exe[:2048] + struct.pack("<%dI" % len(words), *words[::-1]))
+    r = _oracle(repo, "measure", "--id", "proto-1999-01-01", "--path", proto, "--dump", back, "--dry-run")
+    assert float(re.search(r"\(([\d.]+)%\)", r.stdout).group(1)) < 5, r.stdout          # the reversed control
+    texts = (repo / oracle.MEASURED / "proto-1999-01-01.strings.txt").read_text()
+    assert "proto build %d" in texts
+    held = [p for p in repo.rglob("*.tsv") if "proto build" in p.read_text(errors="replace")]
+    assert held == [] and run(["git", "-C", repo, "grep", "-l", "-F", "proto build", "HEAD"], check=False).stdout == ""
 
 
 def test_upgrade_adds_the_firewall_block_and_asks_for_the_record(game, tmp_path):

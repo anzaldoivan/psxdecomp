@@ -639,6 +639,12 @@ def s10_handoff(c: Ctx) -> str:
                                ans.get("PSXDECOMP_BYO_ORACLE_PAGE") or None)       # a refusal: nothing was written
         c.written += got
         print("     oracle build %s" % line)
+        try:                                      # the share of the dump's executable that the build holds: a measure
+            got, line = oracle.measure(c.target, bid, byo, dump)
+            c.written += got
+            print("     oracle %s" % line)
+        except common.Fail as e:                  # a copy with no executable (a symbol file alone) has no measure
+            print("     oracle measure %s: not measured (%s)" % (bid, e))
     if not c.dry and "oracle" not in upgrade.record_tables(c.target):
         got, line = oracle.record(c.target, (medium or {}).get("debug_artifacts"), dump)   # and the dump's path, locally
         c.written += got

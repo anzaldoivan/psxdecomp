@@ -8,7 +8,8 @@ from conftest import PY, ROOT, run
 
 
 @pytest.mark.parametrize("script", ["answers", "fetch_refs", "identify", "preflight", "doctor", "upgrade", "install",
-                                    "decompdev", "ghsearch", "resume_hint", "publish", "private_init", "floor", "oracle", "plan", "trial"])
+                                    "decompdev", "ghsearch", "resume_hint", "publish", "private_init", "floor", "oracle", "plan",
+                                    "trial", "img"])
 def test_self_test(script):
     r = run([PY, ROOT / "scripts" / ("%s.py" % script), "--self-test"], check=False)
     assert r.returncode == 0 and "SELF-TEST OK" in r.stdout, r.stdout + r.stderr
@@ -24,6 +25,9 @@ def test_fixture_disc_is_deterministic(tmp_path):
         run([PY, ROOT / "fixtures/homebrew-psx/make_disc.py", tmp_path / d])
     for f in ("HOMEBREW.cue", "HOMEBREW (Track 1).bin", "hello.exe"):
         assert (tmp_path / "a" / f).read_bytes() == (tmp_path / "b" / f).read_bytes()
+    for d in ("a", "b"):
+        run([PY, ROOT / "fixtures/homebrew-psx/make_disc.py", "--proto", tmp_path / d / "proto"])
+    assert (tmp_path / "a/proto/PROTO.EXE").read_bytes() == (tmp_path / "b/proto/PROTO.EXE").read_bytes()
 
 
 def test_answers_n64_refused_installs_nothing(tmp_path):
