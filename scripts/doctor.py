@@ -11,7 +11,7 @@
     doctor.py --self-test
 
 Checks: the bootstrap record (config/psxdecomp.toml); roadmap (GENERATION_PLAN.md against the roadmap floor,
-floor.lint_plan: FAIL on a grammar or ladder failure, WARN on any other finding, WAIT before the plan exists); deny (FAIL when a rule of profiles/psx/deny.json is missing from
+plan.lint_plan: FAIL on a grammar or ladder failure, WARN on any other finding, WAIT before the plan exists); deny (FAIL when a rule of profiles/psx/deny.json is missing from
 .claude/settings.json, WARN when psxdecomp cannot edit that file); PA3's version against compat.toml; pa3-drift (WARN
 only: the machine's PA3 against the pin, and pa.json `"upgrade": "ask"`); the kit's install record; the README (FAIL
 without the AI policy block; a README on the standard, docs/PUBLISHING.md, is linted and FAILs on a lint failure; an
@@ -59,6 +59,7 @@ import decompdev  # noqa: E402
 import fetch_refs  # noqa: E402
 import floor  # noqa: E402
 import oracle  # noqa: E402
+import plan  # noqa: E402
 import publish  # noqa: E402
 
 NETWORK_ROWS = ("progress", "github", "dev-ci", "private-repo", "public-standard")
@@ -256,18 +257,18 @@ def own_missing(repo: pathlib.Path, own: dict) -> list[str]:
 
 
 def roadmap_row(repo: pathlib.Path) -> tuple[str, str]:
-    """GENERATION_PLAN.md against the roadmap floor (floor.lint_plan): FAIL on a `grammar` or `ladder` finding, WARN on
+    """GENERATION_PLAN.md against the roadmap floor (plan.lint_plan): FAIL on a `grammar` or `ladder` finding, WARN on
     any other. WAIT before PA3's planner drafted the plan: the row then counts the ladder phases the constitution names."""
-    found = floor.lint_plan(repo)
+    found = plan.lint_plan(repo)
     info = {f[1]: f[2] for f in found if f[0] == "INFO"}
     if "plan" in info:
         return "WAIT", "%s; due when PA3's planner drafts the plan" % info["plan"]
-    st, count = floor.plan_summary(found)
+    st, count = plan.plan_summary(found)
     worst = [f for f in found if f[0] == ("FAIL" if st == "FAIL" else "WARN")]
     if not worst:
-        return "OK", "%s: %s" % (floor.PLAN, info.get("state", count))
-    return st, "%s: %s — %s%s (`python3 %s plan` lists them)" % (
-        floor.PLAN, count, "; ".join("%s: %s" % f[1:] for f in worst[:2]), "; …" if len(worst) > 2 else "", floor.VENDORED)
+        return "OK", "%s: %s" % (plan.PLAN, info.get("state", count))
+    return st, "%s: %s — %s%s (`psxd plan --repo .` lists them)" % (
+        plan.PLAN, count, "; ".join("%s: %s" % f[1:] for f in worst[:2]), "; …" if len(worst) > 2 else "")
 
 
 def _record(repo: pathlib.Path) -> dict:
@@ -282,7 +283,7 @@ def floor_rows(repo: pathlib.Path) -> list[tuple[str, tuple[str, str]]]:
     """The five phase-conditional rows of the tooling and readability floor: gate, toolchain, names, debt, cpp. A row that
     is not due says WAIT with the phase that makes it due; an [own] key answers its row (the record row checks that
     its path exists)."""
-    rec, state = _record(repo), floor.phase_state(repo)
+    rec, state = _record(repo), plan.phase_state(repo)
     own = _table(rec, "own")
     debt = None
     try:                                               # also beside `[own] debt`: the game's scanner adds to this count
@@ -911,7 +912,7 @@ def progress_row(repo: pathlib.Path, fetch, head=None) -> tuple[str, str] | None
     texts = {p.name: common.read(p) for p in sorted(wf.glob("*.y*ml"))} if wf.is_dir() else {}
     found = lint_workflows(texts)
     if not builds_report(repo, texts):
-        phase = floor.phase_state(repo)[9]
+        phase = plan.phase_state(repo)[9]
         need = "a workflow that uploads the `<EXE>_report` artifact (psxdecomp's docs/PUBLISHING.md%s)" % (
             "; the split build workflow uploads it from the first config/categories.tsv"
             if any(k in t for t in texts.values() for k in SPLIT_KEYS.values()) else "")
@@ -1359,23 +1360,23 @@ def self_test_roadmap() -> bool:
     with tempfile.TemporaryDirectory() as td:
         repo = pathlib.Path(td).resolve()
         common.git(repo, "init", "--quiet")
-        (repo / floor.CONTEXT).write_text("- **Phase 0 — Governance and the firewall.**\n")
+        (repo / plan.CONTEXT).write_text("- **Phase 0 — Governance and the firewall.**\n")
         wait = roadmap_row(repo)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc = main(["--repo", str(repo), "--offline", "--only", "roadmap"])
         last = buf.getvalue().splitlines()[-1]
-        (repo / floor.PLAN).write_text(floor.self_plan(closed=0))
+        (repo / plan.PLAN).write_text(plan.self_plan(closed=0))
         good = roadmap_row(repo)
-        (repo / floor.PLAN).write_text(floor.self_plan(closed=0).replace("Done-criteria: d\n", ""))
+        (repo / plan.PLAN).write_text(plan.self_plan(closed=0).replace("Done-criteria: d\n", ""))
         warn = roadmap_row(repo)
-        (repo / floor.PLAN).write_text(floor.self_plan(closed=0, drop=(4,)).replace("depends: 1.4 |", "depends: 1.3 |"))
+        (repo / plan.PLAN).write_text(plan.self_plan(closed=0, drop=(4,)).replace("depends: 1.4 |", "depends: 1.3 |"))
         fail = roadmap_row(repo)
     print("  roadmap: no plan %s; the ladder %s; no Done-criteria %s; a dropped phase %s" % (wait[0], good[0], warn[0], fail[0]))
     return (wait[0] == "WAIT" and "names 1 of the 11 ladder phases" in wait[1] and rc == 0
             and last == "DOCTOR OK (0 warn, 1 not due)" and good[0] == "OK" and "ladder phases open 0" in good[1]
             and warn[0] == "WARN" and "criteria: no `Done-criteria:` line" in warn[1]
-            and fail[0] == "FAIL" and "ladder: no line 1.4" in fail[1] and "tools/psxd_floor.py plan" in fail[1])
+            and fail[0] == "FAIL" and "ladder: no line 1.4" in fail[1] and "psxd plan --repo ." in fail[1])
 
 
 def self_test_floor() -> bool:
@@ -1387,7 +1388,7 @@ def self_test_floor() -> bool:
         rows = lambda: dict(floor_rows(repo))  # noqa: E731
         first = rows()
         ok = {r[0] for r in first.values()} == {"WAIT"} and "phase 1.3 closes" in first["gate"][1]
-        (repo / floor.PLAN).write_text(floor.self_plan(closed=5))               # 1.0 to 1.4 closed
+        (repo / plan.PLAN).write_text(plan.self_plan(closed=5))               # 1.0 to 1.4 closed
         due = rows()
         ok &= [due[k][0] for k in ("gate", "toolchain", "names", "debt")] == ["WARN", "WARN", "WARN", "WAIT"]
         ok &= "no gate command" in due["gate"][1] and "no config/check.*.sha" in due["gate"][1]
@@ -1431,7 +1432,7 @@ def self_test_floor() -> bool:
         (repo / "src/a.c").write_text(floor.C_CLEAN)
         stale = rows()["debt"]
         (repo / floor.BASELINE).write_text(floor.first_baseline(repo))
-        (repo / floor.PLAN).write_text(floor.self_plan(closed=11))              # the whole ladder closed
+        (repo / plan.PLAN).write_text(plan.self_plan(closed=11))              # the whole ladder closed
         late = rows()
         (repo / "Makefile").unlink()
         gone = rows()["gate"]
@@ -1607,7 +1608,7 @@ def self_test_progress() -> bool:
         common.git(repo, "remote", "add", "origin", "https://github.com/example/game-a-decomp.git")
         none = [progress_row(repo, lambda: [])]                        # no report workflow: by the state of phase 1.9
         for closed in (9, 10, 11):
-            (repo / floor.PLAN).write_text(floor.self_plan(closed=closed))
+            (repo / plan.PLAN).write_text(plan.self_plan(closed=closed))
             none.append(progress_row(repo, lambda: []))
         # a workflow that only speaks of a report builds none: a comment, another word, the split template with no categories
         for text in ("on: push\njobs:\n  b:\n    steps:\n      - run: make check   # no report.json yet\n",
@@ -1617,7 +1618,7 @@ def self_test_progress() -> bool:
         (repo / ".github/workflows/build.yml").unlink()
         (repo / ".github/workflows").rmdir()
         (repo / ".github").rmdir()
-        (repo / floor.PLAN).unlink()
+        (repo / plan.PLAN).unlink()
         print("  progress row, no report workflow: %s" % "; ".join(n[0] for n in none))
         ok &= [n[0] for n in none] == ["WAIT", "WARN", "FAIL", "FAIL", "FAIL", "FAIL", "FAIL"] and "phase 1.9 opens" in none[0][1]
         ok &= "config/categories.tsv" in none[6][1]

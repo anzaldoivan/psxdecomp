@@ -17,6 +17,7 @@ import common
 import fetch_refs
 import floor
 import oracle
+import plan
 import publish
 
 
@@ -155,25 +156,25 @@ def test_eval_cases():
 
 def test_s7_ladder_eval_reads_the_ladder():
     """The `s7-ladder` case grades the constitution a real S7 writes. It has one file grader for each of the eleven
-    ladder phases. They pass on a text that names the phases as floor.LADDER holds them, in the list form and in the
+    ladder phases. They pass on a text that names the phases as plan.LADDER holds them, in the list form and in the
     kit's table form. A text that lacks any one phase fails the grader of that phase, and so do prose that only
     holds the words and the two-phase fixture constitution: the canned fixture can never stand in for the intake."""
     yaml = pytest.importorskip("yaml")
     d = yaml.safe_load((ROOT / "evals/s7-ladder/case.yaml").read_text())
     gs = [g for g in d["graders"] if g["type"] == "regex" and isinstance(g.get("target"), dict)]
-    assert len(gs) == len(floor.LADDER) and all(g["target"] == {"source": "file", "path": floor.CONTEXT} for g in gs), gs
-    lines = ["- **Phase 1.%d %s** — milestone: m" % (n, name) for n, name, _, _ in floor.LADDER]
-    rows = ["| %d | **%s** | m |" % (n, name) for n, name, _, _ in floor.LADDER]
+    assert len(gs) == len(plan.LADDER) and all(g["target"] == {"source": "file", "path": plan.CONTEXT} for g in gs), gs
+    lines = ["- **Phase 1.%d %s** — milestone: m" % (n, name) for n, name, _, _ in plan.LADDER]
+    rows = ["| %d | **%s** | m |" % (n, name) for n, name, _, _ in plan.LADDER]
     for full in ("\n".join(lines), "\n".join(rows)):
-        assert floor.ladder_missing(full) == [] and all(_passes(g, full) for g in gs), [g["name"] for g in gs if not _passes(g, full)]
+        assert plan.ladder_missing(full) == [] and all(_passes(g, full) for g in gs), [g["name"] for g in gs if not _passes(g, full)]
     for n in range(len(lines)):
         less = "\n".join(l for i, l in enumerate(lines) if i != n)
         failed = [g["name"] for g in gs if not _passes(g, less)]
-        assert failed == [gs[n]["name"]] and floor.ladder_missing(less) == [n], (n, failed)
+        assert failed == [gs[n]["name"]] and plan.ladder_missing(less) == [n], (n, failed)
     prose = "The kit's ladder: governance and the firewall, extraction, the oracles and the load map, the all-assembly " \
             "baseline, the compiler pinned by evidence, the census, the multipliers, the codegen map, the campaign, " \
             "publish, readability.\n10 things to do.\n"
-    assert not any(_passes(g, prose) for g in gs) and floor.ladder_missing(prose) == list(range(11))
+    assert not any(_passes(g, prose) for g in gs) and plan.ladder_missing(prose) == list(range(11))
     fixture = (ROOT / "fixtures/PROJECT_CONTEXT.fixture.md").read_text()
     assert not all(_passes(g, fixture) for g in gs)
     last = {g["name"]: g for g in d["graders"] if g.get("target") == "last_message"}
@@ -451,7 +452,7 @@ def test_builds_question_reaches_the_gate():
         text = (ROOT / "scripts" / ("%s.py" % script)).read_text()
         assert "with_firewall_debug(" in text and "[Ss][Yy][Mm]" not in text, script
     usage = (ROOT / "scripts/psxd").read_text()
-    assert "|oracle>" in usage and "psxd oracle record --repo . --dump <dump> " in usage
+    assert "|oracle|plan>" in usage and "psxd oracle record --repo . --dump <dump> " in usage
     assert all(w in usage for w in ("psxd oracle add --repo . --id <id> --path <copy> --expect <sha1>", "psxd oracle list",
                                     "psxd oracle locate --id <id>", "psxd oracle link --id <id> --path <copy>"))
     text = (ROOT / "scripts/oracle.py").read_text()
@@ -820,6 +821,11 @@ def test_digests_equal_the_sources():
 
 # ---- the floor (scripts/floor.py, vendored into a game as tools/psxd_floor.py) --------------------------------------
 
+def _plan(*args):
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", **GIT_ENV)
+    return subprocess.run([PY, str(ROOT / "scripts/plan.py"), *map(str, args)], capture_output=True, text=True, env=env)
+
+
 def _floor(*args, cwd=None, stdin=None, env=None):
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", **GIT_ENV, **(env or {}))
     env.pop("CLAUDE_PROJECT_DIR", None)
@@ -838,7 +844,7 @@ def test_floor_is_vendorable():
     assert floor.VENDORED == "tools/psxd_floor.py"
     assert floor.VERSION == publish.VERSION == common.plugin_version()          # a game's tool changes only to a later one
     assert _floor("--version").stdout.strip() == floor.VERSION
-    assert len(floor.LADDER) == 11 and [r[0] for r in floor.LADDER] == list(range(11))
+    assert len(plan.LADDER) == 11 and [r[0] for r in plan.LADDER] == list(range(11))
 
 
 def test_vendored_tools_run_alone(tmp_path):
@@ -855,7 +861,7 @@ def test_vendored_tools_run_alone(tmp_path):
     r = alone(floor.VENDORED, "--self-test")
     assert r.returncode == 0 and r.stdout.strip().endswith("SELF-TEST OK"), r.stdout[-600:] + r.stderr[-600:]
     for args in ((publish.VENDORED, "lint", "README.md"), (publish.VENDORED, "style"), (floor.VENDORED, "debt"),
-                 (floor.VENDORED, "plan"), (floor.VENDORED, "names")):
+                 (floor.VENDORED, "names")):
         r = alone(*args)
         assert r.returncode in (0, 1) and "Traceback" not in r.stderr and "Error" not in r.stderr, (args, r.stderr[-400:])
     event = json.dumps({"hook_event_name": "PostToolUse", "tool_name": "Write", "cwd": str(game),
@@ -1040,41 +1046,41 @@ def test_release_workflow_refuses_a_tag_off_main():
 
 
 def test_plan_grammar_cases(tmp_path):
-    """`floor.py plan` on synthetic plans: the ladder as written passes; a slice stands for its phase; a merge with a
+    """`plan.py` on synthetic plans: the ladder as written passes; a slice stands for its phase; a merge with a
     `## Changes` line passes; a dropped phase exits 1 with a `ladder` FAIL; a generation-2 plan reads the ladder from
     the closed generation's record; a line with a lost key exits 1 with a `grammar` FAIL."""
-    repo = _style_repo(tmp_path, {"GENERATION_PLAN.md": floor.self_plan(closed=0)})
-    plan = repo / "GENERATION_PLAN.md"
-    r = _floor("plan", "--repo", repo)
+    repo = _style_repo(tmp_path, {"GENERATION_PLAN.md": plan.self_plan(closed=0)})
+    plan_md = repo / "GENERATION_PLAN.md"
+    r = _plan("--repo", repo)
     assert r.returncode == 0 and r.stdout.endswith("PLAN OK (0 fail, 0 warn)\n"), r.stdout
     assert "PLAN INFO state: generation 1; ladder phases open 0; pending 1,2,3,4,5,6,7,8,9,10\n" in r.stdout, r.stdout
-    slices = [floor._phase("1.8.1", "The campaign, slice 1", milestone="0 stubs", depends="1.7"),
-              floor._phase("1.8.2", "The campaign, slice 2", depends="1.8.1")]
-    plan.write_text(floor.self_plan(closed=0, drop=(8,), extra=slices).replace("depends: 1.8 |", "depends: 1.8.2 |"))
-    assert _floor("plan", "--repo", repo).returncode == 0
-    dropped = floor.self_plan(closed=0, drop=(6,)).replace("depends: 1.6 |", "depends: 1.5 |")
-    plan.write_text(dropped)
-    r = _floor("plan", "--repo", repo)
+    slices = [plan._phase("1.8.1", "The campaign, slice 1", milestone="0 stubs", depends="1.7"),
+              plan._phase("1.8.2", "The campaign, slice 2", depends="1.8.1")]
+    plan_md.write_text(plan.self_plan(closed=0, drop=(8,), extra=slices).replace("depends: 1.8 |", "depends: 1.8.2 |"))
+    assert _plan("--repo", repo).returncode == 0
+    dropped = plan.self_plan(closed=0, drop=(6,)).replace("depends: 1.6 |", "depends: 1.5 |")
+    plan_md.write_text(dropped)
+    r = _plan("--repo", repo)
     assert r.returncode == 1 and "PLAN FAIL ladder: no line 1.6 (The multipliers)" in r.stdout, r.stdout
     assert r.stdout.endswith("PLAN FAIL (1 fail, 0 warn)\n"), r.stdout
-    plan.write_text(dropped + "- 2026-01-02 developer: phases 1.5 and 1.6 merged into 1.5 — a small game\n")
-    assert _floor("plan", "--repo", repo).returncode == 0
-    plan.write_text(floor.self_plan(closed=0).replace(" | scope: s", "", 1))
-    r = _floor("plan", "--repo", repo)
+    plan_md.write_text(dropped + "- 2026-01-02 developer: phases 1.5 and 1.6 merged into 1.5 — a small game\n")
+    assert _plan("--repo", repo).returncode == 0
+    plan_md.write_text(plan.self_plan(closed=0).replace(" | scope: s", "", 1))
+    r = _plan("--repo", repo)
     assert r.returncode == 1 and "PLAN FAIL grammar: line 11 (1.0): no `scope:`" in r.stdout, r.stdout
-    plan.write_text("# Generation 2 — next\n\nGoal: g\nDone-criteria: d\n\n## Phases\n\n%s\n\n## Changes\n"
-                    % floor._phase("2.1", "The round-trip disc"))
-    r = _floor("plan", "--repo", repo)
+    plan_md.write_text("# Generation 2 — next\n\nGoal: g\nDone-criteria: d\n\n## Phases\n\n%s\n\n## Changes\n"
+                    % plan._phase("2.1", "The round-trip disc"))
+    r = _plan("--repo", repo)
     assert r.returncode == 0 and "PLAN WARN ladder: generation 2 and no phase-ends/GenerationEnd_1.md" in r.stdout
     (repo / "phase-ends").mkdir()
     (repo / "phase-ends/GenerationEnd_1.md").write_text("# GenerationEnd\n\n## Phases\n" + "".join(
-        "- 1.%d | %s | milestone: m\n" % (n, name) for n, name, _, _ in floor.LADDER))
-    r = _floor("plan", "--repo", repo)
+        "- 1.%d | %s | milestone: m\n" % (n, name) for n, name, _, _ in plan.LADDER))
+    r = _plan("--repo", repo)
     assert r.returncode == 0 and r.stdout.endswith("PLAN OK (0 fail, 0 warn)\n"), r.stdout
-    plan.unlink()
-    r = _floor("plan", "--repo", repo)
+    plan_md.unlink()
+    r = _plan("--repo", repo)
     assert r.returncode == 0 and r.stdout.startswith("PLAN INFO plan: no GENERATION_PLAN.md"), r.stdout
-    assert _floor("ladder", ROOT / "fixtures/PROJECT_CONTEXT.fixture.md").returncode == 1      # the fixture names two
+    assert _plan("ladder", ROOT / "fixtures/PROJECT_CONTEXT.fixture.md").returncode == 1      # the fixture names two
 
 
 def test_debt_kinds(tmp_path):
@@ -1523,16 +1529,16 @@ def test_guard_profile_files():
 
 
 def test_floor_doc_names_the_ladder():
-    """profiles/psx/floor.md is the one home of the numbering: its table holds floor.LADDER row for row (the id 1.n,
+    """profiles/psx/floor.md is the one home of the numbering: its table holds plan.LADDER row for row (the id 1.n,
     the kit's name, the words the milestone keeps), it starts with "After the bootstrap", and it documents every plan
     check and every guard column."""
     doc = (ROOT / "profiles/psx/floor.md").read_text()
-    for n, name, _, must in floor.LADDER:
+    for n, name, _, must in plan.LADDER:
         assert "| 1.%d | %s | %s|" % (n, name, "`%s` " % must if must else "") in doc, n
     heads = [l[3:] for l in doc.splitlines() if l.startswith("## ")]
     assert heads[:2] == ["After the bootstrap", "Numbering"], heads
     for check in ("grammar", "ladder", "numbering", "frozen", "criteria", "paths", "markers"):
-        assert "| `%s` | " % check in doc and "  %s " % check in floor.__doc__, check
+        assert "| `%s` | " % check in doc and "  %s " % check in plan.__doc__, check
     assert all("| `%s` |" % c in doc for c in floor.GUARD_COLUMNS)
     import upgrade
     assert all("| `%s` |" % k in doc for k in upgrade.OWN_KEYS)
@@ -1629,7 +1635,7 @@ def test_readme_workflow_names_the_ladder():
     stages = re.findall(r"(?m)^\d\. \*\*(\w+) \(1\.(\d+)(?: to 1\.(\d+))?\)\.\*\*", section)
     assert [s[0] for s in stages] == ["Foundation", "Compiler", "Instruments", "Campaign", "Publication", "Readability"]
     covered = [n for _, a, b in stages for n in range(int(a), int(b or a) + 1)]
-    assert covered == [n for n, _, _, _ in floor.LADDER], covered
+    assert covered == [n for n, _, _, _ in plan.LADDER], covered
     assert "(profiles/psx/floor.md#numbering)" in section and "## Numbering" in (ROOT / "profiles/psx/floor.md").read_text()
     assert "A matched function is not a finished one." in section and "```mermaid" in section
 

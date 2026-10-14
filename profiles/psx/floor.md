@@ -7,7 +7,7 @@ tools, a guard for generated files, and a debt count. This file is the reference
 
 1. Start a bare `claude` session in the repository. Project Architect's planner drafts `GENERATION_PLAN.md`.
 2. Read the draft against the ladder in "Numbering". Approve it only when each ladder phase has a line.
-3. Run `python3 tools/psxd_floor.py plan`. Have the planner correct each `FAIL` before the first phase starts.
+3. Run `psxd plan --repo .`. Have the planner correct each `FAIL` before the first phase starts.
 4. Let the router run one approved phase at a time. A phase closes when its `verified by:` commands pass.
 5. Run `/psxdecomp:doctor` when a phase closes. A `WAIT` row names the phase that makes it due.
 6. Read `docs/prior-art.md` before phase 1.2. Read `docs/ops/refs.md` before phase 1.4.
@@ -40,8 +40,8 @@ tools, a guard for generated files, and a debt count. This file is the reference
 
 ## The roadmap checks
 
-`python3 tools/psxd_floor.py plan` reads `GENERATION_PLAN.md` and writes nothing. The doctor's `roadmap` row runs the
-same checks. A `FAIL` fails the doctor.
+`psxd plan --repo .` reads `GENERATION_PLAN.md` and writes nothing. The doctor's `roadmap` row runs the same checks.
+A `FAIL` fails the doctor. The gate does not run them.
 
 | Check | Level | The finding |
 |---|---|---|
@@ -104,7 +104,7 @@ edits a file. The hook reads `config/guard.tsv`. psxdecomp writes that file once
 
 A game has one command that proves a change. The default is `make verify`.
 
-1. Run the policy checks first: `psxd_floor.py plan`, `debt` and `names`, then `psxd_publish.py lint README.md` and `style`.
+1. Run the policy checks first: `psxd_floor.py debt` and `names`, then `psxd_publish.py lint README.md` and `style`.
 2. Run the build with its hash check.
 3. Print `VERIFY OK` as the last line, or `VERIFY FAIL: <the command to run>`.
 
@@ -133,7 +133,7 @@ The gate refuses these things, and no other. Established decompilation projects 
 | assembly that stands for a function: an assembly statement with an instruction or data, or an assembly file, with no evidence row | `debt` |
 | a new pin, `goto` or barrier with no `// !FAKE: <reason>` comment | `debt` |
 | a rise of a kind that the developer set to `down` | `debt` |
-| a baseline, a ledger, a README, a plan or a tool pin that is not in order | `debt`, `names`, `readme`, `plan`, `toolchain`, `categories`, `style`, `own-debt` |
+| a baseline, a ledger, a README or a tool pin that is not in order | `debt`, `names`, `readme`, `toolchain`, `categories`, `style`, `own-debt` |
 
 - The gate judges a change against a tree that the change cannot rewrite. An edited baseline or tool decides nothing.
 - The two ends of a change decide. A merge in progress is judged against `HEAD`, as any other change.

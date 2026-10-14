@@ -103,12 +103,12 @@ def test_s10_writes_the_deny_rules_and_doctor_checks_them(game, tmp_path):
 
 
 def test_ladder_matches_kit(kit):
-    """floor.LADDER is the pinned kit's ladder: each phase's name is in row n of the ladder table of intake.decomp.md,
+    """plan.LADDER is the pinned kit's ladder: each phase's name is in row n of the ladder table of intake.decomp.md,
     its name words match that name, and each required milestone word is in row n of that table or of the
     `verified by` table. The kit's own table names all eleven phases."""
     import pathlib
 
-    import floor
+    import plan
     part = (pathlib.Path(kit) / "intake.decomp.md").read_text().split("## Part B", 1)[1].split("\n## Part C", 1)[0]
     rows = {}
     for line in part.splitlines():
@@ -116,10 +116,10 @@ def test_ladder_matches_kit(kit):
         if m:
             rows.setdefault(int(m[1]), []).append(m[2])
     assert sorted(rows) == list(range(11)) and all(len(v) == 2 for v in rows.values()), sorted(rows)
-    for n, name, words, must in floor.LADDER:
+    for n, name, words, must in plan.LADDER:
         assert name in rows[n][0] and re.search(words, name, re.I), (n, name)
         assert not must or must in " ".join(rows[n]), (n, must)
-    assert floor.ladder_missing(part) == []
+    assert plan.ladder_missing(part) == []
 
 
 def test_roadmap_row_waits_before_the_plan(game):
@@ -258,7 +258,7 @@ def test_s10_writes_the_guard_beside_the_style_hook(game, tmp_path):
     assert re.search(r"DOCTOR publish-tool\s+OK\s+5 owned file\(s\)", r.stdout), r.stdout
     assert (game / upgrade.CAMPAIGN_DOC).read_bytes() == (ROOT / "profiles/psx/campaign.md").read_bytes()
     assert not (game / upgrade.MATCHER_SKILL).exists() and not (game / "config/bank.tsv").exists()
-    assert run([PY, floor.VENDORED, "plan"], cwd=game).stdout.startswith("PLAN INFO plan: no GENERATION_PLAN.md")
+    assert run([PY, ROOT / "scripts/plan.py", "--repo", game]).stdout.startswith("PLAN INFO plan: no GENERATION_PLAN.md")
 
     def hook(repo, **inp):
         event = {"hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": inp, "cwd": str(repo)}

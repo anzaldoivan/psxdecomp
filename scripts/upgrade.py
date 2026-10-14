@@ -91,6 +91,7 @@ import fetch_refs  # noqa: E402
 import floor  # noqa: E402
 import install  # noqa: E402
 import oracle  # noqa: E402
+import plan as roadmap  # noqa: E402
 import publish  # noqa: E402
 
 PROFILE_REFS = common.PLUGIN_ROOT / "profiles" / "psx" / "refs.toml"
@@ -421,7 +422,7 @@ def plan(repo: pathlib.Path) -> list[dict]:
                 "psxdecomp %s's (%s)" % (label, " and ".join(edited), "it" if len(edited) == 1 else "them", key,
                                          "it" if len(edited) == 1 else "them", common.plugin_version(), what),
                 "an owned file with local changes is never overwritten unasked", key + "-edited")
-    if (floor.phase_state(repo)[8] == "open" and not {"campaign", "matcher"} & own_keys(repo)
+    if (roadmap.phase_state(repo)[8] == "open" and not {"campaign", "matcher"} & own_keys(repo)
             and not (repo / MATCHER_SKILL).exists() and (repo / "tools/skill_add.py").is_file()):
         add("manual", "matcher: offered, not installed. `%s` makes a skill of the \"Matcher workflow\" section. It also "
             "adds a line to the card and a description that every session loads: the developer decides" % MATCHER_LINE,
@@ -1111,13 +1112,13 @@ def self_test_record(repo: pathlib.Path) -> bool:
             (repo / rel).write_bytes(held)
         rec.write_text(plain, encoding="utf-8")
         ok &= own_key == "debt" or act_key in keys() or (repo / rel).is_file()   # the control: without the key it is due
-    (repo / floor.PLAN).write_text(floor.self_plan(closed=8))              # phase 1.8 open: the matcher is offered
+    (repo / roadmap.PLAN).write_text(roadmap.self_plan(closed=8))              # phase 1.8 open: the matcher is offered
     common.write(repo / "tools/skill_add.py", "pass\n")
     rec.write_text(plain, encoding="utf-8")
     offered = "matcher" in keys()
     rec.write_text(record_set(plain, "own", "matcher", ".claude/skills/mine"), encoding="utf-8")
     ok &= offered and "matcher" not in keys()
-    (repo / floor.PLAN).unlink()
+    (repo / roadmap.PLAN).unlink()
     (repo / "tools/skill_add.py").unlink()
     rec.write_text(plain, encoding="utf-8")
     for own_key, (path2, value2) in OWN_DETECT.items():                    # each detect path proposes its key
@@ -1416,18 +1417,18 @@ def self_test() -> int:
         ok &= (repo / FLOOR_DOC).read_bytes() == OWNED[FLOOR_DOC].read_bytes()
         ok &= "campaign" in keys and (repo / CAMPAIGN_DOC).read_bytes() == OWNED[CAMPAIGN_DOC].read_bytes()
         ok &= "matcher" not in keys2                                     # no plan: phase 1.8 is not open
-        (repo / floor.PLAN).write_text(floor.self_plan(closed=8))
+        (repo / roadmap.PLAN).write_text(roadmap.self_plan(closed=8))
         ok &= "matcher" not in {x["key"] for x in plan(repo)}            # no skill_add.py: nothing to offer
         common.write(repo / "tools/skill_add.py", "")
         offer = next((x for x in plan(repo) if x["key"] == "matcher"), None)
         ok &= offer is not None and offer["owner"] == "manual" and MATCHER_LINE in offer["what"]
-        (repo / floor.PLAN).write_text(floor.self_plan(closed=7))        # 1.8 waits for 1.7: not offered yet
+        (repo / roadmap.PLAN).write_text(roadmap.self_plan(closed=7))        # 1.8 waits for 1.7: not offered yet
         ok &= "matcher" not in {x["key"] for x in plan(repo)}
-        (repo / floor.PLAN).write_text(floor.self_plan(closed=8))
+        (repo / roadmap.PLAN).write_text(roadmap.self_plan(closed=8))
         (repo / MATCHER_SKILL).mkdir(parents=True)                      # the skill exists: not offered again
         ok &= "matcher" not in {x["key"] for x in plan(repo)}
         (repo / MATCHER_SKILL).rmdir()
-        (repo / floor.PLAN).unlink()
+        (repo / roadmap.PLAN).unlink()
         (repo / "tools/skill_add.py").unlink()
         ok &= (repo / floor.GUARD).read_text() == common.read(common.PROFILE_GUARD)
         (repo / floor.GUARD).write_text("# the game's own rules\n")      # once: never rewritten
