@@ -133,7 +133,6 @@ The gate refuses these things, and no other. Established decompilation projects 
 | assembly that stands for a function: an assembly statement with an instruction or data, or an assembly file, with no evidence row | `debt` |
 | a new pin, `goto` or barrier with no `// !FAKE: <reason>` comment | `debt` |
 | a rise of a kind that the developer set to `down` | `debt` |
-| the text of a symbol file of another build: 64 lines in a row with the shape of a PsyQ symbol dump | `symdump` |
 | a baseline, a ledger, a README, a plan or a tool pin that is not in order | `debt`, `names`, `readme`, `plan`, `toolchain`, `categories`, `style`, `own-debt` |
 
 - The gate judges a change against a tree that the change cannot rewrite. An edited baseline or tool decides nothing.
@@ -354,8 +353,7 @@ checksum file for each such build that a developer supplies. It keeps no byte of
 - A build that you do not have is no fault. The doctor's `oracle` row counts the builds on this machine.
 - The audit refuses a tracked copy of a file of a build, under any name. It also refuses a tracked `.SYM`, `.CPE`,
   `.PDB` or `.DBG` file, and a listing of 64 lines.
-- Never commit the text of a symbol file. The gate's `symdump` check refuses it. Keep the text in
-  `disks/builds/<id>/`.
+- Never commit the text of a symbol file. Keep it in `disks/builds/<id>/`.
 - A name from another build is a lead. It moves to the target after a byte check of the function at both addresses.
 
 ## A tool of the game's own

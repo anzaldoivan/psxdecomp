@@ -784,27 +784,6 @@ def test_audit_refuses_a_listing_of_any_build(game, tmp_path):
         r.stdout + r.stderr, r.stdout + r.stderr
 
 
-def test_gate_refuses_a_staged_symbol_dump(game, tmp_path):
-    """The audit's rules see no symbol dump that a tool wrote as text: no path rule, no hash, no listing shape. The
-    game's own gate does. A staged text file with 70 lines of a PsyQ symbol dump fails `gate --staged` on `symdump`,
-    and the audit passes the same tree. With 60 lines the check is silent."""
-    repo = _copy(game, tmp_path)
-    line = ("000008: $80010000 1 __SN_ENTRY_POINT\n", "00001d: $00000000 94 Def class TPDEF type UCHAR size 0 name u_char\n")
-    dump = lambda n: "Header : MND version 1\nTarget unit 0\n" + "".join(line[i % 2] for i in range(n))  # noqa: E731
-
-    def gate():
-        run(["git", "-C", repo, "add", "-f", "docs/proto-symbols.txt"])
-        return run([PY, "tools/psxd_floor.py", "gate", "--staged"], cwd=repo, check=False)
-
-    (repo / "docs/proto-symbols.txt").write_text(dump(70))
-    r = gate()
-    assert r.returncode == 1 and "GATE FAIL symdump: docs/proto-symbols.txt: 70 lines in a row have the shape of a PsyQ symbol " \
-        "dump (cap 64)" in r.stdout, r.stdout + r.stderr
-    assert _audit(repo).returncode == 0                                          # what the audit alone lets through
-    (repo / "docs/proto-symbols.txt").write_text(dump(60))
-    assert "symdump" not in gate().stdout
-
-
 def test_s10_records_the_disc_scan(game):
     """S10 wrote [oracle]: the fixture disc's one debug file, which has the PsyQ SYM magic. No build was supplied: no
     table, no checksum file and no `required:` line. The dump's path is in the git directory, not in the record."""

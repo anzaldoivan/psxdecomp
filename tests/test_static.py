@@ -470,11 +470,9 @@ def test_builds_question_reaches_the_gate():
     assert all(w in page for w in ("psxd oracle add --repo . --id <id> --path <your copy> --expect <sha1>",
                                    "psxd oracle link --repo . --id <id> --path <your copy>", "psxd oracle locate --repo . --id <id>",
                                    "`disks/builds/<id>/`", "`config/oracle.<id>.sha1`", "`config/oracle.toml`", "The game does not hold it",
-                                   "`symdump`", "`.SYM`, `.CPE`,\n  `.PDB` or `.DBG`"))
-    gate_doc = (ROOT / "profiles/psx/floor.md").read_text().split("## The gate of the floor", 1)[1].split("\n## ", 1)[0]
-    assert "`symdump`" in gate_doc and "64 lines in a row" in gate_doc and floor.SYMDUMP_CAP == 64
-    assert '("symdump", f) for f in symdump_findings(tree)' in (ROOT / "scripts/floor.py").read_text()
-    assert "symdump" in (ROOT / "docs/ECOSYSTEM.md").read_text().split("## Proposed to upstreams", 1)[1]
+                                   "Never commit the text of a symbol file", "`.SYM`, `.CPE`,\n  `.PDB` or `.DBG`"))
+    # no check reads for a symbol dump: the rule is written, and the check is a proposal to the kit (K35)
+    assert "No check of psxdecomp reads for it" in (ROOT / "docs/ECOSYSTEM.md").read_text().split("## Proposed to upstreams", 1)[1]
     doc = fetch_refs.load_doc(ROOT / "profiles/psx/refs.toml")
     rows = {r["name"]: r for r in doc["rows"]}
     assert rows["oracle-build"]["class"] == "byo" and not rows["oracle-build"]["url"]
@@ -487,7 +485,7 @@ def test_builds_question_reaches_the_gate():
     assert any("prototype's symbols speak for the prototype" in t["what"] for t in doc["traps"])
     policy = (ROOT / "docs/REFS.md").read_text().split("## Oracle builds", 1)[1].split("\n## ", 1)[0]
     assert all(w in policy for w in ("`PSXDECOMP_BYO_ORACLE_PATH`", "no disc image", "leaked source code", "byte check",
-                                     "`disks/builds/<id>/`", "`psxdecomp/local.toml`", "no `.env` file", "`symdump`",
+                                     "`disks/builds/<id>/`", "`psxdecomp/local.toml`", "no `.env` file", "No check of psxdecomp reads for it",
                                      "`scripts/oracle.py`", "`docs/ops/psxdecomp-floor.md`", "`common.FIREWALL_DEBUG`"))
     assert "proto-2001-10-30" not in policy and "psxd oracle locate" not in policy   # the mechanism has its homes
     # the check-out rule's five points, where an item is named, and a site that refuses agents
