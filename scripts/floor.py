@@ -72,7 +72,8 @@ The other kinds are patterns over the raw text. They are counted and shown, and 
   placeholder-use  each other place where such a name stands: a call, a read, a declaration
   struct           a struct, union or enum body outside an include/ folder
   extern           an `extern` declaration or a prototype in a C file: a declaration has one owner, a header
-  filename         a source file named by an address or a number (`func_80012344.c`, `misc12.c`)
+  filename         a source file named by an address or a number (`func_80012344.c`, `misc12.c`), also with a
+                   suffix after a placeholder name (`func_800EFE70_ovl02.c`, `func_80023E04.inc.c`)
 
 The baseline's policy lines (one per kind; `debt --recount` writes the starting ones):
   mode <kind> count                             the kind is counted and shown: each commit's diff of the baseline shows
@@ -987,7 +988,8 @@ def debt_bodies(repo, skip=(), tree: Tree | None = None, cpp=False) -> dict[str,
             for name in evidence.get(p, ()):
                 if name != SCOPE:
                     out[p].get(name, {}).pop("asm", None)
-        if FILENAME.fullmatch(p.rsplit("/", 1)[-1].rsplit(".", 1)[0]):
+        stem = p.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        if FILENAME.fullmatch(stem) or PLACEHOLDER.match(stem):   # also `func_800EFE70_ovl02`, `func_80023E04.inc`
             out[p].setdefault(SCOPE, {})["filename"] = 1       # a name that says an address or a number, not a subject
     for p, hits in (view or {}).items():               # what a unit read and the count above does not: another suffix, another folder
         if p in out or covered(p) or (tree._keep is not None and not tree._keep(p)):

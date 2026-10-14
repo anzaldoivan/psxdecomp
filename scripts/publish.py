@@ -8,7 +8,8 @@
     publish.py categories [TSV] [--repo DIR] [--history]
                                           config/categories.tsv's rules; --history: no id ever committed is gone
     publish.py categorize REPORT --categories TSV [-o OUT]
-                                          every category's measures from the units' progress_categories; version 2
+                                          every category's measures from the units' progress_categories; version 2;
+                                          a fully matched C unit is marked complete
     publish.py validate REPORT [--categories TSV] [--artifact A] [--version V] [--exe NAME]
                                           a report.json against report.proto, its arithmetic and the firewall
     publish.py check-public [DIR]         the public tree DIR (default: this repository) against the list:
@@ -438,7 +439,8 @@ def progress_row(slug: str, r: dict) -> str:
 
 # The one published number, said once under the table (generated: the README's prose never types a number).
 PROGRESS_NOTE = ("The published number is the matched code of the `game` category, in bytes. The `sdk` row counts "
-                 "the SDK libraries apart.")
+                 "the SDK libraries apart. A complete unit is a C file whose code and data all match. It is not a "
+                 "finished file (`rules/FIN1.md`).")
 NUMBER_RE = re.compile(r"(?<![\w.])(?!100(?:\.0+)?\s?%)\d[\d,]*(?:\.\d+)?\s?%|(?<![\w.])\d[\d,]*\s+of\s+\d[\d,]*(?![\w])")
 # `phase 1 of 3`, `disc 1 of 2`: a place in a series, not a count of the work
 SERIES_RE = re.compile(r"\b(?:phase|step|part|page|disc|disk|stage|chapter|volume|track|day|week)\s+\d+\s+of\s+\d+\b", re.I)
@@ -1105,6 +1107,9 @@ def validate(report, artifact: str | None = None, version: str | None = None, ca
             errs.append("units[%d] (%s): its source %r is not a C file, and it reports matched code (%d bytes, %d "
                         "function(s)): assembly is not decompiled code" % (i, _get(u, "name"), src, m["matched_code"],
                                                                            m["matched_functions"]))
+        if isinstance(src, str) and src.strip() and not src.strip().lower().endswith(C_SOURCES) and _complete(u):
+            errs.append("units[%d] (%s): its source %r is not a C file, and it is marked complete: assembly is not "
+                        "decompiled code" % (i, _get(u, "name"), src))
     if categories is not None:
         reg = {r["id"]: r for r in active(categories)}
         for cid in declared:
@@ -1157,7 +1162,9 @@ def tiny_matched(report) -> list[tuple[str, int, int]]:
 
 def categorize(report: dict, categories: list[dict]) -> tuple[dict, list[str]]:
     """The report with version 2, report.measures and one category per active id, each computed from the units that
-    list it. Refuses an unregistered or retired id, a child without its parent, and an active id no unit lists."""
+    list it. A unit built from C whose code and data all match is marked complete (its measures as objdiff writes them).
+    The units are changed in place.
+    Refuses an unregistered or retired id, a child without its parent, and an active id no unit lists."""
     errs = []
     reg = {r["id"]: r for r in categories}
     units = _get(report, "units", []) or []
@@ -1183,6 +1190,18 @@ def categorize(report: dict, categories: list[dict]) -> tuple[dict, list[str]]:
             mine = [c for c in kids if c.startswith(parent + ".")]
             if len(mine) > 1:
                 errs.append("units[%d] (%s): one unit is in one overlay: %s" % (i, _get(u, "name"), ", ".join(mine)))
+    for u in units:                                # complete: built from C, its code and data all matched
+        meta, m = _get(u, "metadata"), _unit_numbers(u)
+        src = _get(meta, "source_path", "")
+        if isinstance(src, str) and src.strip().lower().endswith(C_SOURCES) and m["total_code"] > 0 \
+                and m["matched_code"] == m["total_code"] and m["matched_data"] == m["total_data"]:
+            meta["complete"] = True                # as objdiff marks a unit of a module that it verified byte for byte
+            measures = _get(u, "measures")
+            for k, v in (("complete_code", str(m["total_code"])), ("complete_data", str(m["total_data"])),
+                         ("total_units", 1), ("complete_units", 1), ("complete_code_percent", 100.0),
+                         ("complete_data_percent", 100.0)):
+                measures.pop(_camel(k), None)
+                measures[k] = v
     for r in active(categories):
         if r["id"] not in used:
             errs.append("active category %r: no unit lists it (retire it, or emit it)" % r["id"])
@@ -5264,6 +5283,31 @@ def self_test() -> int:
           and abs(ovl["fuzzy_match_percent"] - 25.0) < 1e-9, ovl)
     errs = validate(rep, "PSXD_000.01_report", "PSXD_000.01", rows, "PSXD_000.01")
     check("validate good", errs == [], errs)
+    # complete: categorize marks a fully matched C unit; a mark the input holds stays (main/libgpu names no source)
+    r = _units()
+    st = r["units"][3]
+    st["metadata"].update(complete=False, source_path="src/ovl/stage1/a.c")
+    st["measures"].update(complete_code="0", complete_code_percent=0.0)
+    r["units"][0]["metadata"]["source_path"] = "src/main/a.c"
+    plain = json.loads(json.dumps(st))
+    marked, errs = categorize(r, rows)
+    cm = {c["id"]: c["measures"] for c in marked["categories"]}
+    check("complete: a fully matched C unit", errs == [] and st["metadata"]["complete"] is True
+          and st["measures"]["complete_code"] == "100" and cm["ovl"]["complete_units"] == 1
+          and cm["sdk"]["complete_units"] == 1 and marked["measures"]["complete_units"] == 2, (errs, st, cm["ovl"]))
+    check("complete: the marked report validates", validate(marked, categories=rows) == [],
+          validate(marked, categories=rows))
+    for name, mutate in (
+            ("partly matched", lambda u: u["measures"].update(matched_code="60")),
+            ("data not matched", lambda u: u["measures"].update(total_data="8", matched_data="4")),
+            ("assembly", lambda u: u["metadata"].update(source_path="asm/ovl/stage1/a.s")),
+            ("no source", lambda u: u["metadata"].pop("source_path")),
+            ("no code", lambda u: u["measures"].update(total_code="0", matched_code="0", total_data="8",
+                                                       matched_data="8"))):
+        u = json.loads(json.dumps(plain))
+        mutate(u)
+        categorize({"units": [u]}, rows)
+        check("complete: not when %s" % name, u["metadata"]["complete"] is False, u)
     # honesty: a unit whose source is not C reports no matched code; the tiny matched functions are counted
     asm = json.loads(json.dumps(rep))
     asm["units"][0]["metadata"]["source_path"] = "asm/main/boot.s"
@@ -5271,6 +5315,10 @@ def self_test() -> int:
     check("validate: assembly reports no matched code", len(got) == 1 and "is not a C file" in got[0], got)
     asm["units"][0]["metadata"]["source_path"] = "src/main/boot.c"
     check("validate: a C source may", validate(asm, categories=rows) == [])
+    done = json.loads(json.dumps(rep))
+    done["units"][2]["metadata"].update(complete=True, source_path="asm/ovl/title/a.s")
+    got = validate(done, categories=rows)
+    check("validate: an assembly unit is never complete", any("marked complete" in x for x in got), got)
     asm["units"][0]["metadata"]["source_path"] = "src/main/boot.cpp"
     first_unit = _get(asm["units"][0], "name")
     check("validate: a C++ source may", validate(asm, categories=rows) == [] and first_unit not in unsourced(asm))
@@ -5637,8 +5685,9 @@ def main(argv=None) -> int:
             pathlib.Path(a.output).write_text(body, encoding="utf-8")
         else:
             sys.stdout.write(body)
-        print("CATEGORIZE OK %d units, %d categories%s" % (len(out["units"]), len(out["categories"]),
-                                                          " -> %s" % a.output if a.output else ""),
+        print("CATEGORIZE OK %d units (%d complete), %d categories%s" % (
+            len(out["units"]), out["measures"]["complete_units"], len(out["categories"]),
+            " -> %s" % a.output if a.output else ""),
               file=sys.stderr if not a.output else sys.stdout)
         return 0
     if a.cmd == "validate":
