@@ -124,7 +124,9 @@ A game has one command that proves a change. The default is `make verify`.
 | `--ci <base>..<head>` | the head of the range | the base of the range |
 | `--push` | the same as `--ci` | the same as `--ci` |
 
-The gate refuses these things, and no other. Established decompilation projects refuse the same things.
+The gate refuses these things, and no other. Established projects run the byte check and count the same crutches. One
+guards its checksum file against an agent (snowboardkids2-decomp). No project judges a change against its base: that
+part is ours.
 
 | What the gate refuses | Check |
 |---|---|
