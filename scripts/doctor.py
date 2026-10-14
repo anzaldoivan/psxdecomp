@@ -352,18 +352,14 @@ def toolchain_row(repo: pathlib.Path, state: dict, own: dict) -> tuple[str, str]
 
 def names_row(repo: pathlib.Path, state: dict, own: dict, debt) -> tuple[str, str]:
     """Due when phase 1.4 is closed: config/names.tsv and config/asm-evidence.tsv parse (or `[own] names`). FAIL on a
-    file that cannot be read and on an assembly row that points at nothing, at any time; WARN on a names row that
-    points at nothing and when a ledger is absent."""
+    file that cannot be read and on an assembly row that points at nothing, at any time; WARN when a ledger is
+    absent."""
     if own.get("names"):
         return "OK", "the game's own names ledger: %s" % own["names"]
     found = floor.names_findings(repo)
     fails = [f[1] for f in found if f[0] == "FAIL"]
     if fails:
         return "FAIL", "%s%s (`python3 %s names`)" % ("; ".join(fails[:2]), "; …" if len(fails) > 2 else "", floor.VENDORED)
-    warns = [f[1] for f in found if f[0] == "WARN"]
-    if warns:                                        # a name is never required: a row that points at nothing is said, no more
-        return "WARN", "%s%s (`python3 %s names`; no check fails for a name)" % (
-            "; ".join(warns[:2]), "; …" if len(warns) > 2 else "", floor.VENDORED)
     if state[4] != "closed":
         return "WAIT", "due when phase 1.4 closes: %s and %s" % (floor.NAMES, floor.ASM_EVIDENCE)
     mine = (floor.NAMES, floor.ASM_EVIDENCE)

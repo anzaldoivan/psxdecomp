@@ -95,7 +95,7 @@ edits a file. The hook reads `config/guard.tsv`. psxdecomp writes that file once
 | `git-hooks` | the game holds the gate | the three git hooks of this clone, where git looks for hooks |
 | `gate` | phase 1.3 is closed | one gate command, and at least one `config/check.*.sha` |
 | `toolchain` | phase 1.4 is closed | `docs/ops/compiler-pin.md`, and a `config/toolchain.tsv` with every row at its pin |
-| `names` | phase 1.4 is closed | the two ledgers, each with its header line. A names row that points at nothing is a warning. |
+| `names` | phase 1.4 is closed | the two ledgers, each with its header line. An assembly row that points at nothing fails. |
 | `debt` | the first C file is in `src/`, or the first count | a debt baseline that is equal to the tree |
 | `cpp` | phase 1.4 is closed | `[floor] cpp` in `config/psxdecomp.toml`, and a command that runs on this machine |
 | `progress` | phase 1.9 opens | a workflow that uploads the progress report of each executable |
@@ -290,15 +290,14 @@ The rule is `rules/NAME1.md`. `python3 tools/psxd_floor.py names` checks two tab
 - A name is never required. A function that matches is banked and pushed under the name that it has.
 - `names --init` writes the header line of each file.
 - `evidence` is `<class>:<path>:<line>`. `rules/NAME1.md` lists the classes.
-- The path is a file of the repository, and the file has that line.
-- A row of `config/names.tsv` with other evidence is a warning: `NAMES WARN`, and `GATE WARN names` in the gate.
+- The tool reads only that `config/names.tsv` is its table. It does not open the evidence of a name.
 - A file that the tool cannot read as its table fails. A row of the assembly ledger that points at nothing also fails.
-- A `refs` row cites a line of a `[[ref]]` table in `config/refs.toml`, or a file under `refs/<name>/`.
-- An accepted name is a name that the source defines as the kind of the row.
 - The `class` of an assembly row is `sdk-object`, `hand-asm` or `data-in-text`.
 - The `evidence` of an assembly row is `<path>:<line>`. `verified_by` names the person who read it.
+- The path is a file of the repository with that line. A file under `refs/<name>/` needs a `[[ref]]` table of that
+  name in `config/refs.toml`.
 - An assembly row of a C file names one function of that file. It clears the assembly of that function only.
-- `names --against <revision>` opens only the rows that are new since that revision. The gate runs it that way.
+- `names --against <revision>` opens only the assembly rows that are new since that revision. The gate runs it that way.
 - A function that is only hard to match has no class. It stays a stub.
 
 ## Toolchain pins

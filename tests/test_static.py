@@ -1564,7 +1564,8 @@ def test_readability_rule_files():
         assert publish.lint_style("# %s — %s\n" % (rid, row[2])) == [], (rid, publish.lint_style("# %s — %s\n" % (rid, row[2])))
     assert "`python3 %s debt`" % floor.VENDORED in fin and floor.BASELINE in fin
     name = (ROOT / "profiles/psx/rules/NAME1.md").read_text()
-    assert all("| `%s` |" % c in name for c in floor.EVIDENCE) and floor.NAMES in name
+    assert floor.NAMES in name and "| `oracle` | another build of the game, after a byte check of the function at both addresses" in name
+    assert "| `debug-symbol` | a symbol of a debug file of the target build itself |" in name
     doc = (ROOT / "profiles/psx/floor.md").read_text()
     assert all("| `%s` |" % k in doc for k in floor.KINDS)
     assert "`%s`" % " ".join(floor.NAME_COLUMNS) in doc and "`%s`" % " ".join(floor.ASM_COLUMNS) in doc
