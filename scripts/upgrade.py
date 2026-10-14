@@ -25,7 +25,8 @@ as `ste-rule` is), `names-ledger` (the header lines of config/names.tsv and conf
 `debt-baseline` (config/debt-baseline.txt, once, last, with the starting mode of each debt kind); `debt-recount`
 rewrites a baseline of an earlier psxdecomp in version 2 (the rows of now, a policy line for each kind that has none;
 the game's own lines stay); `asm-ledger` adds the `verified_by` column to the header line of an assembly ledger that
-an earlier psxdecomp wrote (the rows stay); `floor-public` is the manual line of split mode, and
+an earlier psxdecomp wrote (the rows stay); `trial-tool` writes tools/psxd_trial.py for a record that names
+`[trial] probe`; `floor-public` is the manual line of split mode, and
 `floor-cpp` the manual line for the preprocess command of the record (`[floor] cpp`). A game with `[own] names` gets none of the
 actions that key replaces. `[own] debt` is additive: the game's scanner runs beside psxdecomp's count, so the baseline
 and the two ledgers of the count are delivered all the same, and only the rule text (`fin-rule`) is withheld.
@@ -100,6 +101,7 @@ BUILD_WF = ".github/workflows/build.yml"
 PROFILE_BUILD = common.PLUGIN_ROOT / "profiles" / "psx" / "build.yml"
 
 FLOOR_DOC = "docs/ops/psxdecomp-floor.md"
+TRIAL_TOOL = "tools/psxd_trial.py"
 CAMPAIGN_DOC = "docs/ops/psxdecomp-campaign.md"
 MATCHER_SKILL = ".claude/skills/matcher"
 MATCHER_LINE = ('PY tools/skill_add.py matcher --from %s#Matcher --description "<at most 120 characters>"' % CAMPAIGN_DOC)
@@ -558,6 +560,12 @@ def plan(repo: pathlib.Path) -> list[dict]:
             % (floor.BASELINE, recount_due(repo)),
             "from psxdecomp 0.6.0 the baseline holds a policy line for each kind, and `debt` fails without one",
             "debt-recount")
+    trial = common.PLUGIN_ROOT / "scripts" / "trial.py"
+    if floor.record_table(floor.Tree(repo), "trial").get("probe") and not (
+            (repo / TRIAL_TOOL).is_file() and (repo / TRIAL_TOOL).read_bytes() == trial.read_bytes()):
+        add("psxdecomp", "trial-tool: write %s, the trial helper (`[trial] probe` of %s names the game's probe)"
+            % (TRIAL_TOOL, install.RECORD), "`python3 %s <file>` takes out the pins and barriers that the match does not "
+            "need" % TRIAL_TOOL, "trial-tool")
     if (repo / PUBLIC_LIST).is_file():
         listed = publish.parse_public_paths(common.read(repo / PUBLIC_LIST))
         need = [floor.VENDORED] + [d.path for d in DELIVERY if d.key in ("names-ledger", "debt-baseline") and d.own not in own]
@@ -834,6 +842,9 @@ def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
                            "change, then apply again" % (refused[0], ", …" if len(refused) > 1 else ""))
         else:
             w(floor.BASELINE, floor.recount_text(repo)[0])
+    if "trial-tool" in acts:
+        st = common.write(repo / TRIAL_TOOL, common.read(common.PLUGIN_ROOT / "scripts" / "trial.py"), dry=dry, mode=0o755)
+        written.append("%s%s %s" % ("would be " if dry else "", st, TRIAL_TOOL))
     if "git-hooks" in acts:
         names = publish.hooks_due(repo)[0]
         written.append("%s git hook(s) %s" % ("would write" if dry else "wrote", ", ".join(names if dry else publish.install_hooks(repo))))
@@ -1415,6 +1426,15 @@ def self_test() -> int:
             "would be created %s" % floor.BASELINE)
         ok &= (repo / floor.VENDORED).read_bytes() == OWNED[floor.VENDORED].read_bytes() and os.access(repo / floor.VENDORED, os.X_OK)
         ok &= (repo / FLOOR_DOC).read_bytes() == OWNED[FLOOR_DOC].read_bytes()
+        ok &= "trial-tool" not in keys | keys2 and not (repo / TRIAL_TOOL).exists()   # no probe: no trial tool
+        rec = common.read(repo / install.RECORD)
+        common.write(repo / install.RECORD, rec + "\n[trial]\nprobe = 'make probe'\n")
+        ok &= "trial-tool" in {x["key"] for x in plan(repo)}
+        apply(repo, False, False)
+        ok &= (repo / TRIAL_TOOL).read_bytes() == (common.PLUGIN_ROOT / "scripts/trial.py").read_bytes() and os.access(repo / TRIAL_TOOL, os.X_OK)
+        ok &= "trial-tool" not in {x["key"] for x in plan(repo)}
+        common.write(repo / install.RECORD, rec)
+        (repo / TRIAL_TOOL).unlink()
         ok &= "campaign" in keys and (repo / CAMPAIGN_DOC).read_bytes() == OWNED[CAMPAIGN_DOC].read_bytes()
         ok &= "matcher" not in keys2                                     # no plan: phase 1.8 is not open
         (repo / roadmap.PLAN).write_text(roadmap.self_plan(closed=8))

@@ -14,11 +14,11 @@ truth/<id>/twin.<kind>.c   a fake twin: the same bytes through a lint kind (regi
                            struct-def), or the same masked words through another symbol (symbol, abs-address).
                            `// compilers: gcc2.95.2` on its first lines limits it to that compiler.
 trial/<id>/pinned.c   one function that matches itself with two register pins. `// needs: <crutch>` names the pin
-                      the match needs, `// spare: <crutch>` the pin it does not. The trial tool of the floor
-                      (scripts/floor.py `trial`, with probe.py as its probe) must drop the spare one, and keep and
-                      mark the needed one.
+                      the match needs, `// spare: <crutch>` the pin it does not. The trial tool
+                      (scripts/trial.py, with probe.py as its probe) must drop the spare one, and keep and mark the
+                      needed one.
 Targets are built here from truth.c and pinned.c at test time; no target is stored. stdlib only; probe.py and lint.py
-beside it, and scripts/floor.py of this repository for the trial cases.
+beside it, and scripts/trial.py of this repository (with scripts/floor.py beside it) for the trial cases.
 """
 import json
 import os
@@ -34,7 +34,7 @@ import probe  # noqa: E402
 
 TRUTH = os.path.join(HERE, "truth")
 TRIAL = os.path.join(HERE, "trial")
-FLOOR = os.path.normpath(os.path.join(HERE, "..", "..", "scripts", "floor.py"))
+TRIAL_PY = os.path.normpath(os.path.join(HERE, "..", "..", "scripts", "trial.py"))
 INC = os.path.join(HERE, "include")
 CLASSES = ("struct-fields", "struct-absent", "signedness", "loops", "switch", "globals", "divmul", "calls", "odd")
 WORDS = (8, 40)                     # a truth's size under the first compiler, in words
@@ -154,25 +154,25 @@ def trials(only=()):
     return out
 
 
-def floor_module():
-    """scripts/floor.py of this repository as a module (stdlib only, as this file)."""
+def trial_module():
+    """scripts/trial.py of this repository as a module (stdlib only, as this file). It loads scripts/floor.py beside it."""
     import importlib.util
-    spec = importlib.util.spec_from_file_location("floor", FLOOR)
+    spec = importlib.util.spec_from_file_location("trial", TRIAL_PY)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
 def check_trial(t, errors):
-    """One trial case under each compiler: the floor's trial tool with probe.py as its probe. The spare pin goes and
+    """One trial case under each compiler: the trial tool with probe.py as its probe. The spare pin goes and
     the needed pin stays with a reason."""
-    floor = floor_module()
+    trial = trial_module()
     func, needs, spare = (t["meta"].get(k) for k in ("func", "needs", "spare"))
 
     def bad(msg):
         errors.append("%s: %s" % (t["id"], msg))
 
-    run = lambda repo, *a: subprocess.run([sys.executable, FLOOR, "trial", *a, "--repo", repo], capture_output=True, text=True)  # noqa: E731
+    run = lambda repo, *a: subprocess.run([sys.executable, TRIAL_PY, *a, "--repo", repo], capture_output=True, text=True)  # noqa: E731
     for comp in probe.COMPILERS:
         with tempfile.TemporaryDirectory() as tmp:
             obj, repo = os.path.join(tmp, "t.o"), os.path.join(tmp, "game")
@@ -187,13 +187,13 @@ def check_trial(t, errors):
             src = os.path.join(repo, "src", "pinned.c")
             with open(src, "w") as f:
                 f.write(t["text"])
-            with open(os.path.join(repo, floor.RECORD), "w") as f:
+            with open(os.path.join(repo, trial.floor.RECORD), "w") as f:
                 f.write("[trial]\nprobe = '%s %s check {file} {func} --target %s --compiler %s -I %s -I %s'\n" % (
                     sys.executable, os.path.join(HERE, "probe.py"), os.path.join(tmp, "target.json"), comp, t["dir"], INC))
             r = run(repo, "src/pinned.c")
             with open(src) as f:
                 text = f.read()
-            left = [c["id"] for c in floor.crutches("src/pinned.c", text)]
+            left = [c["id"] for c in trial.crutches("src/pinned.c", text)]
             if r.returncode != 0 or "2 tried, 1 removed, 1 kept" not in r.stdout or left != [needs]:
                 bad("%s: the trial left %s, not %s alone: %s" % (comp, left, needs, (r.stdout + r.stderr).strip().splitlines()[-2:]))
                 continue
@@ -264,8 +264,7 @@ def self_test():
     cases = trials()
     assert cases, "no trial case"
     for t in cases:                                  # the case is what its first lines say: two pins of one function
-        floor = floor_module()
-        got = floor.crutches("src/pinned.c", t["text"])
+        got = trial_module().crutches("src/pinned.c", t["text"])
         assert sorted(c["id"] for c in got) == sorted((t["meta"]["needs"], t["meta"]["spare"])), (t["id"], got)
         assert {c["func"] for c in got} == {t["meta"]["func"]} and all(c["reason"] is None for c in got), t["id"]
         assert {f[0] for f in lint.findings(t["text"])} == {"register-pin"}, t["id"]

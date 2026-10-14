@@ -5196,8 +5196,7 @@ def _hooks_self_test(check, td: str) -> None:
         put(VENDORED, pathlib.Path(__file__).read_text(encoding="utf-8"))
         put("src/walk.c", walk)
         put("src/stubs.c", 'INCLUDE_ASM("asm/nonmatchings/stubs", Run);\n')
-        put("config/psxdecomp.toml", "[psxdecomp]\nversion = \"0.6.0\"\n\n[trial]\nprobe = '%s tools/probe.py'\n" % sys.executable)
-        put("tools/probe.py", "import sys\nsys.exit(0)\n")          # every function matches: no pin is needed
+        put("config/psxdecomp.toml", "[psxdecomp]\nversion = \"0.6.0\"\n")
         git("add", "-A")
         floor("debt", "--recount")
         git("add", "-A")

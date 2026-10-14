@@ -452,7 +452,7 @@ def test_builds_question_reaches_the_gate():
         text = (ROOT / "scripts" / ("%s.py" % script)).read_text()
         assert "with_firewall_debug(" in text and "[Ss][Yy][Mm]" not in text, script
     usage = (ROOT / "scripts/psxd").read_text()
-    assert "|oracle|plan>" in usage and "psxd oracle record --repo . --dump <dump> " in usage
+    assert "|oracle|plan|trial>" in usage and "psxd oracle record --repo . --dump <dump> " in usage
     assert all(w in usage for w in ("psxd oracle add --repo . --id <id> --path <copy> --expect <sha1>", "psxd oracle list",
                                     "psxd oracle locate --id <id>", "psxd oracle link --id <id> --path <copy>"))
     text = (ROOT / "scripts/oracle.py").read_text()

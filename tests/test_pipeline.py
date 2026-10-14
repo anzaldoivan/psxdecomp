@@ -378,27 +378,30 @@ def test_a_matched_function_is_committed_and_pushed_under_any_name(game, tmp_pat
 
 
 def test_trial_in_a_game(game):
-    """The trial tool in a bootstrapped game, with a probe that stands for the game's own. `trial` drops the pin
-    that the match does not need and marks the other one. It writes no ledger: the marker is the record."""
+    """The trial tool in a bootstrapped game, with a probe that stands for the game's own. The game has no trial tool
+    until its record names `[trial] probe`: then /psxdecomp:upgrade writes tools/psxd_trial.py (`trial-tool`). The
+    tool drops the pin that the match does not need and marks the other one. It writes no ledger: the marker is the
+    record."""
     import floor
-    assert not (game / "config/trials.tsv").exists()
-    record, src, probe = game / floor.RECORD, game / "src/sum.c", game / ".run/probe.py"
+    import trial
+    record, src, probe, tool = game / floor.RECORD, game / "src/sum.c", game / ".run/probe.py", game / "tools/psxd_trial.py"
     kept = record.read_text()
-    trial = lambda *a: run([PY, floor.VENDORED, "trial", *a], cwd=game, check=False)  # noqa: E731
+    assert not tool.exists() and "trial-tool" not in run([PY, ROOT / "scripts/upgrade.py", "plan", "--repo", game]).stdout
     try:
         src.parent.mkdir(exist_ok=True)
-        src.write_text(floor.C_TRIAL)
-        assert "no [trial] probe" in trial("src/sum.c").stdout
+        src.write_text(trial.C_TRIAL)
         probe.write_text("import sys\nsys.exit(0 if 'asm(\"$16\")' in open(sys.argv[1]).read() else 1)\n")
         record.write_text(kept + "\n[trial]\nprobe = '%s .run/probe.py'\n" % PY)
-        r = trial("src/sum.c")
-        assert r.returncode == 0 and "TRIAL OK (1 function(s), 3 tried, 2 removed, 1 kept; 6 probe(s))" in r.stdout, r.stdout
+        r = run([PY, ROOT / "scripts/upgrade.py", "apply", "--repo", game])
+        assert "created tools/psxd_trial.py" in r.stdout and tool.read_bytes() == (ROOT / "scripts/trial.py").read_bytes(), r.stdout
+        r = run([PY, tool, "src/sum.c"], cwd=game, check=False)
+        assert r.returncode == 0 and "TRIAL OK (1 function(s), 3 tried, 2 removed, 1 kept; 6 probe(s))" in r.stdout, r.stdout + r.stderr
         text = src.read_text()
         assert "// !FAKE: pin:$16:i: " in text and "$17" not in text and "__asm__" not in text and "    register s32 t = 0;" in text, text
         assert floor.file_debt("src/sum.c", text) == {"pin": 1} and not (game / "config/trials.tsv").exists()
     finally:
         record.write_text(kept)
-        for f in (src, probe):
+        for f in (src, probe, tool):
             f.unlink(missing_ok=True)
     assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
 

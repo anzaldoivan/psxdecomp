@@ -258,13 +258,14 @@ The baseline holds one policy line for each kind. `debt --recount` writes the st
 ## Trials
 
 A register pin or an empty assembly statement is a crutch. It forces the compiler, and it says nothing about the game.
-`python3 tools/psxd_floor.py trial <file>` is a helper that examines each crutch of a file. No check asks for a trial.
+`python3 tools/psxd_trial.py <file>` is a helper that examines each crutch of a file. No check asks for a trial.
 
 1. The tool takes one crutch out and asks the probe of the game.
 2. The crutch is gone when the function still matches. A pin loses its `asm("…")` clause and nothing else.
 3. A crutch that the match needs gets a `// !FAKE: <reason>` line above it. The marker is the record.
 
 - `[trial] probe` in `config/psxdecomp.toml` names the probe. It is a command of the game.
+- `/psxdecomp:upgrade` writes `tools/psxd_trial.py` when that key exists.
 - The probe gets a file to compile, a function, and the path that the file stands for.
 - Write them as `{file}`, `{func}` and `{path}` in the command. Without them, the tool adds three arguments.
 - The probe exits 0 when the function matches, and 1 when it does not. Any other code is an error.
