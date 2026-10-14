@@ -32,6 +32,9 @@ import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common  # noqa: E402
+# The writing checker lives in publish.py (a game runs its copy). lint_scope and lint_dupes use its front matter,
+# record line and generated file tests; `fetch_refs.lint_style` is publish's.
+from publish import GENERATED, META, _body, lint_style  # noqa: E402,F401
 
 CLASSES = {
     "adapt": "adapt code with attribution in THIRD_PARTY.md",
@@ -215,15 +218,6 @@ TOML_RECORD = re.compile(r"^\s*\[\[?[^\]]+\]\]?\s*(?:#.*)?$")
 TOML_SCOPE = re.compile(r"(?:^|[{,\s])(?:used_by|evidence|covers|checked|sources|seen|scope)\s*=")
 
 
-def _body(lines: list[str]) -> list[str]:
-    """The lines with a leading YAML front matter blanked (metadata, not prose); line numbers are kept."""
-    if lines and lines[0].strip() == "---":
-        end = next((i for i, l in enumerate(lines[1:], 1) if l.strip() == "---"), None)
-        if end:
-            return [""] * (end + 1) + lines[end + 1:]
-    return lines
-
-
 def _claim(line: str) -> bool:
     bare = re.sub(r"`[^`]*`|(?<![\w.])(?:~|\.{1,2})?/[^\s|)]+", "", line)     # code spans and absolute paths: identifiers
     return bool(SCOPE_TOOL.search(bare) or SCOPE_GAME.search(bare))
@@ -270,8 +264,6 @@ def lint_file(path) -> list[tuple[int, str]]:
 # normalised; fences and table rows skipped; in TOML, the string values) found in two or more files is a copy: delete
 # one and link to the home, never allowlist it.
 DUPE_MIN = 60
-META = re.compile(r"^[a-z_]+: \S.* · [a-z_]+: ")                 # an `id: G1 · group: G · …` record line
-GENERATED = re.compile(r"[Gg]enerated by .{0,80}do not edit", re.S)
 
 
 def _paragraphs(text: str, toml: bool):
@@ -377,6 +369,13 @@ def render_index(rows: list[dict], refs_rel: str = REFS_REL, authority=(), traps
     return "\n".join(out)
 
 
+def patched(dest: pathlib.Path) -> bool:
+    """A fetched checkout has a changed or deleted tracked file. A file that the upstream does not track (a build
+    output, a note) patches nothing, and `git checkout .`, the fix that the DIRTY line names, would not remove it."""
+    return (dest / ".git").is_dir() and bool(common.git(
+        dest, "status", "--porcelain", "--untracked-files=no", check=False).stdout.strip())
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", default=".")
@@ -432,6 +431,10 @@ def main(argv=None) -> int:
                 bad += 1
             elif head != want:
                 print("DRIFT %s at %s, pinned %s" % (r["name"], head[:12], want[:12]))
+                bad += 1
+            elif patched(repo / "refs" / r["name"]):
+                print("DIRTY %s has local changes: a patched reference is not the pinned one (`git -C refs/%s "
+                      "checkout .` restores it)" % (r["name"], r["name"]))
                 bad += 1
         idx = repo / INDEX_REL
         if not idx.is_file() or common.read(idx) != index:
@@ -553,6 +556,21 @@ def self_test() -> int:
             drift = main(["--repo", str(repo), "--check"]) == 1
         print("  control %-11s %s" % ("drift", "refused" if drift else "NOT REFUSED"))
         ok &= drift
+    with tempfile.TemporaryDirectory() as td:                          # DIRTY: a tracked change, never an untracked file
+        up = pathlib.Path(td)
+        common.git(up, "init", "--quiet")
+        (up / "a.txt").write_text("a\n")
+        common.git(up, "add", "a.txt")
+        common.git(up, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false",
+                   "commit", "--quiet", "-m", "a")
+        clean = patched(up)
+        (up / "notes.txt").write_text("mine\n")
+        untracked = patched(up)
+        (up / "a.txt").write_text("b\n")
+        edited = patched(up)
+        common.git(up, "checkout", ".")
+        print("  DIRTY: clean %s, an untracked file %s, a tracked edit %s, after `checkout .` %s" % (clean, untracked, edited, patched(up)))
+        ok &= (clean, untracked, edited, patched(up)) == (False, False, True, False)
     # lint_scope: unscoped claims flagged; a date, a scope key, a fence, a heading or a table header clears them
     doc = ("# T\nBFM used gcc 2.7.2.\nbfm in lower case and `gcc-2.7.2-src` are not claims.\n"
            "PsyQ 4.7 (seen 2026-10-01).\n```\nmmx6 example\n```\n## Leads (scope: 2026-10-01)\nX6 uses aspsx 2.86.\n"

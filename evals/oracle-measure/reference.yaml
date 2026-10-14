@@ -1,0 +1,6 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "| L1 | Oracle build `review-1999-01-01`: the Jan 1, 1999 review build | https://hiddenpalace.example.invalid/... (the build: `byo`, byo path given) | lead | `psxd oracle measure --id review-1999-01-01 --path disks/builds/review-1999-01-01 --dump <dump>` (2026-10-14): `ORACLE measure review-1999-01-01: exe 512 of 512 words in 1 runs (100.0%); build-only strings 1 (1 with a reference)` | 1.2 |"
+bad:
+  - "| L1 | Oracle build `review-1999-01-01` | the page | lead | Verify: 12 function bodies are byte-identical at the mapped addresses of both builds | 1.2 |"
+  - "The measure maps 100% of the executable, so I record it as a revision of the retail build."

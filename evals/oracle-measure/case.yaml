@@ -1,0 +1,43 @@
+schema_version: "1.1"
+name: oracle-measure
+description: With a supplied copy of another build, the gate (S4) runs `oracle measure`, writes its command and result line into the L3 row, and keeps the class that the build's page states.
+tags: [flow, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "/psxdecomp:new --resume --until S4"
+  max_turns: 40
+  timeout_seconds: 900
+  allowed_tools: [Skill, Bash, Read, Write, Glob, Grep, AskUserQuestion]
+  append_system_prompt: |
+      No developer is at the keyboard in this run, so ask nothing. The developer already answered every question of
+      the gate: each value of the drafts is confirmed as drafted, and the oracle-build question was answered
+      `I'll paste a path`: `disks/builds/review-1999-01-01/` in this folder. Finish S4, and end your last message
+      with the L3 row that you wrote into .run/bootstrap/prior-art.md.
+runs: 1
+graders:
+  - name: runs-measure
+    type: regex
+    target: trace
+    pattern: "oracle(\\.py)? measure[^\\n]*--id review-1999-01-01"
+  - name: l3-has-the-command
+    type: regex
+    target: {source: file, path: .run/bootstrap/prior-art.md}
+    pattern: "oracle measure --id review-1999-01-01"
+  - name: l3-has-the-result-line
+    type: regex
+    target: {source: file, path: .run/bootstrap/prior-art.md}
+    pattern: "exe 512 of 512 words in 1 runs \\(100\\.0%\\)"
+  - name: class-from-the-page
+    type: regex
+    target: {source: file, path: .run/bootstrap/answers.txt}
+    pattern: "PSXDECOMP_BYO_ORACLE_CLASS: review\\b"
+  - name: last-message-has-the-share
+    type: regex
+    target: last_message
+    pattern: "100\\.0%"
+  - name: nothing-installed
+    type: file_exists
+    path: .claude/pa.json
+    exists: false
+expected_outcome: S4 runs `oracle measure` on the developer's copy and the dump, writes the command, its date and the ORACLE measure line (exe 512 of 512 words, 100.0%) into the L3 row, and records the class `review` that the build's page states, not one drawn from the share. Nothing installs.

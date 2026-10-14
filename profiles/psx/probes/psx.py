@@ -1,5 +1,5 @@
-"""PS1 medium probes: CUE sheets, raw/cooked data tracks, ISO9660, SYSTEM.CNF, the PS-X EXE header, PsyQ `Ps` stamps
-and first-pass function seeds.
+"""PS1 medium probes: CUE sheets, raw/cooked data tracks, ISO9660, SYSTEM.CNF, the PS-X EXE header, PsyQ `Ps` stamps,
+first-pass function seeds and debug leftovers (symbol, map and source files a build left on the disc).
 
 Written fresh for psxdecomp. Reads the dump in place and returns FACTS ONLY (names, sizes, addresses, counts, hashes):
 no byte of the medium is returned, copied or written by this module.
@@ -229,6 +229,37 @@ def sdk_strings(text: bytes) -> list[str]:
     return out
 
 
+# ---- debug leftovers ---------------------------------------------------------------------------------------------
+# A build sometimes left its own symbol file on the retail disc (NFS High Stakes: NFS4.SYM, seen 2026-10-13). The
+# extension alone is a lead: a .MAP or a .LIB is often game data. The `MND\x01` magic confirms a PsyQ symbol file.
+
+DEBUG_EXT = {"SYM": "symbols", "MAP": "link map", "CPE": "PsyQ executable", "LNK": "linker script",
+             "OBJ": "object", "LIB": "library", "C": "source", "H": "header", "MAK": "makefile"}
+SYM_MAGIC = b"MND\x01"
+RCS_RE = re.compile(rb"\$(?:Id|Header|Revision|Date|Author): ")
+C_PATH_RE = re.compile(rb"[\w\\/:.-]{3,60}\.[cC]\x00")
+DEBUG_NOTE = "leads: an extension proves nothing (a .MAP or .LIB is often game data); psyq_sym is the MND magic"
+
+
+def debug_artifacts(files: list[dict], text: bytes, head=None, limit: int = 50) -> dict:
+    """Debug leftovers: disc files with a build extension [{path, size, kind}], and counts of RCS keyword strings and
+    of distinct `*.c` path strings in the boot executable. `head(f)` returns the first bytes of a disc file: a .SYM
+    file gets `psyq_sym` (the MND magic). Names, sizes and counts only: never a symbol, never a string."""
+    hits = []
+    for f in files:
+        name = f["path"].rsplit("/", 1)[-1]
+        ext = name.rpartition(".")[2] if "." in name else ""
+        if ext not in DEBUG_EXT:
+            continue
+        row = {"path": f["path"], "size": f["size"], "kind": DEBUG_EXT[ext]}
+        if ext == "SYM" and head:
+            row["psyq_sym"] = head(f)[:4] == SYM_MAGIC
+        hits.append(row)
+    hits.sort(key=lambda r: (not r.get("psyq_sym"), list(DEBUG_EXT.values()).index(r["kind"]), r["path"]))
+    return {"count": len(hits), "files": hits[:limit], "psyq_sym": sum(bool(r.get("psyq_sym")) for r in hits),
+            "rcs_ids": len(RCS_RE.findall(text)), "c_paths": len(set(C_PATH_RE.findall(text))), "note": DEBUG_NOTE}
+
+
 # ---- the whole probe ---------------------------------------------------------------------------------------------
 
 def hash_range(path, start, length, chunk=1 << 20) -> dict:
@@ -287,6 +318,7 @@ def identify(dump: str, seeds_limit: int = 4096) -> dict:
         if not exe:
             raise ValueError("SYSTEM.CNF boots %r, which is not on the disc" % cnf_info["boot_file"])
         image = trk.extent(exe["lba"], exe["size"])
+        debug = debug_artifacts(files, image[0x800:], lambda f: trk.extent(f["lba"], min(f["size"], 4)))
     finally:
         trk.close()
     hdr = parse_exe_header(image[:0x800])
@@ -313,6 +345,7 @@ def identify(dump: str, seeds_limit: int = 4096) -> dict:
                  "first": stamps[0]["addr"] if stamps else None, "last": stamps[-1]["addr"] if stamps else None,
                  **({} if stamps else {"note": NO_STAMP})},
         "sdk_strings": sdk_strings(text),
+        "debug_artifacts": debug,
         "seeds": {"method": "addiu sp,sp,-N prologue scan (leads only)", "count": len(seeds),
                   "entry": hdr["pc0"]},
     }

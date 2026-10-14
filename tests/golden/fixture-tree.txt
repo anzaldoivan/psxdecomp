@@ -39,13 +39,18 @@ LICENSE
 Makefile
 PROJECT_CONTEXT.md
 README.md
+config/asm-evidence.tsv
+config/debt-baseline.txt
 config/decomp-hooks.snippet.json
 config/firewall-fixture.sha1
 config/firewall.txt
+config/guard.tsv
 config/mcp.json.template
+config/names.tsv
 config/psxdecomp.profile.toml
 config/psxdecomp.toml
 config/refs.toml
+config/style-ratchet.txt
 cookbook/C0001.md
 cookbook/C0002.md
 cookbook/C0003.md
@@ -63,6 +68,8 @@ docs/ops/INDEX.md
 docs/ops/decomp-environment.md
 docs/ops/disassembler-mcp.md
 docs/ops/host-recipe.md
+docs/ops/psxdecomp-campaign.md
+docs/ops/psxdecomp-floor.md
 docs/ops/refs.md
 docs/project-architect.md
 docs/retired/HOW_WE_WORK.inputs.md
@@ -75,6 +82,7 @@ phase-ends/TASK_INDEX.md
 phase-ends/current/discussions/INDEX.md
 phase-ends/current/research/INDEX.md
 phase-ends/current/tasks/INDEX.md
+rules/FIN1.md
 rules/G1.md
 rules/G10.md
 rules/G11.md
@@ -163,6 +171,7 @@ rules/M6.md
 rules/M7.md
 rules/M8.md
 rules/M9.md
+rules/NAME1.md
 rules/P1.md
 rules/P10.md
 rules/P3.md
@@ -171,6 +180,7 @@ rules/P5.md
 rules/P7.md
 rules/P8.md
 rules/P9.md
+rules/STE1.md
 rules/X2.md
 rules/X3.md
 rules/X4.md
@@ -217,6 +227,8 @@ tools/outline.py
 tools/pa3_update.py
 tools/phaseend_index.py
 tools/plan_edit.py
+tools/psxd_floor.py
+tools/psxd_img.py
 tools/psxd_publish.py
 tools/research_add.py
 tools/rules_add.py

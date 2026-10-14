@@ -1,0 +1,54 @@
+schema_version: "1.0"
+name: backtest-nfshs
+description: "Replays the Need for Speed: High Stakes (USA) bootstrap with the project's own repository excluded (Caesar0007/NFSHS-PSX-decomp, read 2026-10-13); S3's builds question must find a build with debugging symbols from independent pages."
+tags: [backtest, research, tier2]
+execution:
+  prompt: "/psxdecomp:new --answers fixture:nfshs --until S3"
+  max_turns: 40
+  timeout_seconds: 1500
+  allowed_tools: [Skill, Bash, Read, Write, Glob, Grep, Agent, WebSearch, WebFetch]
+runs: 1
+graders:
+  - name: builds-report-written
+    type: file_exists
+    path: .run/bootstrap/research/builds.md
+  - name: finds-symbol-build
+    type: regex
+    target: {source: file, path: .run/bootstrap/prior-art.draft.md}
+    pattern: "debug(ging)? symbols|symbol file|\\.SYM"
+    flags: "i"
+  - name: names-the-build
+    type: regex
+    target: {source: file, path: .run/bootstrap/prior-art.draft.md}
+    pattern: "hidden ?palace|prototype|review build"
+    flags: "i"
+  - name: byte-check-stated
+    type: regex
+    target: {source: file, path: .run/bootstrap/prior-art.draft.md}
+    pattern: "byte[- ]identical|byte check"
+    flags: "i"
+  - name: no-item-in-prior-art
+    type: regex
+    target: {source: file, path: .run/bootstrap/prior-art.draft.md}
+    pattern: "^.*(oracle build|prototype|review build|debug build|demo disc|symbol file|\\.SYM).*archive\\.org/details/|archive\\.org/details/.*(oracle build|prototype|review build|debug build|demo disc|symbol file|\\.SYM)|archive\\.org/(download|metadata)/|https?://\\S+\\.(7z|zip|rar|iso|bin|cue|img|chd|ecm|sym)(?![\\w/])"
+    flags: "im"
+    match: not_contains
+  - name: no-file-url-in-builds
+    type: regex
+    target: {source: file, path: .run/bootstrap/research/builds.md}
+    pattern: "archive\\.org/download/|https?://\\S+\\.(7z|zip|rar|iso|bin|cue|img|chd|ecm|sym)(?![\\w/])"
+    flags: "i"
+    match: not_contains
+  - name: excluded-repo-unread
+    type: regex
+    target: {source: file, path: .run/bootstrap/prior-art.draft.md}
+    pattern: "NFSHS-PSX-decomp"
+    flags: "i"
+    match: not_contains
+  - name: no-tcrf-fetch
+    type: tool_used
+    tool: WebFetch
+    input_match: "(?<![=/])https?://([\\w-]+\\.)*tcrf\\.net"
+    min: 0
+    max: 0
+expected_outcome: "S3 writes research/builds.md and a prior-art.draft.md whose builds lead names a build with debugging symbols, with a byte check as its verify step. No file holds a download URL, the prior-art draft names no archive.org item on a line of a build (a document item may be a source), the excluded repository is not cited, and no agent fetches tcrf.net."

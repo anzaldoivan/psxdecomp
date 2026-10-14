@@ -18,19 +18,19 @@ Run everything here in your own terminal, outside Claude Code. In an agent sessi
 3. You ship: `python3 tools/psxd_publish.py ship --summary "one line, in your words"`.
 4. You resume the router.
 
-`git push --no-verify` skips the hook. It is yours alone, for a broken hook; the agents' deny list refuses it.
+`git push --no-verify` skips the hook. It is yours alone, for a broken hook. The agents' deny list refuses it.
 
 ## What ship checks, and what to do when it stops
 
 | Stage | Checks | When it fails |
 |---|---|---|
-| `state` | the commit is `origin/<dev_branch>`; public's releases and open release PRs | push first; another release PR open: `--replace`; no public main: release 1 is a cutover step (`release --push`) |
-| `dev-ci` | every workflow run of -dev at that commit passed | fix in dev, push, ship again; still running: it waits up to `--timeout MIN` (90) |
-| `gate` | contributor commits imported, exact projection, new paths, check-public, README lint, audit | `import`, then `land`, then push; new paths: answer `y`, or pass `--ack-new` |
-| `build` | `[public].land_check`, the byte check, on the exported projection | the published files alone don't build: list what is missing, or fix in dev |
+| `state` | the commit is `origin/<dev_branch>`, and public's releases and open release PRs | push first. Another release PR open: `--replace`. No public main: release 1 is a cutover step (`release --push`). |
+| `dev-ci` | every workflow run of -dev at that commit passed | fix in dev, push, ship again. Still running: it waits up to `--timeout MIN` (90). |
+| `gate` | contributor commits imported, exact projection, new paths, check-public, README lint, audit | `import`, then `land`, then push. New paths: answer `y`, or pass `--ack-new`. |
+| `build` | `[public].land_check`, the byte check, on the exported projection | the published files alone do not build: list what is missing, or fix in dev |
 | `ci` | `ci-sim --projection`: `no-rom.yml`'s jobs on the projection, in a clean container | a file CI needs is unlisted, or a no-rom job is red: `python3 tools/psxd_publish.py ci-sim --projection` shows the whole log |
 | `push` | pushes `release/<rev10>` and opens the PR | |
-| `checks` | the PR's required checks, green, from GitHub Actions, at its head | red: fix forward (below); a workflow change: review the printed diff, then `ship --merge-reviewed` |
+| `checks` | the PR's required checks, green, from GitHub Actions, at its head | red: fix forward (below). A workflow change: review the printed diff, then `ship --merge-reviewed`. |
 | `merge` | the admin squash, pinned to the head it checked | |
 | `verify` | public main carries the release, its push runs passed, every `<EXE>_report` was uploaded | rerun ship once the cause is fixed |
 
@@ -53,5 +53,5 @@ Nobody patches a red release PR on public. Fix the cause in dev, commit, push, t
 
 ## The agents
 
-Agents commit. They never push, ship, release, land or merge; the hook and the deny list stop them. If an agent asks
+Agents commit. They never push, ship, release, land or merge. The hook and the deny list stop them. If an agent asks
 you to run one of these, the decision is yours.

@@ -20,7 +20,7 @@ new profile.
 | `sdk.family` | the SDK family whose stamps the probe detects |
 | `sdk.detector` | how the probe detects the SDK version |
 | `sdk.authority` | which later tool's detection is the final word |
-| `tools.splitter` | the splitter/disassembler the ladder's phase 1 uses |
+| `tools.splitter` | the splitter/disassembler the ladder's phase 1.3 uses |
 | `tools.assembler` | the assembler/linker |
 | `tools.compilers` | where candidate compilers come from |
 | `tools.loader` | the RE database loader |
@@ -37,7 +37,10 @@ Optional: an SDK catalogue (`psx/psyq.toml`; fields in its header). S10 copies t
 Facts only: `console`, `volume_id`, `files`, `file_list` (path, size), `system_cnf` (or the console's boot record),
 `boot_exe`, `serial`, `exe` (header fields, size, sha1), `track01` (sha1, sha256, bytes, mode), `toc` (tracks, line,
 fingerprint), `psyq` (or the SDK's stamps: count, version, libnums, first, last; `note` when there is no stamp), `sdk_strings`, `seeds` (method,
-count, entry). Never a byte of the medium; never the dump's path.
+count, entry), `debug_artifacts`. Never a byte of the medium; never the dump's path.
+
+`debug_artifacts` holds the disc's debug leftovers: the path, size and kind of each file, and counts for the boot
+executable.
 
 ## Adding a profile
 

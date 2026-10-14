@@ -7,14 +7,14 @@ like a real repository's and hashes that belong to no disc. psxdecomp's tier 0 l
 
 <!-- psxdecomp: ai-policy -->
 > [!IMPORTANT]
-> **AI policy:** LLMs produce negligible decompilation results without good guidance. Investigate and familiarize yourself with the console's architecture and the game you are decompiling, and always use your own judgment. Humans drive the decisions; AI reads and writes the code.
+> **AI policy:** LLMs produce negligible decompilation results without good guidance. Investigate and familiarize yourself with the console's architecture and the game you are decompiling, and always use your own judgment. Humans drive the decisions. AI reads and writes the code.
 
 <!-- psxdecomp:disc:begin -->
 | Disc | Serial | Executable | SHA-1 of the data track |
 |---|---|---|---|
 | Disc 1 | PSXD-00001 | `PSXD_000.01` | `0123456789abcdef0123456789abcdef01234567` |
 
-The target `PSXD_000.01` has SHA-1 `89abcdef0123456789abcdef0123456789abcdef` (`config/check.PSXD_000.01.sha`); every build checks its rebuild against it.
+The target `PSXD_000.01` has SHA-1 `89abcdef0123456789abcdef0123456789abcdef` (`config/check.PSXD_000.01.sha`). Every build checks its rebuild against it.
 <!-- psxdecomp:disc:end -->
 
 > [!IMPORTANT]
@@ -39,6 +39,8 @@ The target `PSXD_000.01` has SHA-1 `89abcdef0123456789abcdef0123456789abcdef` (`
 | `ovl.stage1` | Stage 1 | [![Code](https://decomp.dev/example/synthetic-decomp.svg?mode=shield&label=Code&measure=code&category=ovl.stage1)](https://decomp.dev/example/synthetic-decomp?category=ovl.stage1) [![Functions](https://decomp.dev/example/synthetic-decomp.svg?mode=shield&label=Functions&measure=functions&category=ovl.stage1)](https://decomp.dev/example/synthetic-decomp?category=ovl.stage1) |
 
 </details>
+
+The published number is the matched code of the `game` category, in bytes. The `sdk` row counts the SDK libraries apart. A complete unit is a C file whose code and data all match. It is not a finished file (`rules/FIN1.md`).
 
 Progress bars powered by [decomp.dev][psxd-progress].
 

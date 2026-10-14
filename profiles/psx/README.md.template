@@ -2,9 +2,9 @@
 
 ## Description
 
-A matching decompilation of **{{GAME_TITLE}}** ({{PLATFORM}}, {{GAME_SERIAL}}): C source that, compiled with the original
-era's toolchain and linked in the original order, reproduces every shipped binary byte for byte, verified by a hash check
-inside every build.
+A matching decompilation of **{{GAME_TITLE}}** ({{PLATFORM}}, {{GAME_SERIAL}}). The C source is compiled with the
+original era's toolchain and linked in the original order. It reproduces every shipped binary byte for byte, and a
+hash check inside every build verifies that.
 
 {{PROJECT_GOALS}}
 
@@ -23,6 +23,8 @@ inside every build.
 <!-- psxdecomp:progress:end -->
 
 "Matched" means byte-identical: a function counts only when the whole binary still hashes with it compiled from source.
+Matched code is not finished code. `python3 tools/psxd_floor.py debt` counts what each source file still needs to be
+readable.
 
 ## Building the decompilation
 
@@ -36,7 +38,7 @@ Docker, Python 3.12 or newer, and your own dump of {{GAME_TITLE}} ({{GAME_SERIAL
 | `src/` | the reconstructed C source (`src/NOTICE.md`: no license is asserted over it) |
 | `config/` | the build's records: the firewall, the references, hashes and split configurations |
 | `tools/` | the project's tools, including the public-clean audit |
-| `docs/` | the project's documentation; `docs/ops/` holds the operational topics |
+| `docs/` | the project's documentation. `docs/ops/` holds the operational topics. |
 | `cookbook/` | byte-proven code idioms, one per entry |
 | `rules/` | the project's rules |
 | `phase-ends/` | the record of each finished phase |
@@ -49,8 +51,8 @@ The host setup (Docker, Python, the reference library) is in [docs/ops/host-reci
 
 ### Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) first: bring your own copy of the game, never commit anything derived from it,
-and read the AI-use conduct section before your first pull request.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Bring your own copy of the game. Never commit anything derived from
+it. Read the AI-use conduct section before your first pull request.
 
 ### Reference
 

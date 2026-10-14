@@ -1,9 +1,10 @@
 name: ci
 on:
   push:
+    branches: ["**"]              # not tags: release.yml runs these tiers for a tag (workflow_call)
   pull_request:
   schedule:
-    - cron: "17 4 * * 1"          # weekly: tier 1b (the pipeline smoke in the profile container)
+    - cron: "17 4 * * 1"          # weekly: tier 1b (the pipeline smoke) and tier 5a (the C corpus), in containers
   workflow_dispatch:
   workflow_call:                  # release.yml runs the same tiers before it drafts a release
 
@@ -15,6 +16,17 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:
+  firewall:
+    name: firewall (no game bytes in the tree)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with: { python-version: "3.12" }
+      - name: The repo's own firewall, with its control (the check that the default-branch ruleset requires)
+        run: python tools/audit_public.py --self-test && python tools/audit_public.py
+
   tier0:
     name: tier 0 (${{ matrix.os }}, Python ${{ matrix.python }})
     strategy:
@@ -36,10 +48,12 @@ jobs:
           npm install -g "@anthropic-ai/claude-code@$v"
           claude --version
       - run: pip install pytest pyyaml
-      - name: The repo's own firewall, with its control
-        run: python tools/audit_public.py --self-test && python tools/audit_public.py
-      - name: Static checks, eval schemas and grader controls, every script's self-test
-        run: pytest -q -rs tests/test_static.py tests/test_scripts.py
+      - name: ripgrep, for the search test of the stale-lead folders (it skips without it)
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get install -y --no-install-recommends ripgrep; else brew install ripgrep; fi
+          rg --version | head -1
+      - name: Static checks, eval schemas and grader controls, every script's self-test, the floor tool's scenarios
+        run: pytest -q -rs tests/test_static.py tests/test_scripts.py tests/test_floor.py
 
   tier1:
     name: tier 1 (the installer on the homebrew fixture)
@@ -67,3 +81,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Tier 1b — extract, split, all-asm build, hash, in the profile container
         run: bash fixtures/homebrew-psx/smoke/run.sh
+
+  tier5a-corpus:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tier 5a — every truth matches itself, every mutant fails, every fake twin matches and is flagged
+        run: bash fixtures/c-corpus/run.sh

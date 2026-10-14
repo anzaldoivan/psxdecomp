@@ -1,0 +1,97 @@
+schema_version: "1.0"
+name: s7-ladder
+description: The intake (S7) in a plain session writes a constitution that carries the kit's eleven-phase ladder, and leaves GENERATION_PLAN.md to the planner.
+tags: [flow, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "/psxdecomp:new --resume --until S7"
+  max_turns: 40
+  timeout_seconds: 1500
+  allowed_tools: [Skill, Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion]
+  append_system_prompt: |
+      This session was opened with `claude --agent plain` in a repository that Project Architect installed
+      (.claude/pa.json exists). It is a plain session: do the intake here. The developer confirmed every answer at
+      the gate; ask nothing that `.run/bootstrap/answers.txt` already answers. No developer is at the keyboard in
+      this run. For an intake item that the answers do not cover, and at each confirmation gate of the intake, take
+      your own recommended answer, say in one line that you did, and go on until PROJECT_CONTEXT.md is written. If
+      `git` fails by its bare name in this sandbox, use the full path of another git on this machine.
+runs: 1
+graders:
+  - name: constitution-written
+    type: file_exists
+    path: PROJECT_CONTEXT.md
+  - name: ladder-0-governance
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)0\\b[^\\n]*Governance\\b[^\\n]{0,40}\\bfirewall"
+    flags: "i"
+  - name: ladder-1-extraction
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)1\\b[^\\n]*extraction"
+    flags: "i"
+  - name: ladder-2-oracles
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)2\\b[^\\n]*oracles?\\b[^\\n]{0,40}\\bload map"
+    flags: "i"
+  - name: ladder-3-baseline
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)3\\b[^\\n]*(all-assembly|byte-identical baseline)"
+    flags: "i"
+  - name: ladder-4-compiler
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)4\\b[^\\n]*compiler\\b[^\\n]{0,30}\\bpinned"
+    flags: "i"
+  - name: ladder-5-census
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)5\\b[^\\n]*census"
+    flags: "i"
+  - name: ladder-6-multipliers
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)6\\b[^\\n]*multipliers"
+    flags: "i"
+  - name: ladder-7-codegen-map
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)7\\b[^\\n]*codegen map"
+    flags: "i"
+  - name: ladder-8-campaign
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)8\\b[^\\n]*(campaign|first cracks)"
+    flags: "i"
+  - name: ladder-9-publish
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)9\\b[^\\n]*publish"
+    flags: "i"
+  - name: ladder-10-readability
+    type: regex
+    target: {source: file, path: PROJECT_CONTEXT.md}
+    pattern: "(^|\\n)[ \\t>*#|-]*(phase[ \\t]+(1\\.)?|1\\.|\\|[ \\t]*(1\\.)?)10\\b[^\\n]*readab"
+    flags: "i"
+  - name: no-plan
+    type: file_exists
+    path: GENERATION_PLAN.md
+    exists: false
+  - name: asked-for-the-intake-file
+    type: tool_used
+    tool: Bash
+    input_match: "install where"
+    min: 1
+  - name: says-intake-done
+    type: regex
+    target: last_message
+    pattern: "PROJECT_CONTEXT\\.md"
+  - name: names-the-next-stage
+    type: regex
+    target: last_message
+    pattern: "\\bS8\\b|--resume"
+    flags: "i"
+expected_outcome: The skill sees a plain session at NEXT S7, reads the kit's intake file that `install where` prints, writes PROJECT_CONTEXT.md with the eleven ladder phases, commits it, marks S7 and stops at --until S7. psxdecomp's `plan.py ladder PROJECT_CONTEXT.md` then exits 0.

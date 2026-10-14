@@ -1,16 +1,36 @@
 """Shared fixtures. Tier 1 needs the pinned PA3 (cloned from GitHub, or $PSXDECOMP_PA3_SOURCE) and the kit:
-$PSXDECOMP_KIT, else compat.toml [kit].repo + sha cloned by common.resolve_kit (digest-checked). Without either, the
-pipeline tests skip with that reason."""
+$PSXDECOMP_KIT, else compat.toml [kit].repo + sha cloned by common.resolve_kit (digest-checked). A pin that cannot be
+resolved (no network, a digest that is not the tested one, a moved tag) FAILS tier 1: a green tier 1 means that tier 1
+ran. $PSXDECOMP_ALLOW_SKIP=1 turns that failure into a skip, for a machine that is offline on purpose."""
+import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+# A test run started by an agent session must give the result of a run in a terminal: the tools refuse a push and
+# ask for a session's heartbeat when they see these two.
+for _k in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID"):
+    os.environ.pop(_k, None)
 PY = sys.executable
 sys.path.insert(0, str(ROOT / "scripts"))
+
+# The interpreter's path in a golden file: the whole token, whatever folder of it is named python (Homebrew's
+# opt/python@3.14, a runner's hostedtoolcache/Python/3.12.7, manylinux's /opt/python/cp312-cp312), then its version.
+PY_TOKEN = r"/\S*/python[\d.]*(?=[\s\"']|$)( \(\d+\.\d+\.\d+\))?"
+
+
+def unresolved(what: str, err) -> None:
+    """A pin that tier 1 could not resolve: a failure, unless the developer allowed a skip."""
+    msg = "pinned %s unavailable: %s" % (what, err)
+    if os.environ.get("PSXDECOMP_ALLOW_SKIP") == "1":
+        pytest.skip(msg + " (PSXDECOMP_ALLOW_SKIP=1)")
+    pytest.fail(msg + " — tier 1 did not run. Set PSXDECOMP_ALLOW_SKIP=1 to skip it on a machine that is offline")
+
 
 GIT_ENV = {"GIT_AUTHOR_NAME": "fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
            "GIT_COMMITTER_NAME": "fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
@@ -40,7 +60,7 @@ def kit():
     try:
         found, _ = common.resolve_kit()
     except common.Fail as e:
-        pytest.skip("pinned kit unavailable: %s" % e)
+        unresolved("kit", e)
     os.environ["PSXDECOMP_KIT"] = str(found)
     return str(found)
 
@@ -57,7 +77,7 @@ def toolchain(tmp_path_factory, kit):
     try:
         pkg, _ = common.resolve_pa3()
     except common.Fail as e:
-        pytest.skip("pinned PA3 unavailable: %s" % e)
+        unresolved("PA3", e)
     cfg = base / "cfg"
     run([PY, pkg / "pa_install.py", "--root", "--yes", "--no-clone", "--config-dir", cfg, "--pa3-dir", cfg / "pa3",
          "--no-statusline"])
@@ -73,3 +93,25 @@ def bootstrap(tc, target, *extra, check=True):
 
 def tree(repo):
     return run(["git", "-C", repo, "ls-files"]).stdout.splitlines()
+
+
+def front(text, *keys):
+    """The single-line frontmatter values of `keys`, joined (a skill's listing text is description + when_to_use)."""
+    block = text.split("---")[1]
+    return "\n".join(m.group(1) for k in keys for m in [re.search(r"^%s:\s*(.*)$" % k, block, re.M)] if m)
+
+
+def hook_stdout(cwd):
+    """What the plugin's SessionStart hook, as hooks/hooks.json registers it, adds to a session started in cwd."""
+    cmd = json.loads((ROOT / "hooks/hooks.json").read_text())["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    return subprocess.run(["sh", "-c", cmd], cwd=cwd, input="{}", capture_output=True, text=True,
+                          env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))).stdout
+
+
+def check_golden(path, items):
+    """items = {name: text}. One golden line per item, `<utf-8 bytes> <name>`, sorted by name; PSXDECOMP_UPDATE_GOLDEN=1
+    rewrites the file (a deliberate change to what a session loads first)."""
+    got = ["%d %s" % (len(t.encode()), n) for n, t in sorted(items.items())]
+    if os.environ.get("PSXDECOMP_UPDATE_GOLDEN"):
+        path.write_text("\n".join(got) + "\n")
+    assert got == path.read_text().splitlines(), "bytes differ from %s (PSXDECOMP_UPDATE_GOLDEN=1 if intended)" % path

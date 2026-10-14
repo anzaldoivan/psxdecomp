@@ -1,0 +1,17 @@
+# config/guard.tsv: what an agent session may not do in this repository. `tools/psxd_floor.py guard --hook` reads it
+# before each Bash, Edit and Write call (.claude/settings.json). The first row that matches a call decides. This file
+# is the game's own: add a row when a session repeats a mistake. One tab separates the columns.
+action	tool	pattern	say
+deny	path	asm/	asm/ is the output of the splitter. Change the split configuration and run the split again.
+deny	path	config/check.*.sha	The build writes the hash files. A new baseline is the decision of the developer.
+deny	path	config/medium.sha1	The hashes of the disc are fixed. Only another dump changes them, and the developer decides that.
+deny	path	config/debt-baseline.txt	Run `python3 tools/psxd_floor.py debt --update`. It writes this file.
+deny	path	config/style-ratchet.txt	Run `python3 tools/psxd_publish.py style --update`. It writes this file.
+deny	path	config/oracle.toml	`psxd oracle add` writes this file. It records a build that the developer supplied.
+deny	path	config/oracle.*.sha1	`psxd oracle add` writes this file. It holds the hashes of one build.
+deny	bash	\bgit\b[^;&|]*\bcommit\b[^;&|]*\s(?:--no-verify\b|-[a-mo-zA-Z]*n[a-zA-Z]*(?=\s|$))	The commit hook runs the gate of this repository. Commit with it.
+deny	bash	core\.hooks[Pp]ath	The git hooks of this repository run the gate. Do not point git at another folder.
+# Two examples. Each game has its own targets: remove the `#` and set the pattern. The hook searches the pattern in
+# the whole command, so it also refuses a command that only mentions the words.
+# deny	bash	\bmake\b[^;&|]*\bexpected\b	Ask the developer before you write a new baseline.
+# deny	bash	\bsplat\s+split\b	Run the split target of this repository. It keeps the forced boundaries.

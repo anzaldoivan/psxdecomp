@@ -7,7 +7,7 @@ design and test tiers: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 | What | Command |
 |---|---|
-| Tier 0 (free; every script's self-test included) | `pytest -q tests/test_static.py tests/test_scripts.py` |
+| Tier 0 (free; every script's self-test included) | `pytest -q tests/test_static.py tests/test_scripts.py tests/test_floor.py` |
 | Tier 1 (bootstraps a fixture repo; fetches the pinned kit) | `pytest -q tests/test_pipeline.py tests/test_split_e2e.py` (`PSXDECOMP_KIT=<folder>` for a local kit) |
 | One script's self-test | `python3 scripts/<name>.py --self-test` → `SELF-TEST OK` |
 | Firewall audit | `python3 tools/audit_public.py --self-test && python3 tools/audit_public.py` |
@@ -24,11 +24,15 @@ design and test tiers: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Reference library policy: [docs/REFS.md](docs/REFS.md); the profile's rows: `profiles/psx/refs.toml`.
 - README standard and decomp.dev reports: [docs/PUBLISHING.md](docs/PUBLISHING.md); its code: `scripts/publish.py`
   (vendored into games byte for byte: stdlib only, no plugin import).
+- The floor (roadmap, tooling, readability debt, guard): `profiles/psx/floor.md`, which holds the phase numbering.
+  Its code: `scripts/floor.py` (vendored the same way), `scripts/plan.py` and `scripts/trial.py`. What S10 and
+  upgrade deliver, and how: `upgrade.DELIVERY`.
 
 ## Rules
 
 - Never push, never tag, never publish a release from an agent session.
-- House rules (one home per fact, scoped versions, no game byte): [CONTRIBUTING.md](CONTRIBUTING.md#house-rules).
+- House rules (one home per fact, scoped versions, no game byte) and the writing standard:
+  [CONTRIBUTING.md](CONTRIBUTING.md#house-rules).
 - psxdecomp pins no compiler. A bootstrapped game repo records only a candidate set; the game pins its own triple in
   its phase 1.4 (`docs/ops/compiler-pin.md` there).
 

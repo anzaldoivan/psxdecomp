@@ -21,7 +21,7 @@ tested_pa3   = "3.14.2"                                 # the kit's own TESTED_P
 default_path = ""
 
 [tested_on]
-date    = "2026-10-01"
+date    = "2026-10-13"
 hosts   = ["macOS 27 arm64 + Docker Desktop (amd64 emulation)"]
-claude  = "2.1.287"
+claude  = "2.1.296"
 python  = ["3.14"]

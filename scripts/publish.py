@@ -8,7 +8,8 @@
     publish.py categories [TSV] [--repo DIR] [--history]
                                           config/categories.tsv's rules; --history: no id ever committed is gone
     publish.py categorize REPORT --categories TSV [-o OUT]
-                                          every category's measures from the units' progress_categories; version 2
+                                          every category's measures from the units' progress_categories; version 2;
+                                          a fully matched C unit is marked complete
     publish.py validate REPORT [--categories TSV] [--artifact A] [--version V] [--exe NAME]
                                           a report.json against report.proto, its arithmetic and the firewall
     publish.py check-public [DIR]         the public tree DIR (default: this repository) against the list:
@@ -38,6 +39,18 @@
                                           release projection: in a clean ubuntu:24.04 container, or on this machine
                                           when the steps start containers themselves (build.yml; --private: a local
                                           <game>-private, --image: the toolchain image in [public].image's place)
+    publish.py style FILE...              the writing findings of each file, one `<file>:<line>: <finding>` line each;
+                                          exit 1 when there is one
+    publish.py style [--update] [--repo DIR]
+                                          every public prose file against config/style-ratchet.txt (`<count> <path>`
+                                          rows, `skip <entry>` lines): exit 1 when a count is over its row; --update
+                                          rewrites the rows to the counts of now and refuses a rise
+    publish.py style [--staged | --rev REV] [--against BASE]
+                                          the same check on the index or on the revision REV (no checkout); --against:
+                                          judged by the ratchet, the `skip` lines and the public list of the revision
+                                          BASE as well, so that a change cannot rewrite what judges it
+    publish.py style --hook               a Claude Code PostToolUse hook (stdin: the event): tells the session the
+                                          findings in the public text it changed; never blocks, always exits 0
     publish.py --self-test
 
 One file, standard library only, no import from the plugin: S10 and /psxdecomp:upgrade copy it byte for byte into a
@@ -50,21 +63,28 @@ config/check.*.sha, manifest/*.jsonl, the Makefile, and `git remote get-url orig
 """
 from __future__ import annotations
 
+import os
+import sys
+
+if __name__ == "__main__" and os.name == "posix" and not sys.flags.isolated and sys.executable and os.path.isfile(__file__):
+    # Start again in isolated mode: a module beside this file or on PYTHONPATH never stands in for the standard library.
+    os.execv(sys.executable, [sys.executable, "-I", os.path.abspath(__file__)] + sys.argv[1:])
+
 import argparse
 import contextlib
 import copy
+import difflib
 import fnmatch
 import functools
 import glob
+import hashlib
 import io
 import json
-import os
 import pathlib
 import re
 import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 import tomllib
@@ -73,7 +93,7 @@ import urllib.parse
 # ---- the AI policy (its one home; scripts/common.py re-exports it, the plugin's README carries it verbatim) -------
 AI_POLICY = ("LLMs produce negligible decompilation results without good guidance. Investigate and familiarize "
              "yourself with the console's architecture and the game you are decompiling, and always use your own "
-             "judgment. Humans drive the decisions; AI reads and writes the code.")
+             "judgment. Humans drive the decisions. AI reads and writes the code.")
 AI_POLICY_MARK = "<!-- psxdecomp: ai-policy -->"
 # The start of the disclosure sentence the interview offered before AI_POLICY (the canned answers still carry it).
 OLD_DISCLOSURE = "This project is developed with substantial AI assistance"
@@ -89,6 +109,11 @@ README_H2 = ["Description", "Progress", "Building the decompilation", "Repositor
 README_H3 = {"Getting started": ["Setting up", "Contributing", "Reference"]}
 FREE_AFTER = "Acknowledgements"          # any other H2 may follow it (Contact, Links…), none may precede it
 BLOCKS = {"disc": "Description", "progress": "Progress"}      # generated block -> the H2 it lives under
+OPTIONAL_BLOCKS = {"finished": "Progress"}                    # a block that a README may carry. Its count moves with the
+#                                                               source, so a stale one is a WARN, and a FAIL at a release
+# A count of finished things: `12 files are finished`, `12 of 40 finished`, `40% finished`, `finished: 12`, `finished 3 files`
+FINISHED_CLAIM = re.compile(r"(?i)\b\d[\d,.]*\s*%?\s+(?:of\s+\d[\d,]*\s+)?(?:\w+\s+){0,2}finished\b"
+                            r"|\bfinished\b\s*[:=(]?\s*(?:\w+\s*[:=]?\s*)?\d")
 GAME_BLOCK = ("<!-- progress:begin -->", "<!-- progress:end -->")  # the game's own numbers block (kit corpus), allowed
 
 
@@ -118,6 +143,7 @@ ARTIFACT = re.compile(r"^[A-Za-z0-9._-]+_report$")
 
 # ---- what psxdecomp writes into a game repository from this standard (S10, /psxdecomp:upgrade) -------------------
 VENDORED = "tools/psxd_publish.py"                        # this file, byte for byte
+VERSION = "0.6.0"                                         # psxdecomp's version: a game's tool changes only to a later one
 WORKFLOW = ".github/workflows/psxdecomp-readme.yml"       # profiles/psx/psxdecomp-readme.yml: lint + the freeze
 
 # ---- the category list ------------------------------------------------------------------------------------------
@@ -411,10 +437,54 @@ def progress_row(slug: str, r: dict) -> str:
         badge(slug, "Functions", "functions", r["id"]), page)
 
 
+# The one published number, said once under the table (generated: the README's prose never types a number).
+PROGRESS_NOTE = ("The published number is the matched code of the `game` category, in bytes. The `sdk` row counts "
+                 "the SDK libraries apart. A complete unit is a C file whose code and data all match. It is not a "
+                 "finished file (`rules/FIN1.md`).")
+NUMBER_RE = re.compile(r"(?<![\w.])(?!100(?:\.0+)?\s?%)\d[\d,]*(?:\.\d+)?\s?%|(?<![\w.])\d[\d,]*\s+of\s+\d[\d,]*(?![\w])")
+# `phase 1 of 3`, `disc 1 of 2`: a place in a series, not a count of the work
+SERIES_RE = re.compile(r"\b(?:phase|step|part|page|disc|disk|stage|chapter|volume|track|day|week)\s+\d+\s+of\s+\d+\b", re.I)
+KIT_BLOCK_HEAD = "| Metric | Matched | Of | % |"       # the first line of the block that the kit's progress tool writes
+
+
+def block_lines(lines: list[str], span: tuple[int, int], code: set) -> set[int]:
+    """The line indexes of a section that a block holds: the two generated blocks and the game's own numbers block,
+    each from its begin marker to its end marker. A marker inside a code fence is text, and a begin marker with no end
+    marker opens nothing: neither can hide the prose below it."""
+    held: set[int] = set()
+    for begin, end in ((marker("progress"), marker("progress", True)), (marker("disc"), marker("disc", True)),
+                       (marker("finished"), marker("finished", True)), GAME_BLOCK):
+        i = span[0] + 1
+        while i < span[1]:
+            if lines[i].strip() == begin and i not in code:
+                j = next((k for k in range(i + 1, span[1]) if lines[k].strip() == end and k not in code), None)
+                if j is None:
+                    break
+                held.update(range(i, j + 1))
+                i = j
+            i += 1
+    return held
+
+
+def typed_numbers(lines: list[str], span: tuple[int, int], code: set) -> list[tuple[int, str]]:
+    """[(line index, the number)] for each percent other than 100% and each `N of M` count that the prose of a section
+    types: outside the generated blocks, the game's own numbers block, code fences, code spans, link targets and HTML
+    comments (also one that spans lines). A place in a series (`phase 1 of 3`) is no count."""
+    out, held = [], block_lines(lines, span, code)
+    text = "\n".join(lines[span[0] + 1:span[1]])
+    shown = re.sub(r"<!--.*?-->", lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.S).split("\n")
+    for i in range(span[0] + 1, span[1]):
+        if i in held or i in code or re.match(r"\[[^\]]+\]:\s", lines[i].strip()):
+            continue
+        prose = re.sub(r"`[^`]*`|\]\([^)]*\)|<[^>]*>", " ", shown[i - span[0] - 1])
+        out += [(i, m.group(0)) for m in NUMBER_RE.finditer(SERIES_RE.sub(" ", prose))]
+    return out
+
+
 def render_progress(ctx: Ctx) -> list[str]:
     if ctx.categories is None:
         return ["*Not published yet.* The progress table and its [decomp.dev](%s) badges appear here with the "
-                "project's first progress report; `config/categories.tsv` names what they count." % DECOMPDEV]
+                "project's first progress report. `config/categories.tsv` names what they count." % DECOMPDEV]
     if ctx.categories_errs:
         raise RenderError("config/categories.tsv: %s" % ctx.categories_errs[0])
     if not ctx.slug:
@@ -431,7 +501,7 @@ def render_progress(ctx: Ctx) -> list[str]:
             out += ["", "<details><summary><code>%s</code>: %d overlay%s</summary>" % (
                 r["id"], len(kids), "" if len(kids) == 1 else "s"), ""] + head
             out += [progress_row(s, k) for k in kids] + ["", "</details>"]
-    out += ["", "Progress bars powered by [decomp.dev][psxd-progress].", "",
+    out += ["", PROGRESS_NOTE, "", "Progress bars powered by [decomp.dev][psxd-progress].", "",
             "[psxd-code]: %s" % badge(s, "Code", "code", "game"),
             "[psxd-functions]: %s" % badge(s, "Functions", "functions", "game"),
             "[psxd-progress]: %s/%s" % (DECOMPDEV, s)]
@@ -457,12 +527,34 @@ def render_disc(ctx: Ctx) -> list[str]:
         seen.append(d["executable"])
         t = target_sha(ctx.repo, d["executable"])
         if t:
-            out += ["", "The target `%s` has SHA-1 `%s` (`%s`); every build checks its rebuild against it."
+            out += ["", "The target `%s` has SHA-1 `%s` (`%s`). Every build checks its rebuild against it."
                     % (d["executable"], t[0], t[1])]
     return out
 
 
-RENDER = {"disc": render_disc, "progress": render_progress}
+FINISHED_LINE = re.compile(r"^DEBT FILES (\d+) C file\(s\): (\d+) finished, (\d+) matched, (\d+) with stubs", re.M)
+
+
+def render_finished(ctx: Ctx) -> list[str]:
+    """The count of finished files, from the floor tool beside this file (`debt --files --public`): the one place of
+    a README where that word stands beside a number. It counts the files that the repository publishes, so the public
+    repository of a game in split mode finds the same count in its own tree."""
+    tool = sibling()
+    r = subprocess.run([sys.executable, "-I", str(tool), "debt", "--files", "--public", "--repo", str(ctx.repo)],
+                       capture_output=True, text=True) if tool.is_file() else None
+    m = FINISHED_LINE.search(r.stdout) if r is not None and r.returncode == 0 else None
+    if m is None:
+        raise RenderError("the finished block needs `%s debt --files`: %s" % (tool.name, "no such tool beside %s" % (
+            pathlib.Path(__file__).name) if r is None else ((r.stdout + r.stderr).strip().splitlines() or ["no output"])[-1]))
+    n, done, matched, stubs = (int(x) for x in m.groups())
+    if not n:
+        return ["*No C source file yet.* The count of finished files appears here with the first one."]
+    return ["**%d of %d** C files are finished: matched, with no readability debt left (`rules/FIN1.md`). %d more %s "
+            "matched and still hold%s debt, and %d still hold%s a function in assembly." % (
+                done, n, matched, "is" if matched == 1 else "are", "s" if matched == 1 else "", stubs, "s" if stubs == 1 else "")]
+
+
+RENDER = {"disc": render_disc, "progress": render_progress, "finished": render_finished}
 
 
 def _blocks(lines: list[str], name: str) -> list[tuple[int, int]]:
@@ -678,6 +770,14 @@ def lint(text: str, ctx: Ctx, release: bool = False) -> list[tuple[str, str, str
                 name, marker(name), marker(name, True), len(b), len(e)))
         elif not inside(b[0], sec):
             add("FAIL", "blocks", "the %s block (line %d) belongs under ## %s" % (name, b[0] + 1, sec))
+    for name, sec in OPTIONAL_BLOCKS.items():
+        b = [i for i, l in enumerate(lines) if l.strip() == marker(name)]
+        e = [i for i, l in enumerate(lines) if l.strip() == marker(name, True)]
+        if (b or e) and (len(b) != 1 or len(e) != 1 or b[0] > e[0]):
+            add("FAIL", "blocks", "the %s block needs one `%s` … `%s` pair (found %d/%d)" % (
+                name, marker(name), marker(name, True), len(b), len(e)))
+        elif b and not inside(b[0], sec):
+            add("FAIL", "blocks", "the %s block (line %d) belongs under ## %s" % (name, b[0] + 1, sec))
     try:
         fresh = render(text, ctx)
     except RenderError as e:
@@ -685,15 +785,41 @@ def lint(text: str, ctx: Ctx, release: bool = False) -> list[tuple[str, str, str
         fresh = text
     if fresh != text:
         flines = fresh.split("\n")
-        for name in BLOCKS:
+        for name in list(BLOCKS) + list(OPTIONAL_BLOCKS):
             a, f = _blocks(lines, name), _blocks(flines, name)
             if a != [(-1, -1)] and [lines[x:y] for x, y in a] != [flines[x:y] for x, y in f]:
-                add("FAIL", "blocks", "the %s block is stale: `python3 tools/psxd_publish.py render README.md "
-                    "--write` regenerates it" % name)
+                # the count of an optional block moves with every source commit: it must be right in what is released
+                add("FAIL" if release or name in BLOCKS else "WARN", "blocks", "the %s block is stale: `python3 "
+                    "tools/psxd_publish.py render README.md --write` regenerates it%s" % (name, " (it would read: %s; a "
+                    "release refuses the stale one)" % " ".join(l for x, y in f for l in flines[x + 1:y])[:160]
+                    if name in OPTIONAL_BLOCKS else ""))
+    # finished is computed, never claimed: the word beside a number stands in the generated block and nowhere else
+    held = block_lines(lines, (-1, n), code)
+    for i, line in enumerate(lines):
+        if i not in held and i not in code and FINISHED_CLAIM.search(re.sub(r"`[^`]*`|\]\([^)]*\)|<[^>]*>", " ", line)):
+            add("FAIL", "finished", "line %d: a count beside the word `finished`: the tool counts the finished files "
+                "(`python3 tools/psxd_floor.py debt --files`), and only the generated block `%s` shows the count" % (
+                    i + 1, marker("finished")))
+    # the one published number: no percent or count typed in ## Progress; a second numbers block is said so
+    for i, num in typed_numbers(lines, spans.get("Progress", (0, 0)), code):
+        add("FAIL", "numbers", "line %d: `%s` is typed in ## Progress: the decomp.dev report is the one published "
+            "number; say it in words, or let the generated block show it" % (i + 1, num))
+    begins = [i for i, l in enumerate(lines) if l.strip() == GAME_BLOCK[0] and i not in code]
+    for i in begins:
+        first = lines[i + 1].strip() if i + 1 < n else ""
+        if not any(lines[k].strip() == GAME_BLOCK[1] and k not in code for k in range(i + 1, n)):
+            add("FAIL", "numbers", "line %d: the numbers block `%s` has no `%s` line: the lint cannot tell where it "
+                "ends" % (i + 1, GAME_BLOCK[0], GAME_BLOCK[1]))
+        elif "generated by" not in first and first != KIT_BLOCK_HEAD:   # the kit's tool writes its table, no comment
+            add("FAIL", "numbers", "line %d: the numbers block `%s` has no `<!-- generated by … -->` line: a tool "
+                "writes a published number, never a person" % (i + 1, GAME_BLOCK[0]))
+        else:
+            add("WARN", "numbers", "line %d: a second numbers block (`%s`) beside the decomp.dev report: the report "
+                "is the one published number; retire the block" % (i + 1, GAME_BLOCK[0]))
     # the records behind the blocks
     if ctx.categories is None:
         add("FAIL" if release else "INFO", "categories", "no %s yet: the progress table says \"not published\" "
-            "until the first report (Phase 9)" % CATEGORIES_REL)
+            "until the first report (phase 1.9)" % CATEGORIES_REL)
     for e in ctx.categories_errs:
         add("FAIL", "categories", e)
     if ctx.discs is None:
@@ -973,6 +1099,17 @@ def validate(report, artifact: str | None = None, version: str | None = None, ca
             if "." in cid and cid.split(".", 1)[0] not in cs:
                 errs.append("units[%d] (%s): lists %r but not its parent %r" % (i, _get(u, "name"), cid,
                                                                              cid.split(".", 1)[0]))
+    for i, u in enumerate(units):                  # honesty: only a unit built from C or C++ reports matched code
+        src = _get(_get(u, "metadata", {}), "source_path", "")
+        m = _unit_numbers(u)
+        if isinstance(src, str) and src.strip() and not src.strip().lower().endswith(C_SOURCES) \
+                and (m["matched_code"] or m["matched_functions"]):
+            errs.append("units[%d] (%s): its source %r is not a C file, and it reports matched code (%d bytes, %d "
+                        "function(s)): assembly is not decompiled code" % (i, _get(u, "name"), src, m["matched_code"],
+                                                                           m["matched_functions"]))
+        if isinstance(src, str) and src.strip() and not src.strip().lower().endswith(C_SOURCES) and _complete(u):
+            errs.append("units[%d] (%s): its source %r is not a C file, and it is marked complete: assembly is not "
+                        "decompiled code" % (i, _get(u, "name"), src))
     if categories is not None:
         reg = {r["id"]: r for r in active(categories)}
         for cid in declared:
@@ -987,9 +1124,47 @@ def validate(report, artifact: str | None = None, version: str | None = None, ca
     return errs
 
 
+TINY = 8                                           # bytes: two instructions, an empty body or a bare return
+
+
+C_SOURCES = (".c", ".cpp", ".cc", ".cxx")
+
+
+def unsourced(report) -> list[str]:
+    """The names of the units that report matched code or matched functions and name no source (objdiff's
+    `metadata.source_path` is optional): the honesty check of `validate` cannot read them. A WARN line of `validate`."""
+    out = []
+    for u in _get(report, "units", []) if isinstance(report, dict) else []:
+        src = _get(_get(u, "metadata", {}), "source_path", "")
+        m = _unit_numbers(u)
+        if not (isinstance(src, str) and src.strip()) and (m["matched_code"] or m["matched_functions"]):
+            out.append(str(_get(u, "name")))
+    return out
+
+
+def tiny_matched(report) -> list[tuple[str, int, int]]:
+    """[(category, tiny, matched)] for each top-level category of the report with a matched function: how many of its
+    matched functions are TINY bytes or less. An INFO line of `validate`: such a function is credited by its size
+    alone, and a reader of the Functions measure should know how many there are."""
+    units = _get(report, "units", []) if isinstance(report, dict) else []
+    by: dict[str, list[int]] = {}
+    for u in units if isinstance(units, list) else []:
+        for f in _get(u, "functions", []) or []:
+            try:
+                size, full = int(_get(f, "size", 0) or 0), float(_get(f, "fuzzy_match_percent", 0) or 0) >= 100.0
+            except (TypeError, ValueError):
+                continue
+            for cid in unit_categories(u) if full else []:
+                if "." not in cid:
+                    by.setdefault(cid, []).append(size)
+    return [(cid, sum(s <= TINY for s in sizes), len(sizes)) for cid, sizes in sorted(by.items())]
+
+
 def categorize(report: dict, categories: list[dict]) -> tuple[dict, list[str]]:
     """The report with version 2, report.measures and one category per active id, each computed from the units that
-    list it. Refuses an unregistered or retired id, a child without its parent, and an active id no unit lists."""
+    list it. A unit built from C whose code and data all match is marked complete (its measures as objdiff writes them).
+    The units are changed in place.
+    Refuses an unregistered or retired id, a child without its parent, and an active id no unit lists."""
     errs = []
     reg = {r["id"]: r for r in categories}
     units = _get(report, "units", []) or []
@@ -1015,6 +1190,18 @@ def categorize(report: dict, categories: list[dict]) -> tuple[dict, list[str]]:
             mine = [c for c in kids if c.startswith(parent + ".")]
             if len(mine) > 1:
                 errs.append("units[%d] (%s): one unit is in one overlay: %s" % (i, _get(u, "name"), ", ".join(mine)))
+    for u in units:                                # complete: built from C, its code and data all matched
+        meta, m = _get(u, "metadata"), _unit_numbers(u)
+        src = _get(meta, "source_path", "")
+        if isinstance(src, str) and src.strip().lower().endswith(C_SOURCES) and m["total_code"] > 0 \
+                and m["matched_code"] == m["total_code"] and m["matched_data"] == m["total_data"]:
+            meta["complete"] = True                # as objdiff marks a unit of a module that it verified byte for byte
+            measures = _get(u, "measures")
+            for k, v in (("complete_code", str(m["total_code"])), ("complete_data", str(m["total_data"])),
+                         ("total_units", 1), ("complete_units", 1), ("complete_code_percent", 100.0),
+                         ("complete_data_percent", 100.0)):
+                measures.pop(_camel(k), None)
+                measures[k] = v
     for r in active(categories):
         if r["id"] not in used:
             errs.append("active category %r: no unit lists it (retire it, or emit it)" % r["id"])
@@ -1125,14 +1312,48 @@ PUBLIC_STR = ("repo", "url", "dev_branch", "private_repo", "private_rev", "image
 PUBLIC_LIST = ("deny", "governance", "checks", "land_check", "audit")
 
 
+INDEX = "index"                                  # a source beside the work tree (None) and a revision: git's index
+
+
+def source_text(repo, source: str | None, rel: str) -> str | None:
+    """One file's text from a source: the work tree (None), the index (INDEX) or a revision. None when the source
+    lacks the file or it is not UTF-8."""
+    if source is None:
+        return _read(pathlib.Path(repo) / rel)
+    r = _git_raw(repo, "show", "%s:%s" % ("" if source == INDEX else source, rel))
+    try:
+        return r.stdout.decode("utf-8") if r.returncode == 0 else None
+    except UnicodeDecodeError:
+        return None
+
+
+def source_entries(repo, source: str) -> dict[str, str]:
+    """{path: blob sha} of the files of the index or of a revision (no symbolic link, no submodule). Raises Fail
+    when git cannot read the source."""
+    if source != INDEX:
+        tree = tree_entries(repo, source)
+        if tree is None:
+            raise Fail("git cannot read the revision %s" % source)
+        return {p: sha for p, (mode, sha) in tree.items() if mode not in ("120000", "160000")}
+    out = {}
+    for rec in _must(repo, "ls-files", "-s", "-z").split("\0"):
+        meta, tab, path = rec.partition("\t")
+        if tab and not meta.startswith(("120000", "160000")):
+            out.setdefault(path, meta.split()[1])
+    return out
+
+
+def sibling() -> pathlib.Path:
+    """psxdecomp's other tool, beside this file: floor.py in the plugin, psxd_floor.py in a game and in a temporary
+    copy of a commit's tools. Each tool runs the other one from its own folder, never from the tree it checks."""
+    me = pathlib.Path(__file__).resolve()
+    return me.with_name(me.name.replace("publish", "floor"))
+
+
 def load_public(repo, rev: str | None = None) -> dict | None:
-    """The [public] table (defaults filled) from the worktree, or from `git show rev:` when rev is given; None when
-    split mode is off. A malformed table raises Fail."""
-    if rev:
-        r = _git(repo, "show", "%s:%s" % (rev, CONFIG_REL))
-        text = r.stdout if r.returncode == 0 else None
-    else:
-        text = _read(pathlib.Path(repo) / CONFIG_REL)
+    """The [public] table (defaults filled) from the worktree, or from the source `rev` (a revision or INDEX) when
+    one is given; None when split mode is off. A malformed table raises Fail."""
+    text = source_text(repo, rev or None, CONFIG_REL)
     if text is None:
         return None
     try:
@@ -1409,10 +1630,38 @@ def _tail(r: subprocess.CompletedProcess, n: int = 20) -> str:
     return "\n".join(((r.stdout or "") + (r.stderr or "")).strip().splitlines()[-n:])
 
 
+FLOOR_TOOL = "tools/psxd_floor.py"                # psxdecomp's other vendored tool: run here, never imported
+DEBT_BASELINE = "config/debt-baseline.txt"
+
+
+def debt_gate(x: pathlib.Path) -> list[str]:
+    """The debt check of the public README workflow, run on an exported tree before it is released: a FAIL line when
+    the tree holds the floor's tool and no baseline, or a baseline that is not equal to its source. A tree without the
+    tool has no such check in its CI, and passes. The check is run by the floor tool beside this file, not by the
+    tree's copy. In the public tree a total under its row is no finding: the row counts the files that the tree does
+    not publish too."""
+    if not (x / FLOOR_TOOL).is_file():
+        return []
+    r = subprocess.run([sys.executable, "-I", str(sibling()), "debt", "--repo", "."], cwd=x, capture_output=True,
+                       text=True)
+    if r.returncode == 0:
+        return []
+    lines = r.stdout.strip().splitlines() or r.stderr.strip().splitlines() or ["no output"]
+    last = next((l for l in reversed(lines) if l.startswith("DEBT CHECK") or l.startswith("DEBT FAIL")), lines[-1])
+    why = next((l[10:] for l in lines if l.startswith("DEBT FAIL ")), last)
+    if not (x / DEBT_BASELINE).is_file():
+        return ["debt: this tree holds %s and no %s: the README workflow of the public repository would fail. List the "
+                "baseline in config/public-paths.txt, then release again" % (FLOOR_TOOL, DEBT_BASELINE)]
+    return ["debt: %s does not pass on this tree (%s; first: %s): the README workflow of the public repository would "
+            "fail. On dev run `python3 %s debt`, correct what it names (`debt --update` rewrites the rows), commit, "
+            "then release again" % (DEBT_BASELINE, last, why, FLOOR_TOOL)]
+
+
 def gate_checks(cache, dev, cfg, tree: str, want: dict, rev: str) -> dict[str, list[str]]:
     """The release gate on an export of the projection, by kind: `paths` (check-public), `readme` (the release lint),
-    `audit` (the game's audit failed) and `noaudit` (nothing audits the tree). Writes no ref."""
-    out = {"paths": [], "readme": [], "audit": [], "noaudit": []}
+    `debt` (the debt baseline is not equal to the tree), `audit` (the game's audit failed) and `noaudit` (nothing
+    audits the tree). Writes no ref."""
+    out = {"paths": [], "readme": [], "debt": [], "audit": [], "noaudit": []}
     lst = _dev_list(cache, tree)[0] or []
     out["paths"] = [d for lv, d in check_paths(sorted(want), lst, deny_entries(dev, rev)) if lv == "FAIL"]
     with tempfile.TemporaryDirectory() as td:
@@ -1426,6 +1675,7 @@ def gate_checks(cache, dev, cfg, tree: str, want: dict, rev: str) -> dict[str, l
         if readme is not None:
             out["readme"] = ["README %s: %s" % (ck, d) for lv, ck, d in lint(readme, Ctx(x), release=True)
                              if lv == "FAIL"]
+        out["debt"] = debt_gate(x)
         default = (x / "tools" / "audit_public.py").is_file()
         for name in sorted(os.listdir(dev)):                   # ignored hash sources (extracted/...) resolve
             if name != ".git" and not os.path.lexists(x / name):
@@ -1446,7 +1696,7 @@ def gate_checks(cache, dev, cfg, tree: str, want: dict, rev: str) -> dict[str, l
 def preflight(cache, dev, cfg, tree: str, want: dict, rev: str) -> list[str]:
     """The release gate, run on the exported projection before any ref is written: FAIL lines."""
     g = gate_checks(cache, dev, cfg, tree, want, rev)
-    return g["paths"] + g["readme"] + g["noaudit"] + g["audit"]
+    return g["paths"] + g["readme"] + g["debt"] + g["noaudit"] + g["audit"]
 
 
 def tree_check(cache, dev, tree: str, argv: list[str], tip: str) -> subprocess.CompletedProcess:
@@ -2434,6 +2684,20 @@ PRE_PUSH = """#!/bin/sh
 # branch, and any push from an agent session. Written by `python3 tools/psxd_publish.py hook --install`.
 exec python3 "$(git rev-parse --show-toplevel)/%s" pre-push "$@"
 """ % VENDORED
+PRE_COMMIT = """#!/bin/sh
+# psxdecomp: the floor's gate on what is staged, judged by the tools of HEAD and never by the copies that the change
+# holds. Written by `python3 %(publish)s hook --install`, also as pre-merge-commit.
+t=$(mktemp -d) || exit 1
+trap 'rm -rf "$t"' EXIT
+if ! git show HEAD:%(floor)s > "$t/psxd_floor.py" 2>/dev/null || ! grep -q "^def cmd_gate" "$t/psxd_floor.py"; then
+    echo "psxdecomp: HEAD holds no floor with a gate, so this commit is not judged" >&2
+    exit 0
+fi
+git show HEAD:%(publish)s > "$t/psxd_publish.py" 2>/dev/null
+python3 -I "$t/psxd_floor.py" gate --staged
+""" % {"floor": FLOOR_TOOL, "publish": VENDORED}
+HOOKS = {"pre-push": PRE_PUSH, "pre-commit": PRE_COMMIT, "pre-merge-commit": PRE_COMMIT}
+OURS = "#!/bin/sh\n# psxdecomp"                      # how each text of psxdecomp starts: such a file is ours to write again
 ZERO = "0" * 40
 
 
@@ -2475,12 +2739,13 @@ def pre_push_refusals(dev, url: str, lines: list[str]) -> list[str]:
 def push_gate(dev, cfg, sha: str) -> tuple[list[str], list[str], str]:
     """The release gate on the projection of a pushed dev commit, offline (the cache as last fetched, no fetch):
     (blocks, warnings, the release-ready line). Blocks: a listed denied path, symlink or gitlink, a check-public FAIL,
-    a failing audit. Warnings: a README lint FAIL, nothing audits the tree, new public paths, nothing new to release."""
+    a failing audit. Warnings: a README lint FAIL, a debt baseline that is not equal to the tree (a release refuses
+    both), nothing audits the tree, new public paths, nothing new to release."""
     cache = public_cache(dev)
     tree, want, blocks = projection(cache, dev, sha)
     g = gate_checks(cache, dev, cfg, tree, want, sha)
     blocks = blocks + g["paths"] + g["audit"]
-    warns = g["readme"] + g["noaudit"]
+    warns = g["readme"] + g["debt"] + g["noaudit"]
     pub = _git(cache, "rev-parse", "-q", "--verify", PUB_REF + "^{commit}").stdout.strip()
     new = []
     if pub:
@@ -2514,12 +2779,68 @@ def pre_push_report(dev, url: str, lines: list[str]) -> tuple[list[str], list[st
     return blocks, warns, last
 
 
+def confirm(question: str) -> bool:
+    """Ask the person at the terminal, never on stdin (git gives a hook the refs there). No terminal: no."""
+    try:
+        with open("/dev/tty", "r+", encoding="utf-8") as tty:
+            tty.write(question + " [y/N] ")
+            tty.flush()
+            return tty.readline().strip().lower() in ("y", "yes")
+    except OSError:
+        return False
+
+
+def floor_push(dev, remote: str, lines: list[str]) -> tuple[list[str], list[str]]:
+    """(blocks, what the floor said) for a push, in split mode and outside it. Each branch that the push updates is
+    judged by `gate --push <what the remote holds>..<what is pushed>`, run from the tools of the remote side in a
+    temporary folder (a first push of the floor: from the tools of the pushed commit). Each `raise` line and assembly
+    row that the push adds is the developer's act: the hook asks for it at the terminal. A repository with no floor
+    on either side has no such check."""
+    blocks, said = [], []
+    show = lambda rev, rel: _git(dev, "show", "%s:%s" % (rev, rel)).stdout if rev else ""  # noqa: E731
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 4 or parts[1] == ZERO or not parts[2].startswith("refs/heads/"):
+            continue
+        local, there, name = parts[1], parts[3], parts[2][len("refs/heads/"):]
+        base = there if there != ZERO and not _git(dev, "cat-file", "-e", there + "^{commit}").returncode else None
+        if base is None and there == ZERO:             # a new branch: from where it left what the remote holds
+            head = _git(dev, "rev-parse", "-q", "--verify", "refs/remotes/%s/HEAD^{commit}" % remote).stdout.strip()
+            base = _git(dev, "merge-base", local, head).stdout.strip() or None if head else None
+        judge = next((rev for rev in (base, local) if "\ndef cmd_gate" in show(rev, FLOOR_TOOL)), None)
+        if judge is None:
+            continue
+        with tempfile.TemporaryDirectory() as td:
+            for rel in (FLOOR_TOOL, VENDORED):
+                (pathlib.Path(td) / pathlib.Path(rel).name).write_text(show(judge, rel), encoding="utf-8")
+            tool = [sys.executable, "-I", str(pathlib.Path(td) / pathlib.Path(FLOOR_TOOL).name)]
+            r = subprocess.run(tool + ["gate", "--push", "%s..%s" % (base or ZERO, local), "--repo", str(dev)],
+                               capture_output=True, text=True)
+            out = r.stdout.strip().splitlines()
+            said += ["%s: %s" % (name, l) for l in out if not l.startswith("GATE OK")]
+            if r.returncode:
+                blocks.append("the floor's gate refuses the push of %s (judged by the tools of %s): %s" % (
+                    name, judge[:10], out[-1] if out else _tail(r)))
+                continue
+            acts = [l[len("GATE WARN "):] for l in out if l.startswith("GATE WARN ") and "the developer's act" in l]
+            refused = [a for a in acts if not confirm("psxdecomp: %s\nIs this yours, and do you push it?" % a)]
+            blocks += ["not confirmed at a terminal: %s" % a for a in refused]
+    return blocks, said
+
+
 def cmd_pre_push(remote: str, url: str, stdin=None) -> int:
     own_git_env()                                      # git runs the hook in the worktree's root: "." finds dev
+    said: list[str] = []
     try:
-        blocks, warns, last = pre_push_report(repo_root("."), url or remote, (stdin or sys.stdin).read().splitlines())
+        dev, lines = repo_root("."), (stdin or sys.stdin).read().splitlines()
+        blocks, warns, last = pre_push_report(dev, url or remote, lines)
+        if not blocks:
+            more, said = floor_push(dev, remote, lines)
+            blocks += more
     except Fail as e:
         blocks, warns, last = [str(e)], [], ""
+    for l in said:
+        print("PRE-PUSH %s" % l)
     for f in blocks:
         _line("PRE-PUSH", "FAIL", f)
     for w in warns:
@@ -2529,27 +2850,62 @@ def cmd_pre_push(remote: str, url: str, stdin=None) -> int:
     return 1 if blocks else 0
 
 
-def hook_path(dev) -> pathlib.Path:
-    return pathlib.Path(_must(dev, "rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-push"))
+def hook_path(dev, name: str = "pre-push") -> pathlib.Path:
+    return pathlib.Path(_must(dev, "rev-parse", "--path-format=absolute", "--git-path", "hooks/" + name))
+
+
+def hooks_state(dev) -> dict[str, str]:
+    """{hook: `ok`, `missing`, `old` (a text of psxdecomp that is not the one of now, or not executable) or `other`
+    (another hook: never written over)} for the three git hooks: pre-push, pre-commit and pre-merge-commit."""
+    out = {}
+    for name, text in HOOKS.items():
+        f = hook_path(dev, name)
+        have = _read(f)
+        out[name] = ("missing" if have is None else "ok" if have == text and os.access(f, os.X_OK)
+                     else "old" if have == text or have.startswith(OURS) else "other")
+    return out
+
+
+def hooks_due(dev) -> tuple[list[str], list[str]]:
+    """(the git hooks to write: missing, or an older text of psxdecomp; the ones where another hook stands). Outside a
+    git repository: none of either."""
+    try:
+        state = hooks_state(dev)
+    except Fail:
+        return [], []
+    return [n for n, st in state.items() if st in ("missing", "old")], [n for n, st in state.items() if st == "other"]
+
+
+def install_hooks(dev) -> list[str]:
+    """Write each git hook that is missing or an older text of psxdecomp: the names written. Another hook stays."""
+    written = []
+    for name, state in hooks_state(dev).items():
+        if state in ("missing", "old"):
+            f = hook_path(dev, name)
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(HOOKS[name], encoding="utf-8")
+            f.chmod(0o755)
+            written.append(name)
+    return written
 
 
 @_cmd("HOOK")
 def cmd_hook(repo=".", install=False) -> int:
-    """Report (or, --install, write) the pre-push hook; never overwrites another hook."""
+    """Report (or, --install, write) the git hooks: pre-push (the guard on dev and the floor's gate on what is
+    pushed), pre-commit and pre-merge-commit (the floor's gate on what is staged). Never overwrites another hook."""
     dev = repo_root(repo)
-    f = hook_path(dev)
-    have = _read(f)
-    if have == PRE_PUSH and os.access(f, os.X_OK):
-        print("HOOK OK %s" % f)
-        return 0
-    if have is not None and have != PRE_PUSH:
-        raise Fail("%s is another hook: merge psxdecomp's into it by hand (see `hook` output of a clean clone)" % f)
-    if not install:
-        raise Fail("%s is missing: rerun with --install" % f)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(PRE_PUSH, encoding="utf-8")
-    f.chmod(0o755)
-    print("HOOK written %s" % f)
+    written = install_hooks(dev) if install else []
+    bad = []
+    for name, state in hooks_state(dev).items():
+        f = hook_path(dev, name)
+        if state == "ok":
+            print("HOOK %s %s" % ("written" if name in written else "OK", f))
+        elif state == "other":
+            bad.append("%s is another hook: merge psxdecomp's into it by hand (see `hook` output of a clean clone)" % f)
+        else:
+            bad.append("%s is %s: rerun with --install" % (f, "missing" if state == "missing" else "an older text"))
+    if bad:
+        raise Fail("; ".join(bad))
     return 0
 
 
@@ -2851,6 +3207,434 @@ def cmd_ci_sim(repo=".", workflow="no-rom", rev=None, proj=False, private=None, 
     bad = sum(rc != 0 for _, rc in results)
     print("CI-SIM %s %s on %s: %d job(s)" % ("OK" if results and not bad else "FAIL", rel, what, len(results)))
     return 0 if results and not bad else 1
+
+
+# ---- the writing checker: the findings of one Markdown text -------------------------------------------------------
+# A unit is a paragraph, a list item, a table cell or a heading. Counted: a sentence of a numbered step over STEP_MAX
+# words, any other sentence over SENT_MAX; a unit over PARA_MAX sentences; each semicolon in a unit; each contraction.
+# A record line (`C0001 | title | tags`, two or more ` | `) is a table row: each field is a cell.
+# Not counted: code spans, fences, front matter, metadata lines, comment lines, marker blocks, generated files. For
+# the semicolon also: link targets, HTML tags and entities (`&amp;`), bare URLs. A code span, a path or a number is
+# one word.
+STEP_MAX, SENT_MAX, PARA_MAX = 20, 25, 6
+STEP = re.compile(r"^\s*(?:>\s?)*\d+\. ")
+SENT_END = re.compile(r"(?:(?<=[.!?])|(?<=[.!?][*_)\"])|(?<=[.!?][*_]{2}))\s+(?=[A-Z0-9*`(\[\"])")
+CONTRACTION = re.compile(r"\b(?:\w+n['’]t|\w+['’](?:ll|re|ve|d|m)|(?:it|that|there|here|what|who|he|she|let)['’]s)\b",
+                         re.I)
+META = re.compile(r"^[a-z_]+: \S.* · [a-z_]+: ")                 # a `tags: a,b · date: … · origin: …` record line
+GENERATED = re.compile(r"[Gg]enerated by .{0,80}do not edit", re.S)
+ROW = re.compile(r"^(?!<!--)\S.* \| .* \| ")                   # a record line of an index: its fields are cells
+MARK_BEGIN = re.compile(r"<!-- (\S+):begin -->")                 # the first line of a marker block
+
+
+def _body(lines: list[str]) -> list[str]:
+    """The lines with a leading YAML front matter blanked (metadata, not prose); line numbers are kept."""
+    if lines and lines[0].strip() == "---":
+        end = next((i for i, l in enumerate(lines[1:], 1) if l.strip() == "---"), None)
+        if end:
+            return [""] * (end + 1) + lines[end + 1:]
+    return lines
+
+
+def _prose(lines: list[str]) -> list[str]:
+    """`_body`, with every marker block blanked too: a `<!-- x:begin -->` line, the next `<!-- x:end -->` line with
+    the same x, and the lines between them. Both lines are outside a fence; a begin line with no end line opens no
+    block."""
+    out, fence, free = _body(lines), False, []
+    for i, l in enumerate(out):
+        fence ^= l.strip().startswith("```")
+        if not fence:
+            free.append(i)
+    for n, i in enumerate(free):
+        m = MARK_BEGIN.fullmatch(out[i].strip())                    # a blanked line is no begin line and no end line
+        if not m:
+            continue
+        end = "<!-- %s:end -->" % m.group(1)
+        j = next((j for j in free[n + 1:] if out[j].strip() == end), None)
+        if j is not None:
+            out = out[:i] + [""] * (j + 1 - i) + out[j + 1:]
+    return out
+
+
+def _row(line: str) -> bool:
+    """A table row, or a record line: two or more ` | ` outside code spans and parentheses."""
+    return line.startswith("|") or bool(ROW.match(re.sub(r"\([^()]*\)", "", re.sub(r"`[^`]*`", "x", line))))
+
+
+def _spans(text: str):
+    """(first_line, last_line, text) prose paragraphs: wrapped lines joined, a list item or a heading starts a new
+    one."""
+    fence, cur, start, last = False, [], 0, 0
+    for i, l in enumerate(_prose(text.splitlines()) + [""]):
+        s = re.sub(r"^(?:>\s?)+", "", l.strip())                     # a blockquote is prose
+        if s.startswith("```"):
+            fence = not fence
+        skip = fence or s.startswith(("```", "<!--")) or not s or META.match(s) or _row(l)
+        if (skip or re.match(r"^(#{1,6} |[-*+] |\d+\. )", s)) and cur:
+            yield start, last, " ".join(cur)
+            cur = []
+        if skip:
+            continue
+        if not cur:
+            start = i + 1
+        last = i + 1
+        cur.append(re.sub(r"^(#{1,6} |[-*+] |\d+\. )", "", s))
+
+
+def _words(s: str) -> int:
+    s = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", re.sub(r"`[^`]*`", "x", re.sub(r"<[^>]+>", " ", s)))
+    return sum(1 for w in s.split() if re.search(r"\w", w))
+
+
+def _bare(s: str) -> str:
+    """The unit without the text a writer cannot reword: code spans, link targets, HTML tags and entities, URLs."""
+    s = re.sub(r"(`+).+?\1", "x", s)
+    s = re.sub(r"\]\([^)]*\)", "]", s)
+    s = re.sub(r"</?[A-Za-z][\w-]*(?:\s[^<>]*)?/?>", " ", s)
+    s = re.sub(r"&#?\w+;", " ", s)
+    return re.sub(r"\bhttps?://\S+", "x", s)
+
+
+def lint_spans(text: str) -> list[tuple[int, int, str]]:
+    """[(first_line, last_line, finding)] of the units of `text`, in the order of the lines."""
+    if GENERATED.search(text[:600]):
+        return []
+    lines = _prose(text.splitlines())
+    units = [(a, b, para, STEP_MAX if STEP.match(lines[a - 1]) else SENT_MAX) for a, b, para in _spans(text)]
+    fence = False
+    for i, l in enumerate(lines):
+        fence ^= l.lstrip().startswith("```")
+        if not fence and _row(l):
+            units += [(i + 1, i + 1, cell, SENT_MAX) for cell in re.split(r"(?<!\\)\|", re.sub(r"`[^`]*`", "`x`", l))]
+    out = []
+    for a, b, unit, cap in sorted(units):
+        counts = [w for w in map(_words, SENT_END.split(unit)) if w]
+        out += [(a, b, "%d words in a sentence (at most %d)" % (w, cap)) for w in counts if w > cap]
+        if len(counts) > PARA_MAX:
+            out.append((a, b, "%d sentences in a paragraph (at most %d)" % (len(counts), PARA_MAX)))
+        bare = _bare(unit)
+        out += [(a, b, "a semicolon (write two sentences)")] * bare.count(";")
+        out += [(a, b, 'a contraction: "%s"' % m.group(0)) for m in CONTRACTION.finditer(bare)]
+    return out
+
+
+def lint_style(text: str) -> list[tuple[int, str]]:
+    """[(line_no, finding)]: the writing findings of one Markdown text (the comment above lists what is counted)."""
+    return [(a, m) for a, _, m in lint_spans(text)]
+
+
+# ---- style: the ratchet of the public prose files, and the hook of an agent session --------------------------------
+# A public prose file is a `.md` file of the work tree, tracked or untracked and not ignored, that the repository
+# publishes. With a public list, that is what a release publishes: an entry covers it and no entry of the deny set
+# does (AGENT_DENY, the paths PA3 manages, [public].deny). With none, all of the repository is public: no AGENT_DENY
+# entry covers it and PA3 does not manage it.
+# The ratchet holds one `<count> <path>` row per file with a finding and `skip <entry>` lines in the syntax of the
+# public list. A file with no row has row 0. A count may only fall. A file that a `skip` entry covers is not checked.
+STYLE_RATCHET_REL = "config/style-ratchet.txt"
+STYLE_HOOK_MAX = 30                              # findings in one hook message
+STYLE_HOOK_STATE = "psxd-style-hook"             # a folder of the work tree's git directory: one JSON file per session
+STYLE_HOOK_KEEP = 7 * 86400                      # seconds a state file lives after its last write
+
+
+def _published(repo, source: str | None = None):
+    """The test `path -> bool` of what the repository publishes (the comment above), as one source records it."""
+    text, cfg = source_text(repo, source, PUBLIC_PATHS_REL), None
+    if text is not None:
+        try:
+            cfg = load_public(repo, source)
+        except Fail:                                   # no [public] table that a release reads: no deny of its own
+            pass
+    deny = deny_set(source_text(repo, source, PA3_REL), cfg)
+    if text is None:
+        return lambda p: not is_denied(deny, p)
+    entries = tuple(parse_public_paths(text))
+    return lambda p: is_listed(entries, p) and not is_denied(deny, p)
+
+
+def public_prose(repo, skip=(), only: str | None = None) -> list[str]:
+    """The public prose files of the work tree `repo` (its top level) that no `skip` entry covers, sorted. `only`
+    asks about one path. Raises Fail when `repo` is not a work tree."""
+    r = _git(repo, "--literal-pathspecs", "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+             *(("--", only) if only else ()))
+    if r.returncode != 0:
+        raise Fail("%s: not a git work tree" % repo)
+    public = _published(repo)
+    return sorted(p for p in set(r.stdout.split("\0")) if p.endswith(".md") and public(p)
+                  and not is_listed(skip, p) and (pathlib.Path(repo) / p).is_file())
+
+
+def parse_ratchet(text: str | None) -> tuple[dict[str, int], list[str], list[str]]:
+    """(the rows {path: count}, the `skip` entries, the leading comment lines) of a ratchet's text. None is the empty
+    ratchet. A line that is no row, no `skip` line, no `#` comment and not blank raises Fail with its number, and so
+    does the second row of one path."""
+    rows, skip, head, top = {}, [], [], True
+    for n, raw in enumerate((text or "").splitlines(), 1):
+        l = raw.strip()
+        if not l:
+            continue
+        m = re.fullmatch(r"(\d+) (\S.*)", l)
+        if l.startswith("#"):
+            head += [l] if top else []
+        elif l.startswith("skip ") and l[5:].strip():
+            skip.append(l[5:].strip())
+        elif m and m[2] not in rows:
+            rows[m[2]] = int(m[1])
+        else:
+            raise Fail("%s:%d: %s" % (STYLE_RATCHET_REL, n, "%s has two rows" % m[2] if m else
+                                      "not `<count> <path>`, `skip <entry>` or a `#` comment"))
+        top = top and l.startswith("#")
+    return rows, skip, head
+
+
+def prose_texts(repo, source: str | None = None, skip=(), public=None) -> dict[str, str]:
+    """{path: text} of the public prose files of one source that no `skip` entry covers: the work tree (None, with
+    its untracked files), the index (INDEX) or a revision. CRLF is read as LF. A file that is not UTF-8 text is
+    empty. `public`: another test of what is public than the source's own."""
+    if source is None and public is None:
+        out = {p: _read(pathlib.Path(repo) / p) for p in public_prose(repo, skip)}
+    else:
+        if source is None:
+            r = _git(repo, "--literal-pathspecs", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+            if r.returncode != 0:
+                raise Fail("%s: not a git work tree" % repo)
+            ents = {p: None for p in r.stdout.split("\0") if p and (pathlib.Path(repo) / p).is_file()}
+        else:
+            ents = source_entries(repo, source)
+        public = public or _published(repo, source)
+        want = sorted(p for p in ents if p.endswith(".md") and public(p) and not is_listed(skip, p))
+        if source is None:
+            out = {p: _read(pathlib.Path(repo) / p) for p in want}
+        else:
+            blobs = read_blobs(repo, sorted({ents[p] for p in want}))
+            out = {p: blobs[ents[p]].decode("utf-8", "ignore") if _utf8(blobs[ents[p]]) else None for p in want}
+    return {p: (t or "").replace("\r\n", "\n") for p, t in out.items()}
+
+
+def _utf8(data: bytes) -> bool:
+    try:
+        data.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def style_findings(repo, skip=(), source: str | None = None, public=None) -> dict[str, list[tuple[int, str]]]:
+    """{path: [(line, finding)]} for every public prose file of the source that no `skip` entry covers. A file that
+    is not UTF-8 text has none."""
+    return {p: lint_style(t) for p, t in prose_texts(repo, source, skip, public).items()}
+
+
+def style_against(repo, source: str | None, base: str) -> list[str] | None:
+    """The FAIL lines of `style --against <base>`: the prose of the source judged by what the revision `base`
+    records, which the change itself cannot rewrite. None when `base` holds no ratchet (the check was not delivered
+    there: nothing to judge by). A finding count over the row of `base`, also in a file that left the public list or
+    that a new `skip` line covers. As `policy`: a new `skip` line, a row over its row in `base`, a ratchet that is
+    gone."""
+    old = source_text(repo, base, STYLE_RATCHET_REL)
+    if old is None:
+        return None
+    rows0, skip0, _ = parse_ratchet(old)
+    text = source_text(repo, source, STYLE_RATCHET_REL)
+    out = []
+    if text is None:
+        out.append("policy: %s is gone (%s holds it)" % (STYLE_RATCHET_REL, base))
+    rows, skip, _ = parse_ratchet(text)
+    out += ["policy: a new `skip` line (%s): the files it covers are checked as before" % e
+            for e in skip if e not in skip0]
+    out += ["policy: the row of %s is %d and was %d in %s: a row may only fall" % (p, n, rows0.get(p, 0), base)
+            for p, n in sorted(rows.items()) if n > rows0.get(p, 0)]
+    was, now = _published(repo, base), _published(repo, source)
+    found = style_findings(repo, skip0, source, lambda p: now(p) or was(p))
+    for p, f in sorted(found.items()):
+        if len(f) > rows0.get(p, 0):
+            left = "" if now(p) else "policy: it left the public list with "
+            out.append("%s: %s%d finding(s), its row in %s is %d" % (p, left, len(f), base, rows0.get(p, 0)))
+    return out
+
+
+def style_counts(repo, skip=()) -> dict[str, int]:
+    """{path: count} for the public prose files with a finding: the rows of a ratchet written now."""
+    return {p: len(f) for p, f in style_findings(repo, skip).items() if f}
+
+
+def ratchet_text(counts: dict, skip=(), head=()) -> str:
+    """A ratchet's text: the comment lines, the `skip` lines, then one `<count> <path>` row per file with a count
+    above zero, sorted by path."""
+    lines = [l if l.startswith("#") else "# " + l for l in head] + ["skip %s" % e for e in skip]
+    lines += ["%d %s" % (counts[p], p) for p in sorted(counts) if counts[p] > 0]
+    return "".join(l + "\n" for l in lines)
+
+
+def style_files(files) -> int:
+    """`style FILE...`: every finding of each named file, whatever its path. 2 when a file is not readable."""
+    found = bad = 0
+    for path in files:
+        text = _read(path)
+        if text is None:
+            _line("STYLE", "FAIL", "%s: not readable" % path)
+            bad += 1
+            continue
+        for n, m in lint_style(text):
+            print("%s:%d: %s" % (path, n, m))
+            found += 1
+    return 2 if bad else 1 if found else 0
+
+
+def cmd_style(files=(), repo=".", update=False, source: str | None = None, against: str | None = None) -> int:
+    """`style`: the named files, or every public prose file against the ratchet. `update` rewrites the ratchet to
+    the counts of now when no count is over its row. `source`: the index or a revision in the work tree's place.
+    `against`: judge the source by the ratchet, the `skip` lines and the public list of that revision as well."""
+    if files:
+        return style_files(files)
+    try:
+        repo = repo_root(repo)
+        text = source_text(repo, source, STYLE_RATCHET_REL)
+        rows, skip, head = parse_ratchet(text)
+        found = style_findings(repo, skip, source)
+        policy = style_against(repo, source, against) if against else []
+    except Fail as e:
+        _line("STYLE", "FAIL", str(e))
+        return 2
+    if policy is None:
+        _line("STYLE", "INFO", "%s holds no %s: the tree is judged by its own ratchet" % (against, STYLE_RATCHET_REL))
+    for line in policy or ():
+        _line("STYLE", "FAIL", line)
+    if policy:
+        print("STYLE CHECK FAIL against %s (%d line(s))" % (against, len(policy)))
+        return 1
+    over = [p for p, f in found.items() if len(f) > rows.get(p, 0)]
+    for p in over:
+        for n, m in found[p]:
+            print("%s:%d: %s" % (p, n, m))
+        _line("STYLE", "FAIL", "%s: %d finding(s), its row is %d" % (p, len(found[p]), rows.get(p, 0)))
+    print("STYLE CHECK %s (%d file(s), %d finding(s), %d over their row)" % (
+        "FAIL" if over else "OK", len(found), sum(map(len, found.values())), len(over)))
+    if not update:
+        return 1 if over else 0
+    if text is None:
+        print("STYLE UPDATE nothing written: no %s (S10 or /psxdecomp:upgrade writes the first one)"
+              % STYLE_RATCHET_REL)
+        return 1 if over else 0
+    if over:
+        print("STYLE UPDATE refused: a count is over its row, %s is unchanged" % STYLE_RATCHET_REL)
+        return 1
+    counts = {p: len(f) for p, f in found.items() if f}
+    fell = went = 0
+    for p in sorted(rows):
+        if counts.get(p):
+            if counts[p] < rows[p]:
+                fell += 1
+                _line("STYLE", "INFO", "%s: %d -> %d" % (p, rows[p], counts[p]))
+            continue
+        went += 1
+        why = ("a `skip` entry covers it" if is_listed(skip, p) else "no such file" if not (repo / p).is_file() else
+               "no finding" if p in found else "not a public prose file")
+        _line("STYLE", "INFO", "%s: %d -> no row (%s)" % (p, rows[p], why))
+    new = ratchet_text(counts, skip, head)
+    if new != text:
+        (repo / STYLE_RATCHET_REL).write_text(new, encoding="utf-8")
+    print("STYLE UPDATE %s %s (%d row(s), %d fell, %d went)" % ("written" if new != text else "unchanged",
+                                                               STYLE_RATCHET_REL, len(counts), fell, went))
+    return 0
+
+
+def changed_lines(before: str, after: str) -> set[int]:
+    """1-based lines of `after` that are new or changed and not blank."""
+    a = after.split("\n")
+    out = set()
+    for tag, _, _, j1, j2 in difflib.SequenceMatcher(None, before.split("\n"), a, autojunk=False).get_opcodes():
+        if tag in ("replace", "insert"):
+            out.update(j + 1 for j in range(j1, j2) if a[j].strip())
+    return out
+
+
+def style_hook_message(found: list[str]) -> str:
+    more = "\n... and %d more." % (len(found) - STYLE_HOOK_MAX) if len(found) > STYLE_HOOK_MAX else ""
+    return ("psxd style: %d finding(s) in the public text that you changed. Rule: rules/STE1.md. Correct each "
+            "finding before you finish.\n%s%s" % (len(found), "\n".join(found[:STYLE_HOOK_MAX]), more))
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def style_hook_findings(event: dict) -> list[str]:
+    """The `<path>:<line>: <finding>` lines that one PostToolUse event owes its session, and the session's new state.
+    Candidates: the file a Write or an Edit names, else every dirty public prose file whose content this session has
+    not seen and no other session's state holds. Of a candidate: the findings of the units that hold a line that
+    differs from HEAD (every finding when HEAD lacks the file), unless the session was last told the same ones.
+    After a Write or an Edit the state takes the named file alone: what a command changed in the background stays
+    unseen until the next event of another tool. After any other event it takes every dirty public prose file."""
+    inp = event.get("tool_input") or {}
+    edit = event.get("tool_name") in ("Write", "Edit")
+    target = pathlib.Path(event.get("cwd") or ".", inp["file_path"]).resolve() if edit else None
+    r = _git(target.parent if edit else event.get("cwd") or ".", "rev-parse", "--path-format=absolute",
+             "--show-toplevel", "--git-path", STYLE_HOOK_STATE)
+    if r.returncode != 0:
+        return []
+    root, state = (pathlib.Path(p) for p in r.stdout.splitlines()[:2])
+    skip, dirty = parse_ratchet(_read(root / STYLE_RATCHET_REL))[1], {}
+    # the states: this session's, and what the other sessions of this work tree have seen
+    name = re.sub(r"[^A-Za-z0-9_-]", "_", str(event.get("session_id") or ""))[:100] or "none"
+    mine, own, others, now = state / (name + ".json"), {}, {}, time.time()
+    for f in sorted(state.iterdir()) if state.is_dir() else ():
+        try:
+            if now - f.stat().st_mtime > STYLE_HOOK_KEEP:
+                f.unlink()
+                continue
+            data = json.loads(f.read_text(encoding="utf-8")) if f.suffix == ".json" else None
+        except (OSError, ValueError):
+            continue
+        data = {p: v for p, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+        if f == mine:
+            own = data
+        for p, v in data.items() if f != mine else ():
+            others.setdefault(p, set()).add(v.get("seen"))
+    if edit:
+        cands, new = public_prose(root, skip, target.relative_to(root).as_posix()), dict(own)
+    else:
+        public = _published(root)
+        st = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+        for row in st.stdout.split("\0") if st.returncode == 0 else ():
+            code, p = row[:2], row[3:]
+            if p.endswith(".md") and "D" not in code and public(p) and not is_listed(skip, p):
+                text = _read(root / p)
+                if text is not None:
+                    dirty[p] = text
+        cands = sorted(p for p, t in dirty.items()
+                       if _sha(t) != own.get(p, {}).get("seen") and _sha(t) not in others.get(p, ()))
+        new = {p: {"seen": _sha(t), "told": own.get(p, {}).get("told")} for p, t in dirty.items()}
+    found = []
+    for p in cands:
+        text = dirty[p] if p in dirty else _read(root / p)
+        if text is None:
+            continue
+        head = _git(root, "show", "HEAD:" + p)
+        lines = None if head.returncode else changed_lines(head.stdout, text)
+        told = ["%s:%d: %s" % (p, a, m) for a, b, m in lint_spans(text)
+                if lines is None or any(a <= n <= b for n in lines)]
+        if told and _sha("\n".join(told)) != own.get(p, {}).get("told"):
+            found += told
+        new[p] = {"seen": _sha(text), "told": _sha("\n".join(told))}
+    if new != own:
+        state.mkdir(parents=True, exist_ok=True)
+        tmp = mine.with_name("%s.%d.tmp" % (mine.name, os.getpid()))      # two calls of one session may overlap
+        tmp.write_text(json.dumps(new, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, mine)
+    return found
+
+
+def style_hook(stdin=None) -> int:
+    """`style --hook`: print the hook's JSON answer when the event owes its session a finding. It never blocks: bad
+    JSON, no repository or any other failure prints nothing, and the exit code is always 0."""
+    try:
+        found = style_hook_findings(json.loads((stdin or sys.stdin).read()))
+        if found:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                                     "additionalContext": style_hook_message(found)}}))
+    except Exception:                                  # a hook that fails must not stop the session
+        pass
+    return 0
 
 
 # ---- self-test --------------------------------------------------------------------------------------------------
@@ -4093,6 +4877,384 @@ def _sim_self_test(check, td: str):
         os.environ.update(saved)
 
 
+def _style_self_test(check):
+    w = lambda n: "Word " + "word " * (n - 2) + "end."  # noqa: E731
+    good = ("---\ntitle: %s; it's\n---\n# T\n\n%s %s\n\n1. %s\n\n- %s\n  %s\n\n| a | %s `a | b` | %s |\n\n```\n"
+            "%s; don't\n```\n" % (w(40), w(25), w(25), w(20), w(13), w(12), w(25), w(25), w(40)))
+    seven = "\n\n" + " ".join(["Short one."] * 7) + "\n"
+    over, semi = "%d words in a sentence (at most %d)", "a semicolon (write two sentences)"
+    index = ("<!-- id | title | tags -->\nC0001 | A title; a subtitle | a,b | x\nC0002 | %s | a | x\n"
+             "C0003 | T | a | x\n" % w(26))
+    block = "<!-- a:begin -->\n%s One; two.\n\n- an item; more\n\n| a | b; c |\n<!-- a:end -->\n" % w(26)
+    inside = [(2, over % (26, 25)), (2, semi), (4, semi), (6, semi)]
+    for name, text, want in (
+            # the limits: one word more in a sentence, a step, a cell or a paragraph is one finding each
+            ("style good text", good, []),
+            ("style step of 21 words", good.replace("\n1. Word", "\n1. Word extra"), [(8, over % (21, 20))]),
+            ("style cell of 26 words", good.replace("| a | Word", "| a | Word extra"), [(13, over % (26, 25))]),
+            ("style 7 sentences", good + seven, [(20, "7 sentences in a paragraph (at most 6)")]),
+            ("style generated file", "*Generated by x.py; do not edit by hand.*\n\n%s; it's\n" % w(40), []),
+            ("style span, link, path, number", "See `a b c d e f` and [the long link text](http://x/y z) at /a/b/c, "
+             "1,264 times, %s\n" % w(15), [(1, over % (26, 25))]),
+            # one finding per semicolon, on the first line of its unit, and one per contraction
+            ("style semicolons in a paragraph", "One part; two parts; three.\n", [(1, semi), (1, semi)]),
+            ("style semicolon in a list item", "- an item; more\n", [(1, semi)]),
+            ("style semicolon in a table cell", "# T\n\n| a | b; c |\n", [(3, semi)]),
+            ("style semicolon in a heading", "# A title; a subtitle\n", [(1, semi)]),
+            ("style semicolon in a blockquote", "> Quoted; text.\n", [(1, semi)]),
+            ("style semicolon in a wrapped unit", "Wrapped line one\nand two; three.\n", [(1, semi)]),
+            ("style contractions", "It doesn't run. You're done, and it's late. We'll see; they've gone.\n",
+             [(1, semi)] + [(1, 'a contraction: "%s"' % c) for c in ("doesn't", "You're", "it's", "We'll", "they've")]),
+            ("style possessive: no contraction", "The tool’s output isn’t the user's file.\n",
+             [(1, 'a contraction: "isn’t"')]),
+            # each exemption
+            ("style exempt: code spans", "Use `a; b` and ``c ` ; d``.\n", []),
+            ("style exempt: link target", "See [the map](docs/map.md;v=2).\n", []),
+            ("style exempt: entities", "A &amp; B &#59; C.\n", []),
+            ("style exempt: HTML tag", 'A <a href="x;y">link</a>.\n', []),
+            ("style exempt: bare URL", "See https://x.org/a;b for it.\n", []),
+            ("style exempt: fence", "```\na; b\n```\n", []),
+            ("style exempt: metadata line", "# C1 — t\ntags: a;b · date: 2026-10-11 · origin: x;y\n", []),
+            ("style exempt: comment line", "<!-- a; b -->\n", []),
+            ("style exempt: contraction in a span", "Use `don't` here.\n", []),
+            ("style link text is prose", "See [a; b](docs/map.md).\n", [(1, semi)]),
+            ("style < and > in prose: no tag", "Use -version </dev/null; then a > b.\n", [(1, semi)]),
+            # a record line is a row: its fields are cells, the line before and the line after are not part of it
+            ("style record line: fields are cells", index, [(2, semi), (3, over % (26, 25))]),
+            ("style pipes in a code span: no row", "Use `a | b | c`; go\non.\n", [(1, semi)]),
+            # a marker block yields no unit; a begin line opens one only with its end line, both outside a fence
+            ("style marker block: no finding", block, []),
+            ("style after the end line: counted", block + "\nThree; four.\n", [(9, semi)]),
+            ("style two marker blocks", "%s\n| a | b; c |\n%s\n\n%s\nOne; two.\n%s\n" % (
+                marker("disc"), marker("disc", True), *GAME_BLOCK), []),
+            ("style begin, no end: no block", block.replace("<!-- a:end -->\n", ""), inside),
+            ("style end of another name: no block", block.replace("a:end", "b:end"), inside),
+            ("style end in a fence: no block", "<!-- a:begin -->\n\nOne; two.\n\n```\n<!-- a:end -->\n```\n",
+             [(3, semi)]),
+            ("style begin in a fence: no block", "```\n<!-- a:begin -->\n```\n\nOne; two.\n\n<!-- a:end -->\n",
+             [(5, semi)]),
+            ("style marker pair in a fence", "```\n<!-- a:begin -->\n<!-- a:end -->\n```\n\nOne; two.\n", [(6, semi)]),
+            ("style marker pair in two fences", "```\n<!-- a:begin -->\n```\n\nOne; two.\n\n```\n<!-- a:end -->\n```\n",
+             [(5, semi)])):
+        got = lint_style(text)
+        check(name, got == want, got)
+    for name, text in (("style wrapped unit: both lines", "Wrapped line one\nand two; three.\n"),
+                       ("style pipes in parentheses: no row", "One line (`match` | `diff` | `error`); then\nmore.\n")):
+        got = [(a, b) for a, b, _ in lint_spans(text)]
+        check(name, got == [(1, 2)], got)
+
+
+def _ratchet_self_test(check, td: str):
+    """`style` on throwaway repositories: the public prose files, the ratchet, then the hook and its state."""
+    root = pathlib.Path(td).resolve()
+    saved, real_stdin = dict(os.environ), sys.stdin
+    os.environ.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t.invalid", GIT_COMMITTER_NAME="t",
+                      GIT_COMMITTER_EMAIL="t@t.invalid", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+                      GIT_CEILING_DIRECTORIES=str(root))           # no repository above the throwaway ones answers
+    semi, one, two = "a semicolon (write two sentences)", "One; two.\n", "One; two; three.\n"
+
+    def call(fn, *a, **k):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = fn(*a, **k)
+        return rc, buf.getvalue()
+
+    def put(repo, files: dict):
+        for rel, body in files.items():
+            f = pathlib.Path(repo) / rel
+            if body is None:
+                f.unlink()
+                continue
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(body, encoding="utf-8")
+
+    def make(name, files: dict) -> pathlib.Path:
+        repo = root / name
+        repo.mkdir()
+        _git(repo, "init", "-q")
+        put(repo, files)
+        _git(repo, "add", "-A")
+        _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "x")
+        return repo
+
+    def style(repo, *a):
+        return call(main, ["style", "--repo", str(repo), *a])
+
+    try:
+        # the public prose files: listed, not an agent path, not ignored, `.md`, tracked or not
+        rt = make("ratchet", {
+            PUBLIC_PATHS_REL: "# the list\nREADME.md\ndocs/\nkit/\nrules/\n", "README.md": "# R\n\n" + two,
+            "docs/clean.md": "Clean.\n", "docs/gen.md": one, "kit/k.md": one, "rules/x.md": one, "notes/n.md": one,
+            "docs/a.txt": one, ".gitignore": "docs/ignored.md\n", "docs/ignored.md": one})
+        put(rt, {"docs/a.md": one})
+        rat, skips = rt / STYLE_RATCHET_REL, ("docs/gen.md", "kit/")
+        head = "# the ratchet\n# a count may only fall\nskip docs/gen.md\nskip kit/\n"
+        counts = style_counts(rt, skips)
+        check("style counts: the public prose files", counts == {"README.md": 2, "docs/a.md": 1}, counts)
+        check("style counts: no skip entry", style_counts(rt) == {**counts, "docs/gen.md": 1, "kit/k.md": 1},
+              style_counts(rt))
+        got = ratchet_text({**counts, "z.md": 0}, skips, ("# the ratchet", "a count may only fall"))
+        check("ratchet text: comments, skips, sorted rows", got == head + "2 README.md\n1 docs/a.md\n", got)
+        # a count that falls, a row of a missing file, a row at zero, the two skip entries
+        put(rt, {STYLE_RATCHET_REL: head + "3 README.md\n1 docs/a.md\n2 docs/gone.md\n0 docs/clean.md\n"})
+        rc, out = style(rt)
+        check("style: a count under its row passes", (rc, out) == (
+            0, "STYLE CHECK OK (3 file(s), 3 finding(s), 0 over their row)\n"), out)
+        rc, out = style(rt, "--update")
+        check("style --update lowers a row and prints it", rc == 0 and "STYLE INFO README.md: 3 -> 2\n" in out
+              and rat.read_text(encoding="utf-8") == head + "2 README.md\n1 docs/a.md\n", out)
+        check("style --update drops a missing file's row", "docs/gone.md: 2 -> no row (no such file)" in out
+              and "docs/clean.md: 0 -> no row (no finding)" in out and "(2 row(s), 1 fell, 2 went)" in out, out)
+        os.utime(rat, (1, 1))
+        rc, out = style(rt, "--update")
+        check("style --update: counts that stay, no write", rc == 0 and "STYLE UPDATE unchanged" in out
+              and rat.stat().st_mtime == 1, out)
+        # a count that rises
+        put(rt, {"README.md": "# R\n\n" + two + "\nMore; text.\n"})
+        was = rat.read_bytes()
+        rc, out = style(rt)
+        check("style: a count over its row fails", rc == 1 and "README.md:3: " + semi in out
+              and "README.md:5: " + semi in out and "STYLE FAIL README.md: 3 finding(s), its row is 2\n" in out
+              and "docs/a.md:" not in out
+              and out.endswith("STYLE CHECK FAIL (3 file(s), 4 finding(s), 1 over their row)\n"), out)
+        rc, out = style(rt, "--update")
+        check("style --update refuses a rise", rc == 1 and "STYLE UPDATE refused" in out and rat.read_bytes() == was
+              and rat.stat().st_mtime == 1, out)
+        put(rt, {"README.md": "# R\n\n" + two, "docs/new.md": one})
+        rc, out = style(rt)
+        check("style: a new file with a finding fails", rc == 1
+              and "STYLE FAIL docs/new.md: 1 finding(s), its row is 0\n" in out, out)
+        put(rt, {"docs/new.md": "Clean.\n"})
+        check("style: a new file with no finding passes", style(rt)[0] == 0, style(rt))
+        put(rt, {STYLE_RATCHET_REL: "2 README.md\n1 docs/a.md\n"})
+        rc, out = style(rt)
+        check("style: no skip line, both files fail", rc == 1 and "STYLE FAIL docs/gen.md: 1" in out
+              and "STYLE FAIL kit/k.md: 1" in out, out)
+        put(rt, {STYLE_RATCHET_REL: head + "2 README.md\n1 docs/a.md\n1 docs/gen.md\n"})
+        rc, out = style(rt, "--update")
+        check("style --update drops a skipped file's row", "docs/gen.md: 1 -> no row (a `skip` entry covers it)" in out
+              and rc == 0 and rat.read_text(encoding="utf-8") == head + "2 README.md\n1 docs/a.md\n", out)
+        for name, text, want in (("a malformed line", head + "two README.md\n", ":5: not `<count> <path>`"),
+                                 ("two rows of one path", "1 docs/a.md\n\n3 docs/a.md\n", ":3: docs/a.md has two"),
+                                 ("a skip line with no entry", "skip\n", ":1: not `<count> <path>`")):
+            put(rt, {STYLE_RATCHET_REL: text})
+            got = [style(rt), style(rt, "--update")]
+            check("style ratchet: %s, exit 2" % name, rat.read_text(encoding="utf-8") == text and all(
+                rc == 2 and out.startswith("STYLE FAIL %s%s" % (STYLE_RATCHET_REL, want)) for rc, out in got), got)
+        # no ratchet: every row is 0, and --update writes no first one
+        rat.unlink()
+        rc, out = style(rt)
+        check("style: no ratchet, every row is 0", rc == 1
+              and "STYLE FAIL README.md: 2 finding(s), its row is 0\n" in out, out)
+        rc, out = style(rt, "--update")
+        check("style --update: no ratchet, findings", rc == 1 and "/psxdecomp:upgrade writes the first one" in out
+              and not rat.exists(), out)
+        put(rt, {"README.md": "# R\n", "docs/a.md": "Clean.\n", "docs/gen.md": "Clean.\n", "kit/k.md": None})
+        got = [style(rt), style(rt, "--update")]
+        check("style: no ratchet, no finding", [rc for rc, _ in got] == [0, 0] and not rat.exists()
+              and "writes the first one" in got[1][1], got)
+        put(root, {"outside/o.md": one})
+        rc, out = style(root / "outside")
+        check("style: no work tree, exit 2", rc == 2 and "not a git work tree" in out, out)
+        # no public list: all of the repository is public but the agent paths and what PA3 manages
+        np = make("nolist", {"README.md": one, "docs/x.md": two, "docs/clean.md": "Clean.\n", "rules/x.md": one,
+                             "CLAUDE.md": one, "docs/ops/o.md": one, "docs/pa3.md": one,
+                             PA3_REL: json.dumps({"files": {"docs/pa3.md": {}}})})
+        check("style counts: no public list", style_counts(np) == {"README.md": 1, "docs/x.md": 2}, style_counts(np))
+        # a public list: the deny set of a release (the agent paths, what PA3 manages, [public].deny)
+        sp = make("split", {PUBLIC_PATHS_REL: "README.md\ndocs/\n", "README.md": one, "docs/x.md": one,
+                            "docs/pa3.md": one, "docs/deny/d.md": one, "docs/ops/o.md": one,
+                            PA3_REL: json.dumps({"files": {"docs/pa3.md": {}}}),
+                            CONFIG_REL: '[public]\nrepo = "example/synthetic-public"\ndeny = ["docs/deny/"]\n'})
+        check("style counts: a listed path PA3 manages", "docs/pa3.md" not in style_counts(sp), style_counts(sp))
+        check("style counts: a listed path in [public].deny", style_counts(sp) == {"README.md": 1, "docs/x.md": 1},
+              style_counts(sp))
+        put(sp, {CONFIG_REL: "[public]\n"})
+        check("style counts: no [public] table to read", style_counts(sp) == {
+            "README.md": 1, "docs/x.md": 1, "docs/deny/d.md": 1}, style_counts(sp))
+        # style FILE...: whatever the path
+        rc, out = call(main, ["style", str(np / "docs/clean.md"), str(np / "rules/x.md")])
+        check("style FILE: a finding, exit 1", (rc, out) == (1, "%s:1: %s\n" % (np / "rules/x.md", semi)), out)
+        check("style FILE: no finding, exit 0", call(main, ["style", str(np / "docs/clean.md")]) == (0, ""))
+        rc, out = call(main, ["style", str(np / "docs/x.md"), str(np / "docs/none.md")])
+        check("style FILE: not readable, exit 2", rc == 2 and out.count(semi) == 2
+              and "STYLE FAIL %s: not readable\n" % (np / "docs/none.md") in out, out)
+
+        # the hook: a Bash event tells the changed units of the public files that changed since the session's last call
+        hk = make("hook", {PUBLIC_PATHS_REL: "# the list\nREADME.md\ncookbook/\ndocs/\n",
+                           STYLE_RATCHET_REL: "skip docs/gen.md\n", "notes/n.md": "A private note.\n",
+                           "README.md": "# R\n\nOld one; old two.\n\n## B\n\nA clean line.\n",
+                           "docs/gen.md": "Clean.\n"})
+        state = pathlib.Path(_must(hk, "rev-parse", "--path-format=absolute", "--git-path", STYLE_HOOK_STATE))
+
+        def hook(tool="Bash", sid="a", cwd=hk, **inp):
+            ev = {"hook_event_name": "PostToolUse", "tool_name": tool, "cwd": str(cwd), "tool_input": inp}
+            ev.update({"session_id": sid} if sid else {})
+            rc, out = call(style_hook, io.StringIO(json.dumps(ev)))
+            return rc, json.loads(out)["hookSpecificOutput"]["additionalContext"].splitlines() if out else []
+
+        def write(rel, sid="a", tool="Write"):
+            return hook(tool, sid, file_path=str(hk / rel))[1][1:]
+
+        check("style hook: a clean tree, silent", hook() == (0, []))
+        card = "# C0001 — a title; a tool wrote it\ntags: a · date: 2026-10-11 · origin: x\n\nBody.\n"
+        put(hk, {"README.md": "# R\n\nOld one; old two.\n\n## B\n\nA new line; it isn't clean.\n",
+                 "cookbook/C0001.md": card, "notes/n.md": "A private note; not public.\n", "docs/gen.md": one})
+        rc, msg = hook()
+        check("style hook: Bash, the changed units", rc == 0 and msg[:1] == [
+            "psxd style: 3 finding(s) in the public text that you changed. Rule: rules/STE1.md. Correct each finding "
+            "before you finish."] and msg[1:] == ["README.md:7: " + semi, 'README.md:7: a contraction: "isn\'t"',
+                                                  "cookbook/C0001.md:1: " + semi], msg)
+        check("style hook: the same findings twice, silent", hook() == (0, []))
+        put(hk, {"README.md": "# R\n\nOld one; old two.\n\n## B\n\nA new line. It is clean.\n"})
+        check("style hook: a correction, no finding left", hook() == (0, []))
+        put(hk, {"cookbook/C0001.md": card + "\nMore; text.\n"})
+        rc, msg = hook()
+        check("style hook: one more finding in a file", msg[1:] == ["cookbook/C0001.md:1: " + semi,
+                                                                   "cookbook/C0001.md:6: " + semi], msg)
+        put(hk, {"cookbook/C0001.md": card.replace("; a tool wrote it", "") + "\nMore; text.\n"})
+        rc, msg = hook()
+        check("style hook: a correction, one finding left", msg[1:] == ["cookbook/C0001.md:6: " + semi], msg)
+        put(hk, {"cookbook/C0001.md": None})
+        check("style hook: a deleted file, silent", hook() == (0, []) and hook() == (0, []))
+        # Write and Edit: the named file alone, and the state takes that file alone. A command that runs in the
+        # background wrote docs/other.md: the Edit event comes first, and the next Bash event tells it.
+        put(hk, {"docs/w.md": one, "docs/other.md": one})
+        got = write("docs/w.md", tool="Edit")
+        check("style hook: Edit, the named file alone", got == ["docs/w.md:1: " + semi], got)
+        check("style hook: Write, the same findings twice", hook("Write", file_path=str(hk / "docs/w.md")) == (0, []))
+        rc, msg = hook()
+        check("style hook: Bash next, the background file", msg[1:] == ["docs/other.md:1: " + semi], msg)
+        check("style hook: Bash again, silent", hook() == (0, []))
+        put(hk, {"README.md": "# R\n\nOld one; old two.\n\n## B\n\nA new line; again.\n"})
+        got = write("README.md", tool="Edit")
+        check("style hook: Edit, the unit that differs from HEAD", got == ["README.md:7: " + semi], got)
+        put(hk, {"notes/n.md": two, "docs/gen.md": two})
+        for name, f in (("a private file", "notes/n.md"), ("a skipped file", "docs/gen.md"),
+                        ("a path outside the repository", "../outside/o.md"), ("no such file", "docs/none.md"),
+                        ("no such directory", "none/x.md")):
+            check("style hook: Write, %s, silent" % name, hook("Write", file_path=str(hk / f)) == (0, []))
+        check("style hook: Write with no file_path, silent", hook("Write") == (0, []))
+        # two sessions in one tree: each is told about the file it wrote
+        put(hk, {"docs/a.md": one})
+        check("style hook: session a is told about its file", write("docs/a.md") == ["docs/a.md:1: " + semi])
+        check("style hook: session b is not told about it", hook(sid="b") == (0, []))
+        put(hk, {"docs/b.md": two})
+        rc, msg = hook(sid="b")
+        check("style hook: session b is told about its own", msg[1:] == ["docs/b.md:1: " + semi] * 2, msg)
+        check("style hook: session a is not told about it", hook() == (0, []))
+        put(hk, {"docs/n.md": one})
+        rc, msg = hook(sid=None)
+        check("style hook: an event with no session_id", msg[1:] == ["docs/n.md:1: " + semi]
+              and (state / "none.json").is_file(), msg)
+        # the state: one file per session in the git directory, a content hash and a findings digest per path
+        put(state, {"old.json": "{}\n", "old.json.1.tmp": ""})
+        for f in ("old.json", "old.json.1.tmp"):
+            os.utime(state / f, (time.time() - STYLE_HOOK_KEEP - 60,) * 2)
+        put(hk, {"docs/s.md": one})
+        rc, msg = hook(sid="../x y")
+        names = sorted(f.name for f in state.iterdir())
+        check("style hook: the state files", msg[1:] == ["docs/s.md:1: " + semi] and state.parent == hk / ".git"
+              and names == ["___x_y.json", "a.json", "b.json", "none.json"], (msg, names))
+        got = json.loads((state / "a.json").read_text(encoding="utf-8"))
+        check("style hook: a hash and a digest per path", got["docs/a.md"] == {
+            "seen": _sha(one), "told": _sha("docs/a.md:1: " + semi)} and got["docs/b.md"] == {
+            "seen": _sha(two), "told": None} and "notes/n.md" not in got and "docs/gen.md" not in got, got)
+        # no public list and no commit yet: every finding of the file
+        put(root, {"fresh/docs/x.md": two})
+        _git(root / "fresh", "init", "-q")
+        rc, msg = hook(cwd=root / "fresh")
+        check("style hook: no HEAD, every finding", msg[1:] == ["docs/x.md:1: " + semi] * 2, msg)
+        # it never blocks
+        put(hk, {"docs/m.md": one})
+        sys.stdin = io.StringIO(json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(hk / "docs/m.md")}}))
+        rc, out = call(main, ["style", "--hook"])
+        check("style --hook: the command line", rc == 0 and out.startswith('{"hookSpecificOutput": {"hookEventName": '
+                                                                         '"PostToolUse", "additionalContext": "psxd ')
+              and "docs/m.md:1: " in out, out)
+        for name, text in (("bad JSON", "not json"), ("an event that is no object", "[1]"), ("no event", "")):
+            check("style hook: %s, silent" % name, call(style_hook, io.StringIO(text)) == (0, ""))
+        check("style hook: a missing directory, silent", hook(cwd="/nonexistent-psxd") == (0, []))
+        check("style hook: no repository, silent", hook(cwd=root / "outside") == (0, []))
+        put(hk, {STYLE_RATCHET_REL: "a bad line\n", "docs/bad.md": one})
+        check("style hook: a malformed ratchet, silent", hook() == (0, []) and write("docs/bad.md") == [])
+        many = style_hook_message(["f.md:%d: %s" % (i, semi) for i in range(STYLE_HOOK_MAX + 5)])
+        check("style hook: 30 findings in a message", many.startswith("psxd style: 35 finding(s)")
+              and many.endswith("f.md:29: %s\n... and 5 more." % semi), many[-80:])
+    finally:
+        sys.stdin = real_stdin
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def _hooks_self_test(check, td: str) -> None:
+    """The git hooks on a small game that holds the floor: what a commit and a push are refused for. Needs the other
+    tool beside this file."""
+    global confirm
+    if not sibling().is_file():
+        return
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("psxd_floor_self", sibling())
+    floor_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(floor_mod)
+    repo = pathlib.Path(td).resolve()
+    env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID")}
+    env.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t.invalid", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t.invalid")
+    git = lambda *a: subprocess.run(["git", "-C", str(repo)] + list(a), capture_output=True, text=True, env=env)  # noqa: E731
+    put = lambda rel, text: ((repo / rel).parent.mkdir(parents=True, exist_ok=True), (repo / rel).write_text(text, encoding="utf-8"))  # noqa: E731
+    floor = lambda *a: subprocess.run([sys.executable, "-I", str(repo / FLOOR_TOOL), *a, "--repo", str(repo)],  # noqa: E731
+                                      capture_output=True, text=True, env=env)
+    tip = lambda: git("rev-parse", "HEAD").stdout.strip()  # noqa: E731
+    pushed = lambda new, old: ["refs/heads/main %s refs/heads/main %s" % (new, old)]  # noqa: E731
+    walk = "s32 Walk(s32 n) {\nloop:\n    // !FAKE: the loop of the original\n    if (--n) goto loop;\n    return n;\n}\n"
+    worse = walk.replace("    return n;", "    if (n) goto loop;\n    return n;")          # a goto with no `// !FAKE:` reason
+    saved, agent = confirm, {k: os.environ.pop(k) for k in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID") if k in os.environ}
+    try:
+        git("init", "-q", "-b", "main")
+        put(FLOOR_TOOL, sibling().read_text(encoding="utf-8"))
+        put(VENDORED, pathlib.Path(__file__).read_text(encoding="utf-8"))
+        put("src/walk.c", walk)
+        put("src/stubs.c", 'INCLUDE_ASM("asm/nonmatchings/stubs", Run);\n')
+        put("config/psxdecomp.toml", "[psxdecomp]\nversion = \"0.6.0\"\n")
+        git("add", "-A")
+        floor("debt", "--recount")
+        git("add", "-A")
+        git("commit", "-q", "-m", "the floor")
+        base = tip()
+        check("hooks: none at first", set(hooks_state(repo).values()) == {"missing"}, hooks_state(repo))
+        check("hooks: three written, then in place", install_hooks(repo) == list(HOOKS) and install_hooks(repo) == []
+              and set(hooks_state(repo).values()) == {"ok"}, hooks_state(repo))
+        put("src/walk.c", worse)
+        rows = (repo / DEBT_BASELINE).read_text(encoding="utf-8")
+        put(DEBT_BASELINE, rows.replace("1 goto src/walk.c", "2 goto src/walk.c\n1 goto-unmarked src/walk.c"))
+        git("add", "-A")
+        r = git("commit", "-q", "-m", "a goto with no reason")
+        check("pre-commit refuses an unmarked goto", r.returncode != 0 and "goto-unmarked is `down` and its total rose" in r.stdout + r.stderr
+              and tip() == base, r.stdout + r.stderr)
+        git("commit", "-q", "--no-verify", "-m", "the same, and no hook saw it")
+        blocks, said = floor_push(repo, "origin", pushed(tip(), base))
+        check("pre-push refuses that commit", any("the floor's gate refuses the push of main" in b for b in blocks)
+              and any("goto-unmarked is `down` and its total rose" in l for l in said), (blocks, said))
+        git("reset", "-q", "--hard", base)
+        put("src/walk.c", worse)
+        floor("debt", "--raise", "goto-unmarked", "1", "--reason", "the second loop of the original")
+        floor("debt", "--update")
+        git("add", "-A")
+        r = git("commit", "-q", "-m", "the developer's raise")
+        check("pre-commit lets the developer's raise pass", r.returncode == 0 and tip() != base, r.stdout + r.stderr)
+        raised, asked = tip(), []
+        confirm = lambda q: (asked.append(q), False)[1]  # noqa: E731
+        blocks, _ = floor_push(repo, "origin", pushed(raised, base))
+        check("pre-push asks for a new raise line", len(asked) == 1 and "raise goto-unmarked 1" in asked[0]
+              and any("not confirmed at a terminal" in b for b in blocks), (asked, blocks))
+        confirm = lambda q: True  # noqa: E731
+        check("pre-push: a confirmed raise passes", floor_push(repo, "origin", pushed(raised, base))[0] == [],
+              floor_push(repo, "origin", pushed(raised, base)))
+    finally:
+        confirm = saved
+        os.environ.update(agent)
+
+
 def self_test() -> int:
     ok = True
 
@@ -4121,6 +5283,55 @@ def self_test() -> int:
           and abs(ovl["fuzzy_match_percent"] - 25.0) < 1e-9, ovl)
     errs = validate(rep, "PSXD_000.01_report", "PSXD_000.01", rows, "PSXD_000.01")
     check("validate good", errs == [], errs)
+    # complete: categorize marks a fully matched C unit; a mark the input holds stays (main/libgpu names no source)
+    r = _units()
+    st = r["units"][3]
+    st["metadata"].update(complete=False, source_path="src/ovl/stage1/a.c")
+    st["measures"].update(complete_code="0", complete_code_percent=0.0)
+    r["units"][0]["metadata"]["source_path"] = "src/main/a.c"
+    plain = json.loads(json.dumps(st))
+    marked, errs = categorize(r, rows)
+    cm = {c["id"]: c["measures"] for c in marked["categories"]}
+    check("complete: a fully matched C unit", errs == [] and st["metadata"]["complete"] is True
+          and st["measures"]["complete_code"] == "100" and cm["ovl"]["complete_units"] == 1
+          and cm["sdk"]["complete_units"] == 1 and marked["measures"]["complete_units"] == 2, (errs, st, cm["ovl"]))
+    check("complete: the marked report validates", validate(marked, categories=rows) == [],
+          validate(marked, categories=rows))
+    for name, mutate in (
+            ("partly matched", lambda u: u["measures"].update(matched_code="60")),
+            ("data not matched", lambda u: u["measures"].update(total_data="8", matched_data="4")),
+            ("assembly", lambda u: u["metadata"].update(source_path="asm/ovl/stage1/a.s")),
+            ("no source", lambda u: u["metadata"].pop("source_path")),
+            ("no code", lambda u: u["measures"].update(total_code="0", matched_code="0", total_data="8",
+                                                       matched_data="8"))):
+        u = json.loads(json.dumps(plain))
+        mutate(u)
+        categorize({"units": [u]}, rows)
+        check("complete: not when %s" % name, u["metadata"]["complete"] is False, u)
+    # honesty: a unit whose source is not C reports no matched code; the tiny matched functions are counted
+    asm = json.loads(json.dumps(rep))
+    asm["units"][0]["metadata"]["source_path"] = "asm/main/boot.s"
+    got = validate(asm, categories=rows)
+    check("validate: assembly reports no matched code", len(got) == 1 and "is not a C file" in got[0], got)
+    asm["units"][0]["metadata"]["source_path"] = "src/main/boot.c"
+    check("validate: a C source may", validate(asm, categories=rows) == [])
+    done = json.loads(json.dumps(rep))
+    done["units"][2]["metadata"].update(complete=True, source_path="asm/ovl/title/a.s")
+    got = validate(done, categories=rows)
+    check("validate: an assembly unit is never complete", any("marked complete" in x for x in got), got)
+    asm["units"][0]["metadata"]["source_path"] = "src/main/boot.cpp"
+    first_unit = _get(asm["units"][0], "name")
+    check("validate: a C++ source may", validate(asm, categories=rows) == [] and first_unit not in unsourced(asm))
+    del asm["units"][0]["metadata"]["source_path"]
+    check("validate: a unit with matched code and no source is named", first_unit in unsourced(asm), unsourced(asm))
+    asm["units"][0]["metadata"]["source_path"] = "src/main/boot.c"
+    asm["units"][0]["functions"] = [{"name": "a", "size": "8", "fuzzy_match_percent": 100.0},
+                                    {"name": "b", "size": "120", "fuzzy_match_percent": 100.0},
+                                    {"name": "c", "size": "4", "fuzzy_match_percent": 60.0}]
+    tiny = dict((c, (t, m)) for c, t, m in tiny_matched(asm))
+    first = [c for c in unit_categories(asm["units"][0]) if "." not in c]
+    check("tiny matched functions, per top-level category", all(tiny[c] == (1, 2) for c in first) and first, tiny)
+    check("tiny: a report with no function list", tiny_matched(rep) == [] and tiny_matched(None) == [])
     for name, mutate, want in (
             ("categorize unregistered", lambda r: r["units"][0]["metadata"]["progress_categories"].append("dbg"),
              "not registered"),
@@ -4214,13 +5425,73 @@ def self_test() -> int:
             got = lint(mutate(text), ctx, release=bool(rel))
             lv = "WARN" if name == "lint todo warns" else "FAIL"
             check(name, any(f[0] == lv and want in f[2] for f in got), got)
+        # the one published number: a typed percent or count under ## Progress fails; the generated block, a code
+        # span, a link target, `100%` and a number under another heading do not; a second numbers block is said so
+        end = marker("progress", True) + "\n"
+        typed = lambda s: lint(text.replace(end, end + "\n" + s + "\n"), ctx)  # noqa: E731
+        nums = lambda s: [(f[0], f[2].split("`")[1]) for f in typed(s) if f[1] == "numbers"]  # noqa: E731
+        check("numbers: the note is generated", PROGRESS_NOTE in text and nums("In words only.") == [], nums("In words only."))
+        # finished is computed, never claimed: the word beside a number fails anywhere outside the generated block
+        said = lambda s: [f[2] for f in typed(s) if f[1] == "finished"]  # noqa: E731
+        check("finished: a count beside the word fails", len(said("So far 12 files are finished.")) == 1
+              and len(said("Finished: 40% of the overlay.")) == 1 and "debt --files" in said("We finished 3 files.")[0], said("We finished 3 files."))
+        check("finished: the word alone, a code span and another number pass", said("Matched code is not finished code.") == []
+              and said("`12 finished` is what the tool prints.") == [] and said("The disc holds 3 tracks. A file is finished when it has no debt.") == [])
+        check("finished: outside ## Progress too", any(f[1] == "finished" for f in lint(text.replace("Everyone.", "Everyone. 9 units finished."), ctx)))
+        if sibling().is_file():                    # the block is written by the floor tool beside this file
+            block = "%s\n%s\n" % (marker("finished"), marker("finished", True))
+            (repo / "src").mkdir(exist_ok=True)
+            (repo / "src" / "a.c").write_text("void Done(void) {\n}\n")
+            (repo / "config" / "names.tsv").write_text("kind\timage\tscope\told_name\tnew_name\tdecision\tevidence\treason\n"
+                                                       "function\tmain\t\t\tDone\taccepted\tstring:src/a.c:1\tr\n")
+            _git(repo, "add", "src", "config/names.tsv")
+            with_block = text.replace(end, end + "\n" + block)
+            got = [f for f in lint(with_block, ctx) if f[1] == "blocks"]
+            check("finished: an empty block is stale: a warning", [f[0] for f in got] == ["WARN"] and "the finished block is stale" in got[0][2]
+                  and "it would read: **1 of 1** C files are finished" in got[0][2], got)
+            got = [f for f in lint(with_block, ctx, release=True) if f[1] == "blocks"]
+            check("finished: a stale block fails a release", [f[0] for f in got] == ["FAIL"], got)
+            fresh = render(with_block, ctx)
+            check("finished: the block holds the tool's count, and the lint takes it", "**1 of 1** C files are finished" in fresh
+                  and not [f for f in lint(fresh, ctx) if f[1] in ("blocks", "finished", "numbers")], fresh[-600:])
+            got = [f for f in lint(fresh.replace("**1 of 1**", "**7 of 7**"), ctx, release=True) if f[1] == "blocks"]
+            check("finished: a count typed into the block is stale", [f[0] for f in got] == ["FAIL"], got)
+            got = [f for f in lint(text.replace("## Progress", block + "\n## Progress", 1), ctx) if f[1] == "blocks"]
+            check("finished: the block belongs under ## Progress", any("belongs under ## Progress" in f[2] for f in got), got)
+            _git(repo, "rm", "-q", "-f", "--cached", "src/a.c", "config/names.tsv")
+            (repo / "src" / "a.c").unlink()
+            (repo / "config" / "names.tsv").unlink()
+        check("numbers: a typed percent", nums("We are 22.1% done.") == [("FAIL", "22.1%")], nums("We are 22.1% done."))
+        check("numbers: a typed count", nums("1,689 of 7,647 functions are in C.") == [("FAIL", "1,689 of 7,647")])
+        check("numbers: 100% and N of N are words", nums("The goal is 100% and N of N. See `5 of 9` and [a](x/50%25).") == [])
+        check("numbers: another section may count", not [f for f in lint(text.replace(
+            "## License\n", "## License\n\n3 of 4 files are MIT.\n"), ctx) if f[1] == "numbers"])
+        block = "%s\n<!-- generated by tools/progress.py write -->\n**Progress:** 5 of 9 (55.5%%).\n%s" % GAME_BLOCK
+        got = [f for f in typed(block) if f[1] == "numbers"]
+        check("numbers: a second generated block warns", [f[0] for f in got] == ["WARN"] and "second numbers block" in got[0][2], got)
+        check("numbers: the warning stays a warning at --release", [f[0] for f in lint(text.replace(
+            end, end + "\n" + block + "\n"), ctx, release=True) if f[1] == "numbers"] == ["WARN"])
+        got = [f for f in typed(block.replace("<!-- generated by tools/progress.py write -->\n", "")) if f[1] == "numbers"]
+        check("numbers: a hand-written block fails", [f[0] for f in got] == ["FAIL"] and "generated by" in got[0][2], got)
+        kit = "%s\n%s\n|---|---:|---:|---:|\n| Functions | 5 | 9 | 55.5 |\n%s" % (GAME_BLOCK[0], KIT_BLOCK_HEAD, GAME_BLOCK[1])
+        got = [f for f in typed(kit) if f[1] == "numbers"]
+        check("numbers: the block of the kit's own tool warns", [f[0] for f in got] == ["WARN"], got)
+        got = [f for f in typed(GAME_BLOCK[0] + "\n<!-- generated by x -->\nWe are 22.1% done.") if f[1] == "numbers"]
+        check("numbers: a block with no end hides nothing", sorted(f[0] for f in got) == ["FAIL", "FAIL"]
+              and any("22.1%" in f[2] for f in got) and any("has no `%s` line" % GAME_BLOCK[1] in f[2] for f in got), got)
+        for name, hide in (("the game's block", GAME_BLOCK[0]), ("a psxdecomp marker", marker("disc"))):
+            check("numbers: %s inside a fence hides nothing" % name,
+                  nums("```\n%s\n```\n\nWe are 22.1%% done." % hide) == [("FAIL", "22.1%")], nums("```\n%s\n```\n\n40%% done." % hide))
+        check("numbers: a place in a series, 100.0% and a comment over two lines are no count",
+              nums("The project is in phase 1 of 3. Disc 1 of 2 is the one. It is 100.0% matched.\n\n<!-- a note\n30% here\n-->") == [],
+              nums("The project is in phase 1 of 3. Disc 1 of 2 is the one. It is 100.0% matched.\n\n<!-- a note\n30% here\n-->"))
         # no categories.tsv yet: the progress block says so and the lint says INFO; --release FAILs
         (repo / CATEGORIES_REL).unlink()
         bare = Ctx(repo)
         t2 = render(text, bare)
-        check("render before Phase 9", "Not published yet" in t2 and "decomp.dev/example" not in t2)
+        check("render before phase 1.9", "Not published yet" in t2 and "decomp.dev/example" not in t2)
         got = lint(t2, bare)
-        check("lint before Phase 9", [f[0] for f in got] == ["INFO"], got)
+        check("lint before phase 1.9", [f[0] for f in got] == ["INFO"], got)
         check("lint --release needs the list", any(f[0] == "FAIL" and f[1] == "categories"
                                                    for f in lint(t2, bare, release=True)))
         # the freeze: an id committed once may be retired, never removed
@@ -4237,10 +5508,15 @@ def self_test() -> int:
                                            "glabel func_80010000\nmake: *** [build] Error 1\n" + "x" * 300 + "\n").encode())
     check("ci-log withholds asm, hex, instructions", shown == ["make: *** [build] Error 1", "x" * 200]
           and (withheld, kept, total) == (4, 2, 6), shown)
+    _style_self_test(check)
+    with tempfile.TemporaryDirectory() as td:
+        _ratchet_self_test(check, td)
     with tempfile.TemporaryDirectory() as td:
         _public_self_test(check, td)
     with tempfile.TemporaryDirectory() as td:
         _sim_self_test(check, td)
+    with tempfile.TemporaryDirectory() as td:
+        _hooks_self_test(check, td)
     print("publish %s" % ("SELF-TEST OK" if ok else "SELF-TEST FAILED"))
     return 0 if ok else 1
 
@@ -4326,10 +5602,33 @@ def main(argv=None) -> int:
     hk = sub.add_parser("hook")
     hk.add_argument("--install", action="store_true")
     hk.add_argument("--repo", default=".")
+    sy = sub.add_parser("style", help="the writing findings: of the named files, else of every public prose file "
+                                      "against %s" % STYLE_RATCHET_REL)
+    sy.add_argument("files", nargs="*", metavar="FILE", help="check these files, whatever their path (no ratchet)")
+    sy.add_argument("--repo", default=".", help="the repository (default: this one)")
+    sy.add_argument("--update", action="store_true",
+                    help="rewrite the ratchet to the counts of now; refused when a count is over its row")
+    sy.add_argument("--hook", action="store_true",
+                    help="a Claude Code PostToolUse hook (stdin: the event); never blocks, always exits 0")
+    sy.add_argument("--staged", action="store_true", help="check the index, not the work tree")
+    sy.add_argument("--rev", help="check this revision, not the work tree")
+    sy.add_argument("--against", metavar="BASE",
+                    help="judge by the ratchet, the `skip` lines and the public list of this revision as well")
     a = ap.parse_args(argv)
+    index = os.environ.get("GIT_INDEX_FILE")          # a commit hook's own index (`git commit -a`): `style --staged` reads it
     own_git_env()
+    if index and a.cmd == "style" and a.staged:
+        os.environ["GIT_INDEX_FILE"] = os.path.abspath(index)
     if a.self_test:
         return self_test()
+    if a.cmd == "style":
+        if a.hook:
+            return style_hook()
+        if a.files and a.update:
+            sy.error("--update takes no FILE: it rewrites %s from every public prose file" % STYLE_RATCHET_REL)
+        if (a.staged or a.rev or a.against) and (a.files or a.update or (a.staged and a.rev)):
+            sy.error("--staged, --rev and --against take no FILE and no --update; --staged or --rev, not both")
+        return cmd_style(a.files, a.repo, a.update, INDEX if a.staged else a.rev, a.against)
     if a.cmd in ("lint", "render"):
         ctx, readme = _ctx(a)
         text = _read(readme)
@@ -4386,8 +5685,9 @@ def main(argv=None) -> int:
             pathlib.Path(a.output).write_text(body, encoding="utf-8")
         else:
             sys.stdout.write(body)
-        print("CATEGORIZE OK %d units, %d categories%s" % (len(out["units"]), len(out["categories"]),
-                                                          " -> %s" % a.output if a.output else ""),
+        print("CATEGORIZE OK %d units (%d complete), %d categories%s" % (
+            len(out["units"]), out["measures"]["complete_units"], len(out["categories"]),
+            " -> %s" % a.output if a.output else ""),
               file=sys.stderr if not a.output else sys.stdout)
         return 0
     if a.cmd == "validate":
@@ -4397,9 +5697,17 @@ def main(argv=None) -> int:
             if cats is None or cerrs:
                 print("REPORT ERROR %s" % ("; ".join(cerrs) if cerrs else "no %s" % a.categories))
                 return 1
-        errs = validate(json.loads(_read(a.report) or "null"), a.artifact, a.version, cats, a.exe)
+        report = json.loads(_read(a.report) or "null")
+        errs = validate(report, a.artifact, a.version, cats, a.exe)
         for e in errs:
             print("REPORT ERROR %s" % e)
+        for cid, tiny, matched in tiny_matched(report):
+            print("REPORT INFO %s: %d of %d matched functions are %d bytes or less" % (cid, tiny, matched, TINY))
+        bare = unsourced(report)
+        if bare:
+            print("REPORT WARN %d unit(s) report matched code and name no source (metadata.source_path), so the check "
+                  "that assembly reports none cannot read them: %s%s" % (len(bare), ", ".join(bare[:4]),
+                                                                         ", …" if len(bare) > 4 else ""))
         print("REPORT %s (%d error%s)" % ("OK" if not errs else "FAIL", len(errs), "" if len(errs) == 1 else "s"))
         return 1 if errs else 0
     if a.cmd == "check-public":

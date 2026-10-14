@@ -44,8 +44,16 @@ search_seeds = [
   "\"{title}\" decompilation github",
   "\"{title}\" disassembly OR symbols OR \"ram map\"",
   "\"{serial}\" decomp OR recomp",
+  # tcrf.net refuses AI tools (read 2026-10-13): the two TCRF seeds are search seeds, and a person reads the live page
+  # (datacrystal.tcrf.net too: the tier 2 run of 2026-10-13 saw a scout fetch it)
   "\"{title}\" tcrf prototype",
   "\"{title}\" randomizer OR archipelago OR practice hack",
   "site:decomp.dev \"{title}\"",
+  "\"{title}\" wiki OR manual OR \"strategy guide\" enemies OR items OR stages",
+  # the builds question: prototype pages state whether a build holds debugging symbols (Hidden Palace, read
+  # 2026-10-13); Data Crystal is the ROM-map wiki that ser-pounce/rood-reverse credits (seen 2026-10-13)
+  "site:hiddenpalace.org \"{title}\"",
+  "\"{title}\" demo OR \"trial version\" OR \"review build\" symbols OR \".SYM\"",
+  "site:datacrystal.tcrf.net \"{title}\"",
 ]
 sibling_hint = "same developer, publisher or engine: sibling decomps pin the toolchain lead (mmx4 for X6; Xenogears, FF7, Vagrant Story for BFM; scope: mmx6 and BFM-decomp, 2026-10-01)"

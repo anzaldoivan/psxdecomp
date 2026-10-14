@@ -1,6 +1,6 @@
 """Shared helpers for the psxdecomp scripts: paths, TOML, the stage state file, pins, the PA3/kit sources.
 
-Standard library only (Python >= 3.11 for tomllib). Every script that writes has --dry-run and --self-test.
+Standard library only (Python >= 3.12). Every script that writes has --dry-run and --self-test.
 """
 from __future__ import annotations
 
@@ -274,7 +274,311 @@ def load_toml_str(text: str) -> dict:
 # block verbatim); re-exported here. psxdecomp's README carries it verbatim (tier 0 checks); S8 writes it into every
 # game README (the README standard), or swaps it for the kit's disclosure paragraph in an older README ---------------
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import publish  # noqa: E402
 from publish import AI_POLICY, AI_POLICY_MARK, OLD_DISCLOSURE, ai_policy_block  # noqa: E402,F401
+
+
+# ---- the profile's deny rules (profiles/psx/deny.json): S10 writes them, upgrade adds any missing, doctor checks -----
+PROFILE_DENY = PLUGIN_ROOT / "profiles" / "psx" / "deny.json"
+SETTINGS = ".claude/settings.json"
+
+
+def pa3_manages_settings(repo: pathlib.Path) -> bool:
+    managed = publish._pa3_files(read(repo / publish.PA3_REL)) if (repo / publish.PA3_REL).is_file() else []
+    return SETTINGS in managed
+
+
+def deny_missing(repo: pathlib.Path) -> tuple[list[str], str | None]:
+    """(the profile's deny rules the game's .claude/settings.json lacks, why psxdecomp cannot add them or None)."""
+    want = json.loads(read(PROFILE_DENY))["permissions"]["deny"]
+    managed = "PA3 manages %s here" % SETTINGS if pa3_manages_settings(repo) else None
+    f = repo / SETTINGS
+    try:
+        conf = json.loads(read(f)) if f.is_file() else {}
+        have = conf.get("permissions", {}).get("deny", [])
+        assert isinstance(conf, dict) and isinstance(have, list)
+    except (ValueError, AttributeError, AssertionError):
+        return want, managed or "%s is not a JSON object with a permissions.deny list" % SETTINGS
+    missing = [r for r in want if r not in have]
+    return missing, managed if missing else None       # a file that holds every rule needs no hand
+
+
+def with_denies(repo: pathlib.Path, missing: list[str]) -> str:
+    f = repo / SETTINGS
+    conf = json.loads(read(f)) if f.is_file() else {}
+    conf.setdefault("permissions", {}).setdefault("deny", []).extend(missing)
+    return json.dumps(conf, indent=2, ensure_ascii=False) + "\n"
+
+
+# ---- the profile's hooks (profiles/psx/hooks.json: `style --hook` after a write, `guard --hook` before a call): S10
+# writes them, upgrade adds any missing. A group is present when a group of the same event holds a hook of its kind:
+# a command with the kind's words (HOOK_KINDS), whatever interpreter the game set for it. The style hook ends in
+# `|| exit 0`: it reports, and a report that cannot start must never disturb a call. The guard fails closed: no
+# `|| exit 0`, and `"onFailure": "block"` (Claude Code 2.1.295), so a guard that cannot start, that exits with an
+# error or that runs out of time refuses the call it guards (observed on 2.1.296, headless).
+# A group that holds a command psxdecomp wrote before (HOOK_BEFORE) is stale: upgrade writes the current one in place.
+PROFILE_HOOKS = PLUGIN_ROOT / "profiles" / "psx" / "hooks.json"
+PROFILE_GUARD = PLUGIN_ROOT / "profiles" / "psx" / "guard.tsv"
+HOOK_KINDS = (("style-hook", "style --hook"), ("guard-hook", "guard --hook"))   # (upgrade's action, the command's words)
+HOOK_BEFORE = {                                         # kind: (the commands, the matchers) of earlier versions
+    "style-hook": (('python3 "$CLAUDE_PROJECT_DIR/tools/psxd_publish.py" style --hook',), ()),
+    "guard-hook": (('python3 "$CLAUDE_PROJECT_DIR/tools/psxd_floor.py" guard --hook || exit 0',), ("Bash|Edit|Write",)),
+}
+
+
+def hook_kind(group: dict) -> str:
+    """The upgrade action that adds a hook group of the profile: `style-hook` or `guard-hook`."""
+    cmds = " ".join(h.get("command", "") for h in group.get("hooks", []))
+    return next((key for key, words in HOOK_KINDS if words in cmds), HOOK_KINDS[0][0])
+
+
+def ops_index_row(index: str, name: str, doc: str) -> str | None:
+    """docs/ops/INDEX.md with the row of one docs/ops file, in PA3's ops grammar `<file> | <heading> | <line count>`;
+    None when the index names the file already."""
+    if re.search(r"(?m)^(?:- \[)?%s\b" % re.escape(name), index):
+        return None
+    head = next((l.lstrip("# ").strip() for l in doc.splitlines() if l.startswith("# ")), name)
+    return "%s\n%s | %s | %d\n" % (index.rstrip("\n"), name, head, len(doc.splitlines()))
+
+
+def hooks_missing(repo: pathlib.Path) -> tuple[list[tuple[str, dict]], str | None]:
+    """(the profile's (event, hook group) pairs the game's .claude/settings.json lacks, why psxdecomp cannot add them
+    or None)."""
+    want = [(ev, g) for ev, groups in json.loads(read(PROFILE_HOOKS))["hooks"].items() for g in groups]
+    managed = "PA3 manages %s here" % SETTINGS if pa3_manages_settings(repo) else None
+    f = repo / SETTINGS
+    try:
+        have = (json.loads(read(f)) if f.is_file() else {}).get("hooks", {})
+        cmds = {ev: " \n".join(str(h.get("command")) for g in have.get(ev, []) for h in g.get("hooks", [])) for ev, _ in want}
+    except (ValueError, AttributeError, TypeError):
+        return want, managed or "%s is not a JSON object with hook groups under `hooks`" % SETTINGS
+    words = dict(HOOK_KINDS)
+    missing = [(ev, g) for ev, g in want if words[hook_kind(g)] not in cmds[ev]]
+    return missing, managed if missing else None
+
+
+def hooks_stale(repo: pathlib.Path) -> list[tuple[str, dict]]:
+    """The profile's (event, hook group) pairs whose group in .claude/settings.json holds what an earlier psxdecomp
+    wrote (HOOK_BEFORE): the same command with another timeout, an earlier command, an earlier matcher. A command the
+    game changed itself (another interpreter) is the game's and is never stale. [] where PA3 manages the file."""
+    f = repo / SETTINGS
+    if pa3_manages_settings(repo) or not f.is_file():
+        return []
+    try:
+        have = json.loads(read(f)).get("hooks", {})
+        out = []
+        for ev, groups in json.loads(read(PROFILE_HOOKS))["hooks"].items():
+            for g in groups:
+                before, matchers = HOOK_BEFORE[hook_kind(g)]
+                mine = g["hooks"][0]
+                for old in have.get(ev, []):
+                    for h in old.get("hooks", []):
+                        ours = h.get("command") == mine["command"] or h.get("command") in before
+                        if ours and (h != mine or old.get("matcher") in matchers):
+                            out.append((ev, g))
+        return [x for i, x in enumerate(out) if x not in out[:i]]
+    except (ValueError, AttributeError, TypeError, KeyError, IndexError):
+        return []
+
+
+def with_hooks(repo: pathlib.Path, missing: list[tuple[str, dict]], base: str | None = None, stale=()) -> str:
+    """The settings text with the missing groups, each at the end of its event's list, and with each stale group's
+    hook (and its matcher, when it is an earlier psxdecomp matcher) replaced where it stands. `base`: the text to add
+    to in place of the file's (with_denies' result, so that one write holds both)."""
+    f = repo / SETTINGS
+    conf = json.loads(base if base is not None else read(f) if f.is_file() else "{}")
+    for ev, group in stale:
+        before, matchers = HOOK_BEFORE[hook_kind(group)]
+        mine = group["hooks"][0]
+        for old in conf.get("hooks", {}).get(ev, []):
+            for i, h in enumerate(old.get("hooks", [])):
+                if h.get("command") == mine["command"] or h.get("command") in before:
+                    old["hooks"][i] = dict(mine)
+                    if old.get("matcher") in matchers:
+                        old["matcher"] = group["matcher"]
+    for ev, group in missing:
+        conf.setdefault("hooks", {}).setdefault(ev, []).append(group)
+    return json.dumps(conf, indent=2, ensure_ascii=False) + "\n"
+
+
+def settings_due(repo: pathlib.Path) -> str | None:
+    """The .claude/settings.json text with every deny rule and hook group psxdecomp may add here (add-only, one write
+    for both), or None when none is due. S10 and upgrade both write through here."""
+    text = None
+    missing, why = deny_missing(repo)
+    if missing and not why:
+        text = with_denies(repo, missing)
+    hooks, why = hooks_missing(repo)
+    stale = hooks_stale(repo)
+    if (hooks and not why) or stale:
+        text = with_hooks(repo, [] if why else hooks, text, stale)
+    return text
+
+
+# ---- the firewall's block for a debug file of any build (config/firewall.txt): S9 writes it, upgrade's
+# `firewall-debug` adds it. The kit's audit matches a `glob:` line with fnmatch.fnmatchcase, whose `*` crosses `/`, so
+# each line refuses the extension in any folder and in any letter case ------------------------------------------------
+FIREWALL = "config/firewall.txt"
+FIREWALL_DEBUG_GLOBS = ("*.[Ss][Yy][Mm]", "*.[Cc][Pp][Ee]", "*.[Pp][Dd][Bb]", "*.[Dd][Bb][Gg]")
+FIREWALL_DEBUG = ("# ---- psxdecomp: a debug file of any build (a symbol file, a linker's debug executable) ----\n"
+                  "# A link map (.MAP) has no line here: a game tracks text files of that name. The checksum file\n"
+                  "# (config/oracle.<id>.sha1, written by psxdecomp's `oracle add`) covers a supplied copy.\n"
+                  + "".join("glob:  %s\n" % g for g in FIREWALL_DEBUG_GLOBS))
+
+
+def firewall_lines(text: str, kind: str) -> list[str]:
+    """The values of one rule kind in a firewall file, read as the kit's audit reads them (`#` starts a comment)."""
+    rows = (l.split("#", 1)[0].partition(":") for l in text.splitlines())
+    return [value.strip() for k, _, value in rows if k.strip() == kind]
+
+
+def firewall_debug_due(text: str) -> bool:
+    return not set(FIREWALL_DEBUG_GLOBS) <= set(firewall_lines(text, "glob"))
+
+
+def with_firewall_debug(text: str) -> str:
+    return text.rstrip("\n") + "\n\n" + FIREWALL_DEBUG if firewall_debug_due(text) else text
+
+
+def firewall_debug_hits(repo: pathlib.Path) -> list[str]:
+    """The tracked files that a line of the block refuses: with one of these, the block would break the audit."""
+    import fnmatch
+    r = git(repo, "ls-files", "-z", check=False)
+    return sorted(p for p in r.stdout.split("\0") if p and any(fnmatch.fnmatchcase(p, g) for g in FIREWALL_DEBUG_GLOBS))
+
+
+# ---- the local record: <git-common-dir>/psxdecomp/local.toml, the paths of this machine (`[dump] path`, and
+# `[builds] <id>` for each other build of the game). Git cannot track a file of its own directory, and each worktree of
+# the clone reads the same one (scripts/publish.py keeps psxdecomp/public.git in that folder) -------------------------
+LOCAL_REL = "psxdecomp/local.toml"
+LOCAL_HEAD = ("# psxdecomp: the paths of this machine (`psxd oracle add`, `link` and `record --dump` write them). The file\n"
+              "# lies in the git directory: git cannot track it, and each worktree of this clone reads it.\n")
+
+
+def local_path(repo) -> pathlib.Path | None:
+    """The local record's path; None when `repo` is not the top folder of a git work tree."""
+    r = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel", check=False)
+    out = r.stdout.splitlines()
+    if r.returncode != 0 or len(out) != 2 or os.path.realpath(out[1]) != os.path.realpath(str(repo)):
+        return None
+    return pathlib.Path(out[0]) / LOCAL_REL
+
+
+def local_read(repo) -> dict:
+    """The local record as tables; {} when there is none."""
+    p = local_path(repo)
+    if p is None or not p.is_file():
+        return {}
+    try:
+        doc = load_toml(p)
+    except tomllib.TOMLDecodeError as e:
+        raise Fail("%s is not TOML (%s): repair it or remove it" % (p, e))
+    return {t: rows for t, rows in doc.items() if isinstance(rows, dict)}
+
+
+def local_set(repo, table: str, key: str, value: str | None) -> pathlib.Path:
+    """Write `key = "value"` into `[table]` of the local record (None removes the key). Returns the file's path."""
+    p = local_path(repo)
+    if p is None:
+        raise Fail("%s is not the top folder of a git work tree: a path of this machine is kept in the git directory" % repo)
+    doc = local_read(repo)
+    rows = doc.setdefault(table, {})
+    rows.pop(key, None)
+    if value is not None:
+        rows[key] = str(value)
+
+    def k(name):
+        return name if re.fullmatch(r"[A-Za-z0-9_-]+", name) else json.dumps(name)
+
+    write(p, LOCAL_HEAD + "".join("\n[%s]\n%s" % (k(t), "".join(
+        "%s = %s\n" % (k(n), json.dumps(str(v), ensure_ascii=False)) for n, v in sorted(rows.items())))
+        for t, rows in sorted(doc.items()) if rows))
+    return p
+
+
+# ---- the profile's rules (profiles/psx/rules/<id>.md, each a body with no title line): the game's own rules_add.py
+# writes rules/<id>.md and its row of rules/INDEX.md. Never `promote`: a headline stays out of the project-architect
+# skill, and no rule text goes in the card. S10 and upgrade's `<x>-rule` actions both go through here ----------------
+PROFILE_STE = PLUGIN_ROOT / "profiles" / "psx" / "rules" / "STE1.md"
+STE_RULE, STE_INDEX, STE_TOOL = "rules/STE1.md", "rules/INDEX.md", "tools/rules_add.py"
+STE_TITLE = ("Public files (`config/public-paths.txt`) follow `rules/STE1.md`. Read it before you write one. An "
+             "instruction has at most 20 words, a description at most 25. A paragraph has at most 6 sentences. Use no "
+             "semicolon: write two sentences. Put the condition before the command.")
+FIN_TITLE = ("A source file is finished only when it is matched and has no readability debt (`rules/FIN1.md`, "
+             "`python3 tools/psxd_floor.py debt`). Until then, call it matched and say that it has readability debt.")
+NAME_TITLE = ("A name needs recorded evidence (`rules/NAME1.md`, `config/names.tsv`). A byte-identical build proves "
+              "behaviour, not a name. Keep the placeholder until there is evidence.")
+# id: (group, tags, title, upgrade's action, what the rule is, the [own] key that replaces it)
+PROFILE_RULES = {
+    "STE1": ("STE", "writing,public", STE_TITLE, "ste-rule", "the writing rule of the public files", None),
+    "FIN1": ("FIN", "readability,debt", FIN_TITLE, "fin-rule", "the finished-file rule: matched is not finished", "debt"),
+    "NAME1": ("NAME", "readability,names", NAME_TITLE, "name-rule", "the naming rule: a name needs evidence", "names"),
+}
+
+
+def rule_paths(rid: str) -> tuple[str, pathlib.Path]:
+    """(the rule's path in a game, its body in the profile)."""
+    return "rules/%s.md" % rid, PLUGIN_ROOT / "profiles" / "psx" / "rules" / ("%s.md" % rid)
+
+
+def rule_state(repo: pathlib.Path, rid: str) -> str | None:
+    """None when rules/<id>.md holds the profile's body (its title line and its dated metadata line are not compared),
+    else "add", "rewrite" (another body), or "manual" (the repository has no tools/rules_add.py)."""
+    rel, body = rule_paths(rid)
+    f = repo / rel
+    if f.is_file() and "".join(read(f).split("\n", 2)[2:]).strip() == read(body).strip():
+        return None
+    if not (repo / STE_TOOL).is_file():
+        return "manual"
+    return "rewrite" if f.is_file() else "add"
+
+
+def rule_write(repo: pathlib.Path, python: str, rid: str, dry: bool = False) -> list[str]:
+    """Run the game's rules_add.py for a rule that is due; returns `created|changed <path>` per file it wrote. A dry
+    run runs no tool and names both files."""
+    state = rule_state(repo, rid)
+    if state not in ("add", "rewrite"):
+        return []
+    group, tags, title = PROFILE_RULES[rid][:3]
+    rel, body = rule_paths(rid)
+    rels = (rel, STE_INDEX)
+    old = [(repo / x).read_bytes() if (repo / x).is_file() else None for x in rels]
+    status = ["created" if o is None else "changed" for o in old]
+    if dry:
+        return ["would be %s %s" % (st, x) for st, x in zip(status, rels)]
+    r = run([python, STE_TOOL, "add", "--id", rid, "--title", title, "--group", group, "--tags", tags, "--origin",
+             "psxdecomp", "--file", body] + (["--force"] if state == "rewrite" else []), cwd=repo, check=False,
+            env={"PA_PROJECT_ROOT": str(repo)})
+    if r.returncode != 0 or rule_state(repo, rid):
+        raise Fail("%s did not write %s: %s" % (STE_TOOL, rel, (r.stdout + r.stderr).strip()[-300:]))
+    return ["%s %s" % (st, x) for st, x, o in zip(status, rels, old)
+            if (repo / x).is_file() and (repo / x).read_bytes() != o]
+
+
+def ste_rule_state(repo: pathlib.Path) -> str | None:
+    return rule_state(repo, "STE1")
+
+
+def ste_rule_write(repo: pathlib.Path, python: str, dry: bool = False) -> list[str]:
+    return rule_write(repo, python, "STE1", dry)
+
+
+# ---- the first ratchet of the writing findings (config/style-ratchet.txt): S10 and upgrade write it once, after
+# their other writes (each can change a count). After that it is the game's: `style --update` alone rewrites it ------
+KIT_PROSE = ("docs/decomp-kernels.md", "docs/decomp-architect.md", "docs/decomp-architect-install.md",
+             "docs/knowledge-corpus.md", "docs/tools-manifest.md")
+RATCHET_HEAD = ("%s: the count of writing findings of each public prose file (rules/STE1.md)."
+                % publish.STYLE_RATCHET_REL,
+                "A count may only fall. After a fix, run `python3 %s style --update`." % publish.VENDORED,
+                "The `skip` lines name files that the kit or a generator writes.")
+
+
+def first_ratchet(repo: pathlib.Path) -> str:
+    """The text of a game's first ratchet: the counts of now, the kit's five files skipped."""
+    try:
+        return publish.ratchet_text(publish.style_counts(repo, skip=KIT_PROSE), skip=KIT_PROSE, head=RATCHET_HEAD)
+    except publish.Fail as e:
+        raise Fail("%s: %s" % (publish.STYLE_RATCHET_REL, e))
 
 
 def swappable_disclosure(text: str | None) -> bool:
@@ -283,16 +587,21 @@ def swappable_disclosure(text: str | None) -> bool:
     return bool(t) and (t.startswith(OLD_DISCLOSURE) or t == AI_POLICY)
 
 
+POLICY_BLOCK_RE = re.compile(r"^%s[ \t]*\n> \[!IMPORTANT\][ \t]*\n> \*\*AI policy:\*\* .*$" % re.escape(AI_POLICY_MARK),
+                             re.M)
+
+
 def with_ai_policy(readme: str, replace: str | None = None) -> str:
     """The README with the AI policy block after its title and lead paragraph (before the first `## `). `replace`:
     the kit's disclosure paragraph (the AI_DISCLOSURE answer), removed when it is swappable — a developer's own
-    sentence stays. Idempotent."""
+    sentence stays. A README that holds the block keeps it where it is: its three lines become the current block
+    (an older text of the policy), nothing else changes. Idempotent."""
     if replace and swappable_disclosure(replace):
         para = "\n\n%s\n" % replace.strip()
         while para in readme:
             readme = readme.replace(para, "\n", 1)
     if AI_POLICY_MARK in readme:
-        return readme
+        return POLICY_BLOCK_RE.sub(lambda m: ai_policy_block().rstrip("\n"), readme)
     lines = readme.splitlines(keepends=True)
     at = next((i for i, l in enumerate(lines) if l.startswith("## ")), len(lines))
     head = "".join(lines[:at]).rstrip("\n")

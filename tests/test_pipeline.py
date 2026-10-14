@@ -1,13 +1,18 @@
 """Tier 1: the deterministic installer on the homebrew fixture (S0, S2, S5-S10 from canned answers)."""
+import functools
 import json
 import os
+import pathlib
+import re
 import shutil
+import struct
 
 import pytest
 
-from conftest import PY, ROOT, bootstrap, run, tree
+from conftest import PY, PY_TOKEN, ROOT, bootstrap, check_golden, hook_stdout, run, tree
 
 import common
+import oracle
 
 GOLDEN = ROOT / "tests" / "golden" / "fixture-tree.txt"
 
@@ -26,6 +31,26 @@ def test_golden_tree(game):
         GOLDEN.write_text("\n".join(got) + "\n")
     want = GOLDEN.read_text().splitlines()
     assert got == want, "tree differs from tests/golden/fixture-tree.txt (PSXDECOMP_UPDATE_GOLDEN=1 after a pin bump)"
+
+
+def test_always_loaded_bytes(game):
+    """Tier 4a: the bytes a session in the bootstrapped repo loads first (CLAUDE.md, the card, settings, agents,
+    skills, commands, rules without `paths:`, the hook's stdout) as a golden file; agent, command and skill files
+    count whole, agents at any depth. Not covered: .mcp.json, hook events other than SessionStart, output styles. The
+    interpreter path, its version, the host line and the bootstrap date are this machine's and this day's, so they
+    count as tokens."""
+    files = ["CLAUDE.md", "HOW_WE_WORK.md", ".claude/settings.json"]
+    files += [p.relative_to(game).as_posix() for g in (".claude/agents/**/*.md", ".claude/commands/*.md",
+                                                    ".claude/skills/*/SKILL.md")
+              for p in game.glob(g)]
+    files += [p.relative_to(game).as_posix() for p in game.glob(".claude/rules/*.md") if "\npaths:" not in p.read_text()]
+    subs = ((PY_TOKEN, "<PY>"), (r"(?m)^- OS / shells: .*$", "- OS / shells: <HOST>"),
+            (r"bootstrap, \d{4}-\d\d-\d\d", "bootstrap, <DATE>"))
+    norm = lambda t: functools.reduce(lambda acc, s: re.sub(s[0], s[1], acc), subs, t)
+    items = {f: norm((game / f).read_text()) for f in files}
+    assert len((game / "CLAUDE.md").read_text().splitlines()) < 200
+    items["hook:SessionStart"] = hook_stdout(game)
+    check_golden(ROOT / "tests" / "golden" / "always-loaded-fixture.txt", items)
 
 
 def test_clean_tree_and_commits(game):
@@ -54,6 +79,374 @@ def test_s6_restart_line_and_upgrade_ask(toolchain, game):
     assert 'upgrade = "ask"' in (game / "config/psxdecomp.toml").read_text()
 
 
+def test_s10_writes_the_deny_rules_and_doctor_checks_them(game, tmp_path):
+    """S10 puts every rule of profiles/psx/deny.json into the tracked .claude/settings.json beside PA3's own, in the
+    handoff commit (still 9 commits); doctor's `deny` row is OK, and FAILs on a copy that lacks one rule."""
+    want = json.loads((ROOT / "profiles/psx/deny.json").read_text())["permissions"]["deny"]
+    have = json.loads((game / ".claude/settings.json").read_text())["permissions"]["deny"]
+    assert set(want) <= set(have) and len(have) > len(want) and len(want) == 29, have
+    assert run(["git", "-C", game, "status", "--porcelain", ".claude/settings.json"]).stdout == ""
+    assert run(["git", "-C", game, "ls-files", ".claude/settings.json"]).stdout.strip()
+    assert len(run(["git", "-C", game, "log", "--oneline"]).stdout.splitlines()) == 9
+    ok = run([PY, ROOT / "scripts/doctor.py", "--repo", game, "--offline"], check=False)
+    assert re.search(r"DOCTOR deny\s+OK", ok.stdout), ok.stdout
+    import doctor
+    names = re.findall(r"^DOCTOR (\S+) +(?:OK|WARN|FAIL|SKIP|WAIT) ", ok.stdout, re.M)
+    assert len(names) >= 15 and set(names) <= set(doctor.ROWS), names        # --only knows every row a game prints
+    assert re.search(r"DOCTOR card\s+OK\s+HOW_WE_WORK.md \d+ of 7000 characters", ok.stdout), ok.stdout
+    bad = tmp_path / "copy"
+    shutil.copytree(game, bad)
+    conf = json.loads((bad / ".claude/settings.json").read_text())
+    conf["permissions"]["deny"].remove(want[0])
+    (bad / ".claude/settings.json").write_text(json.dumps(conf))
+    r = run([PY, ROOT / "scripts/doctor.py", "--repo", bad, "--offline"], check=False)
+    assert r.returncode == 1 and re.search(r"DOCTOR deny\s+FAIL\s+1 of 29", r.stdout), r.stdout
+
+
+def test_ladder_matches_kit(kit):
+    """plan.LADDER is the pinned kit's ladder: each phase's name is in row n of the ladder table of intake.decomp.md,
+    its name words match that name, and each required milestone word is in row n of that table or of the
+    `verified by` table. The kit's own table names all eleven phases."""
+    import pathlib
+
+    import plan
+    part = (pathlib.Path(kit) / "intake.decomp.md").read_text().split("## Part B", 1)[1].split("\n## Part C", 1)[0]
+    rows = {}
+    for line in part.splitlines():
+        m = re.match(r"^\| (\d+) \| (.*)$", line)
+        if m:
+            rows.setdefault(int(m[1]), []).append(m[2])
+    assert sorted(rows) == list(range(11)) and all(len(v) == 2 for v in rows.values()), sorted(rows)
+    for n, name, words, must in plan.LADDER:
+        assert name in rows[n][0] and re.search(words, name, re.I), (n, name)
+        assert not must or must in " ".join(rows[n]), (n, must)
+    assert plan.ladder_missing(part) == []
+
+
+def test_roadmap_row_waits_before_the_plan(game):
+    """A fresh bootstrap has no GENERATION_PLAN.md: doctor's `roadmap` row says WAIT, which is no failure and is
+    counted in the last line. S8 recorded that the fixture constitution names two of the eleven ladder phases."""
+    r = run([PY, ROOT / "scripts/doctor.py", "--repo", game, "--offline"], check=False)
+    assert r.returncode == 0, r.stdout
+    assert re.search(r"^DOCTOR roadmap +WAIT no GENERATION_PLAN.md; PROJECT_CONTEXT.md names 2 of the 11 ladder phases; "
+                     r"due when PA3's planner drafts the plan$", r.stdout, re.M), r.stdout
+    assert re.search(r"^DOCTOR OK \(\d+ warn, \d+ not due(, \d+ not run)?\)$", r.stdout.splitlines()[-1]), r.stdout
+    rec = (game / "config/psxdecomp.toml").read_text()
+    assert "PROJECT_CONTEXT.md names 2 of the 11 ladder phases; not named: 1.2, 1.3" in rec, rec
+
+
+def test_upgrade_has_nothing_to_do_after_the_bootstrap(game):
+    """`upgrade plan` on the game S10 just handed off lists no action of psxdecomp's: S10 and upgrade deliver the same
+    files, and the record holds the hash of each owned one."""
+    import tomllib
+
+    import upgrade
+    r = run([PY, ROOT / "scripts/upgrade.py", "plan", "--repo", game])
+    assert "[psxdecomp]" not in r.stdout and re.search(r"^PLAN \d+ action\(s\)", r.stdout, re.M), r.stdout
+    rec = tomllib.loads((game / "config/psxdecomp.toml").read_text())
+    rules = {common.rule_paths(rid)[0] for rid in common.PROFILE_RULES}      # a rule's body hash guards a later edit of it
+    assert set(rec["delivered"]) == set(upgrade.OWNED) | rules and "own" not in rec, rec.get("delivered")
+    assert all(len(v) == 64 for v in rec["delivered"].values())
+    assert run([PY, ROOT / "scripts/upgrade.py", "apply", "--dry-run", "--repo", game]).stdout.startswith("APPLY DRY RUN 0 ")
+
+
+def _headlines(game):
+    """The lines of the project-architect skill's headline section: from the first heading that holds "headline" or
+    "11" to the next heading (the section the game's `rules_add.py promote` writes to)."""
+    lines = (game / ".claude/skills/project-architect/SKILL.md").read_text().splitlines()
+    start = next(i for i, l in enumerate(lines) if l.startswith("#") and ("headline" in l.lower()
+                                                                           or re.search(r"[§#]\s?11\b", l)))
+    end = next((j for j in range(start + 1, len(lines)) if lines[j].startswith("#")), len(lines))
+    return lines[start + 1:end]
+
+
+def _hook_group():
+    groups = json.loads(common.read(common.PROFILE_HOOKS))["hooks"]["PostToolUse"]
+    assert len(groups) == 1 and groups[0]["hooks"][0]["command"].endswith("style --hook || exit 0"), groups
+    return groups[0]
+
+
+def _ste_body(repo):
+    """rules/STE1.md after its two header lines (the title line and the dated metadata line of rules_add.py)."""
+    head, meta, body = (repo / common.STE_RULE).read_text().split("\n", 2)
+    assert head == "# STE1 — %s" % common.STE_TITLE and meta.startswith("id: STE1 · group: STE · "), (head, meta)
+    return body.strip()
+
+
+def test_s10_writes_the_rule_and_does_not_promote_it(game):
+    """S10 has the game's own rules_add.py write rules/STE1.md (the profile's body under the tool's two header lines)
+    and its row of rules/INDEX.md. It never promotes the rule: the headline section of the project-architect skill,
+    which every session loads, holds the kit's headlines and no STE1 line. Both files are in the handoff commit."""
+    assert _ste_body(game) == common.read(common.PROFILE_STE).strip()
+    index = (game / common.STE_INDEX).read_text().splitlines()
+    assert index.count("STE1 | %s | writing,public | active | psxdecomp" % common.STE_TITLE) == 1, index[-3:]
+    assert len([l for l in index if l.startswith("STE1 ")]) == 1
+    heads = [l for l in _headlines(game) if l.startswith("- ")]
+    assert any(re.match(r"- [A-Z]+\d+ — ", l) for l in heads), heads       # the section the kit promoted its rules to
+    assert not [l for l in heads if l.startswith("- STE1")], heads
+    assert "STE1" not in (game / ".claude/skills/project-architect/SKILL.md").read_text()
+    assert common.ste_rule_state(game) is None
+    handoff = run(["git", "-C", game, "show", "--name-only", "--format=", "HEAD"]).stdout.split()
+    assert {common.STE_RULE, common.STE_INDEX} <= set(handoff), handoff
+
+
+def test_s10_writes_the_first_ratchet_and_style_passes(game):
+    """S10 writes config/style-ratchet.txt last, in the handoff commit: one `skip` line for each of the kit's five
+    files and one row per other public prose file with a finding, at its count of now. The vendored `style` (the CI
+    step of the README workflow) exits 0 in the game, and exits 1 when a public file gains one finding."""
+    import publish
+    rat = game / publish.STYLE_RATCHET_REL
+    rows, skip, head = publish.parse_ratchet(rat.read_text())
+    assert skip == list(common.KIT_PROSE) and len(skip) == 5 and all((game / k).is_file() for k in skip), skip
+    lines = rat.read_text().splitlines()
+    assert [l for l in lines if l.startswith("skip ")] == ["skip %s" % k for k in common.KIT_PROSE], lines
+    assert head and all(l.startswith("#") for l in head) and "style --update" in "\n".join(head), head
+    assert rows and rows == publish.style_counts(game, skip) and not set(rows) & set(skip), rows
+    assert run(["git", "-C", game, "ls-files", publish.STYLE_RATCHET_REL]).stdout.strip() == publish.STYLE_RATCHET_REL
+    assert publish.STYLE_RATCHET_REL in run(["git", "-C", game, "show", "--name-only", "--format=", "HEAD"]).stdout
+    r = run([PY, publish.VENDORED, "style"], cwd=game, check=False)
+    assert r.returncode == 0 and r.stdout.startswith("STYLE CHECK OK (") and "0 over their row" in r.stdout, r.stdout
+    assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+    readme, row = (game / "README.md").read_bytes(), rows.get("README.md", 0)
+    try:                                                    # the negative control: one more semicolon in the README
+        (game / "README.md").write_bytes(readme + b"\nOne part; two parts.\n")
+        r = run([PY, publish.VENDORED, "style"], cwd=game, check=False)
+        want = "STYLE FAIL README.md: %d finding(s), its row is %d\n" % (row + 1, row)
+        assert r.returncode == 1 and want in r.stdout, r.stdout
+    finally:
+        (game / "README.md").write_bytes(readme)
+    assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+
+
+def test_s10_writes_the_style_hook_beside_the_deny_rules(game):
+    """S10 puts the hook group of profiles/psx/hooks.json into the tracked .claude/settings.json in the same write as
+    the deny rules: PA3's own keys stay, the file is tracked and clean, and the handoff is still one commit of 9."""
+    conf = json.loads((game / common.SETTINGS).read_text())
+    assert conf["hooks"]["PostToolUse"].count(_hook_group()) == 1, conf.get("hooks")
+    want = json.loads((ROOT / "profiles/psx/deny.json").read_text())["permissions"]["deny"]
+    assert set(want) <= set(conf["permissions"]["deny"]) and conf["agent"] == "pa-session", conf
+    assert common.hooks_missing(game) == ([], None) and common.settings_due(game) is None
+    assert run(["git", "-C", game, "status", "--porcelain", common.SETTINGS]).stdout == ""
+    assert run(["git", "-C", game, "ls-files", common.SETTINGS]).stdout.strip() == common.SETTINGS
+    assert json.loads(run(["git", "-C", game, "show", "HEAD:" + common.SETTINGS]).stdout) == conf
+    log = run(["git", "-C", game, "log", "--format=%s"]).stdout.splitlines()
+    assert len(log) == 9 and log[0].startswith("psxdecomp handoff:") and "STE1" in log[0], log
+    assert common.SETTINGS in run(["git", "-C", game, "show", "--name-only", "--format=", "HEAD"]).stdout.split()
+
+
+def test_s10_writes_the_guard_beside_the_style_hook(game, tmp_path):
+    """S10 delivers the floor in the handoff commit: tools/psxd_floor.py (byte for byte, executable), its reference in
+    docs/ops/ with a row of the ops index in PA3's grammar, config/guard.tsv, and the PreToolUse group beside the
+    style hook. Doctor's `guard` row is OK. The hook, run as the settings register it, refuses an edit under asm/,
+    allows an edit of a source file, and allows every call when the vendored tool is gone."""
+    import subprocess
+
+    import floor
+    import upgrade
+    conf = json.loads((game / common.SETTINGS).read_text())
+    pre = json.loads(common.read(common.PROFILE_HOOKS))["hooks"]["PreToolUse"]
+    assert conf["hooks"]["PreToolUse"] == pre and pre[0]["matcher"].startswith("Bash|Edit|Write|"), conf["hooks"]
+    assert (game / floor.VENDORED).read_bytes() == (ROOT / "scripts/floor.py").read_bytes()
+    assert os.access(game / floor.VENDORED, os.X_OK)
+    assert (game / upgrade.FLOOR_DOC).read_bytes() == (ROOT / "profiles/psx/floor.md").read_bytes()
+    assert (game / floor.GUARD).read_text() == common.read(common.PROFILE_GUARD)
+    rows = [l for l in (game / upgrade.OPS_INDEX).read_text().splitlines() if l.startswith("psxdecomp-floor.md")]
+    assert rows == ["psxdecomp-floor.md | The psxdecomp floor | %d" % len((game / upgrade.FLOOR_DOC).read_text().splitlines())]
+    handoff = set(run(["git", "-C", game, "show", "--name-only", "--format=", "HEAD"]).stdout.split())
+    assert {floor.VENDORED, upgrade.FLOOR_DOC, floor.GUARD, upgrade.OPS_INDEX, common.SETTINGS} <= handoff, handoff
+    r = run([PY, ROOT / "scripts/doctor.py", "--repo", game, "--offline"], check=False)
+    assert re.search(r"DOCTOR guard\s+OK\s+all 2 hook group\(s\)", r.stdout), r.stdout
+    assert re.search(r"DOCTOR publish-tool\s+OK\s+6 owned file\(s\)", r.stdout), r.stdout
+    assert (game / upgrade.CAMPAIGN_DOC).read_bytes() == (ROOT / "profiles/psx/campaign.md").read_bytes()
+    assert not (game / upgrade.MATCHER_SKILL).exists() and not (game / "config/bank.tsv").exists()
+    assert run([PY, ROOT / "scripts/plan.py", "--repo", game]).stdout.startswith("PLAN INFO plan: no GENERATION_PLAN.md")
+
+    def hook(repo, **inp):
+        event = {"hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": inp, "cwd": str(repo)}
+        return subprocess.run(["sh", "-c", pre[0]["hooks"][0]["command"]], input=json.dumps(event), cwd=repo,
+                              capture_output=True, text=True, env=dict(os.environ, CLAUDE_PROJECT_DIR=str(repo)))
+
+    r = hook(game, file_path=str(game / "asm/main/a.s"))
+    assert r.returncode == 0 and json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny", r.stdout
+    r = hook(game, file_path=str(game / "src/a.c"))
+    assert (r.returncode, r.stdout) == (0, ""), (r.stdout, r.stderr)
+    bare = tmp_path / "bare"                                    # no vendored tool: python3 fails, and the guard fails closed
+    bare.mkdir()
+    r = hook(bare, file_path=str(bare / "asm/a.s"))
+    assert r.returncode != 0 and r.stdout == "" and pre[0]["hooks"][0]["onFailure"] == "block", (r.returncode, r.stdout)
+    assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+
+
+def test_s10_writes_the_debt_baseline_and_debt_passes(game):
+    """S10 writes the readability floor in the handoff commit: rules/FIN1.md and rules/NAME1.md (never promoted), the
+    header lines of the two ledgers, and config/debt-baseline.txt last, with a policy line for each kind and no row
+    (the game has no C file yet). The vendored `debt` and `names` (the CI step of the README workflow) exit 0, and `debt` exits 1 when
+    a source file gains a `goto`."""
+    import floor
+    bl = floor.parse_baseline((game / floor.BASELINE).read_text())
+    assert (bl.totals, bl.skip, bl.version, bl.lacks()) == ({}, [], 2, []), vars(bl)             # no stub header yet: no skip line
+    assert bl.policy("pin-unmarked") == "down" and bl.policy("pin") == "count" and bl.policy("placeholder") == "count", vars(bl)
+    assert (game / floor.NAMES).read_text() == "\t".join(floor.NAME_COLUMNS) + "\n"
+    assert (game / floor.ASM_EVIDENCE).read_text() == "\t".join(floor.ASM_COLUMNS) + "\n"
+    for rid in ("FIN1", "NAME1"):
+        assert common.rule_state(game, rid) is None, rid
+        assert rid not in (game / ".claude/skills/project-architect/SKILL.md").read_text()
+        assert len([l for l in (game / common.STE_INDEX).read_text().splitlines() if l.startswith(rid + " | ")]) == 1
+    assert "FIN1" not in (game / "HOW_WE_WORK.md").read_text() and "NAME1" not in (game / "HOW_WE_WORK.md").read_text()
+    handoff = set(run(["git", "-C", game, "show", "--name-only", "--format=", "HEAD"]).stdout.split())
+    assert {floor.BASELINE, floor.NAMES, floor.ASM_EVIDENCE, "rules/FIN1.md", "rules/NAME1.md"} <= handoff, handoff
+    r = run([PY, floor.VENDORED, "debt"], cwd=game, check=False)
+    assert r.returncode == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); down: pin-unmarked" in r.stdout, r.stdout
+    assert run([PY, floor.VENDORED, "names"], cwd=game, check=False).returncode == 0
+    wf = (game / ".github/workflows/psxdecomp-readme.yml").read_text()
+    assert 'python3 "$judge/psxd_floor.py" gate --ci "$BASE..HEAD"' in wf
+    src = game / "src/probe.c"
+    try:                                                    # the negative control: a tracked C file with a goto
+        src.write_text(floor.C_DEBT["goto"][0])
+        run(["git", "-C", game, "add", "-f", "src/probe.c"])
+        r = run([PY, floor.VENDORED, "debt"], cwd=game, check=False)
+        assert r.returncode == 1 and "DEBT FAIL rise goto: 1, its row is 0\n" in r.stdout, r.stdout
+    finally:
+        run(["git", "-C", game, "rm", "-q", "-f", "--cached", "src/probe.c"])
+        src.unlink()
+    assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+
+
+def test_fresh_game_passes_its_gate(game):
+    """A game as S10 leaves it passes its own gate with its own vendored tools: the index against HEAD, the handoff
+    commit against its parent, and the bank (which writes nothing when nothing changed). A source file with an
+    unmarked pin that git does not track yet fails the bank."""
+    import floor
+    gate = lambda *a: run([PY, floor.VENDORED, "gate", *a], cwd=game, check=False)  # noqa: E731
+    for args, want in ((("--staged",), "GATE OK (staged)\n"), (("--ci", "HEAD~1..HEAD"), "GATE OK (ci; 1 commit(s))\n"),
+                       (("--bank",), "GATE OK (bank)\n")):
+        r = gate(*args)
+        assert (r.returncode, r.stdout) == (0, want), (args, r.stdout, r.stderr)
+    assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+    src = game / "src/probe.c"
+    try:
+        src.parent.mkdir(exist_ok=True)
+        src.write_text(floor.C_DEBT["pin-unmarked"][0])
+        r = gate("--bank")
+        assert r.returncode == 1 and "GATE FAIL debt: pin-unmarked is `down` and its total rose: 0 -> 1" in r.stdout, r.stdout
+    finally:
+        src.unlink()
+    ledger = game / floor.NAMES                                  # a names row is the game's record: no check opens it
+    head = ledger.read_text()
+    try:
+        ledger.write_text(head + "function\tmain\t\t\tPlayer_Hp\taccepted\tstring:src/gone.c:4\tits string\n")
+        run(["git", "-C", game, "add", floor.NAMES])
+        r = gate("--staged")
+        assert (r.returncode, r.stdout) == (0, "GATE OK (staged)\n"), r.stdout
+    finally:
+        ledger.write_text(head)
+        run(["git", "-C", game, "add", floor.NAMES])
+    assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+
+
+def test_a_matched_function_is_committed_and_pushed_under_any_name(game, tmp_path):
+    """No check asks for a name. In a clone of the game with its git hooks, three functions are committed and pushed:
+    one under its address name, one under a guessed name with no row, one under a name with a `provisional` row. The
+    baseline's rows show the address name (`placeholder`), and neither the commit hook nor the push hook refuses."""
+    import floor
+    clone, remote = tmp_path / "clone", tmp_path / "remote.git"
+    git = lambda *a, check=True: run(["git", "-C", clone, "-c", "user.name=t", "-c", "user.email=t@example.invalid",  # noqa: E731
+                                      "-c", "commit.gpgsign=false", *a], check=check)
+    run(["git", "clone", "-q", game, clone])
+    run(["git", "init", "-q", "--bare", remote])
+    git("remote", "set-url", "origin", str(remote))
+    assert run([PY, "tools/psxd_publish.py", "hook", "--install"], cwd=clone, check=False).returncode == 0
+    assert all((clone / ".git/hooks" / name).is_file() for name in ("pre-commit", "pre-push"))
+    branch = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    r = git("push", "-q", "origin", branch, check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    (clone / "src").mkdir(exist_ok=True)
+    (clone / "src/names.c").write_text("s32 func_80012344(s32 n) {\n    return n + 1;\n}\n\ns32 Enemy_Think(s32 n) {\n    return n + 2;\n}\n\n"
+                                       "s32 Enemy_Walk(s32 n) {\n    return n + 3;\n}\n")
+    with open(clone / floor.NAMES, "a") as f:
+        f.write("function\tmain\t\tfunc_80012400\tEnemy_Walk\tprovisional\thuman:src/names.c:9\tit moves the enemy; one source\n")
+    git("add", "-f", "src/names.c", floor.NAMES)
+    r = run([PY, floor.VENDORED, "gate", "--bank"], cwd=clone, check=False)
+    assert r.returncode == 0 and "the totals of now written" in r.stdout, r.stdout + r.stderr
+    rows = (clone / floor.BASELINE).read_text()
+    assert "1 placeholder\n" in rows, rows
+    git("add", "-A")
+    r = git("commit", "-qm", "three functions that match, named as far as anyone knows", check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = git("push", "-q", "origin", branch, check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert run(["git", "-C", remote, "rev-parse", branch]).stdout == git("rev-parse", "HEAD").stdout
+
+
+def test_trial_in_a_game(game):
+    """The trial tool in a bootstrapped game, with a probe that stands for the game's own. The game has no trial tool
+    until its record names `[trial] probe`: then /psxdecomp:upgrade writes tools/psxd_trial.py (`trial-tool`). The
+    tool drops the pin that the match does not need and marks the other one. It writes no ledger: the marker is the
+    record."""
+    import floor
+    import trial
+    record, src, probe, tool = game / floor.RECORD, game / "src/sum.c", game / ".run/probe.py", game / "tools/psxd_trial.py"
+    kept = record.read_text()
+    assert not tool.exists() and "trial-tool" not in run([PY, ROOT / "scripts/upgrade.py", "plan", "--repo", game]).stdout
+    try:
+        src.parent.mkdir(exist_ok=True)
+        src.write_text(trial.C_TRIAL)
+        probe.write_text("import sys\nsys.exit(0 if 'asm(\"$16\")' in open(sys.argv[1]).read() else 1)\n")
+        record.write_text(kept + "\n[trial]\nprobe = '%s .run/probe.py'\n" % PY)
+        r = run([PY, ROOT / "scripts/upgrade.py", "apply", "--repo", game])
+        assert "created tools/psxd_trial.py" in r.stdout and tool.read_bytes() == (ROOT / "scripts/trial.py").read_bytes(), r.stdout
+        r = run([PY, tool, "src/sum.c"], cwd=game, check=False)
+        assert r.returncode == 0 and "TRIAL OK (1 function(s), 3 tried, 2 removed, 1 kept; 6 probe(s))" in r.stdout, r.stdout + r.stderr
+        text = src.read_text()
+        assert "// !FAKE: pin:$16:i: " in text and "$17" not in text and "__asm__" not in text and "    register s32 t = 0;" in text, text
+        assert floor.file_debt("src/sum.c", text) == {"pin": 1} and not (game / "config/trials.tsv").exists()
+    finally:
+        record.write_text(kept)
+        for f in (src, probe, tool):
+            f.unlink(missing_ok=True)
+    assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
+
+
+def test_phase_rows_wait_at_bootstrap(game):
+    """The phase-conditional rows of the floor at the handoff: gate, toolchain, names, debt, cpp and progress say WAIT with
+    the phase that makes each due, and the doctor still exits 0 (S10 aborts on a FAIL)."""
+    r = run([PY, ROOT / "scripts/doctor.py", "--repo", game, "--offline"], check=False)
+    assert r.returncode == 0, r.stdout
+    rows = dict(re.findall(r"^DOCTOR (\S+) +(OK|WARN|FAIL|SKIP|WAIT) ", r.stdout, re.M))
+    waits = {k for k, v in rows.items() if v == "WAIT"}
+    assert waits == {"roadmap", "gate", "toolchain", "names", "debt", "cpp", "progress"}, rows
+    for name, due in (("gate", "phase 1.3 closes"), ("toolchain", "phase 1.4 closes"), ("names", "phase 1.4 closes"),
+                      ("debt", "the first C file under src/"), ("cpp", "phase 1.4 closes"), ("progress", "phase 1.9 opens")):
+        assert re.search(r"^DOCTOR %s +WAIT due w\S+ %s" % (name, re.escape(due)), r.stdout, re.M), (name, r.stdout)
+    assert r.stdout.splitlines()[-1].startswith("DOCTOR OK (") and ", 7 not due" in r.stdout.splitlines()[-1]
+
+
+def test_second_pa3_install_keeps_the_rule_the_ratchet_and_the_hook(toolchain, game, tmp_path):
+    """PA3's own `--project` install run again over a copy of the game (the command of S6, from the pinned clone of the
+    toolchain fixture) keeps what S10 wrote for the public files: the rule file and its index row, the ratchet, the
+    hook group and the deny rules. It promotes no STE1 headline."""
+    import publish
+    copy = tmp_path / "copy"
+    shutil.copytree(game, copy, symlinks=True)
+    pa = json.loads((copy / ".claude/pa.json").read_text())
+    kept = {rel: (copy / rel).read_bytes() for rel in (common.STE_RULE, publish.STYLE_RATCHET_REL)}
+    row = next(l for l in (copy / common.STE_INDEX).read_text().splitlines() if l.startswith("STE1 "))
+    r = run([PY, toolchain["pkg"] / "pa_install.py", "--project", copy, "--yes", "--name", pa["project"], "--python",
+             pa["python"], "--config-dir", toolchain["cfg"], "--pa3-dir", toolchain["cfg"] / "pa3"], check=False)
+    assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-2000:]
+    assert json.loads((copy / ".claude/pa.json").read_text())["pa_version"] == pa["pa_version"]
+    assert {rel: (copy / rel).read_bytes() for rel in kept} == kept, r.stdout[-3000:]
+    assert common.ste_rule_state(copy) is None and _ste_body(copy) == common.read(common.PROFILE_STE).strip()
+    assert (copy / common.STE_INDEX).read_text().splitlines().count(row) == 1
+    conf = json.loads((copy / common.SETTINGS).read_text())
+    assert conf["hooks"]["PostToolUse"].count(_hook_group()) == 1, conf.get("hooks")
+    assert common.hooks_missing(copy) == ([], None) and common.deny_missing(copy) == ([], None)
+    assert conf["hooks"]["PreToolUse"] == json.loads(common.read(common.PROFILE_HOOKS))["hooks"]["PreToolUse"]
+    assert not [l for l in _headlines(copy) if l.startswith("- STE1")]
+    r = run([PY, publish.VENDORED, "style"], cwd=copy, check=False)
+    assert r.returncode == 0 and "STYLE CHECK OK" in r.stdout, r.stdout
+
+
 def test_s6_root_hint_pins_the_clone(toolchain, tmp_path):
     """No PA3 on the machine: S6 prints the --root command with --no-clone (the pinned copy, not upstream's branch)."""
     target = tmp_path / "noroot"
@@ -65,7 +458,7 @@ def test_s6_root_hint_pins_the_clone(toolchain, tmp_path):
 
 def test_readme_standard(game):
     """S8 replaces the kit's skeleton with psxdecomp's README standard, filled with the kit's own values: no old
-    disclosure, the AI policy block, both generated blocks; the vendored lint passes it (before Phase 9 and with no
+    disclosure, the AI policy block, both generated blocks; the vendored lint passes it (before phase 1.9 and with no
     Sony serial, the categories and the disc rows are INFO), and the game's CI runs that lint."""
     import publish
     readme = (game / "README.md").read_text()
@@ -143,9 +536,17 @@ def test_scoped_outputs(game):
     rec = tomllib.loads((game / "config/psxdecomp.toml").read_text())
     assert rec["psyq"]["version"] == "4.7" and rec["psyq"]["status"].startswith("lead")
     assert "compiler_ladder" not in (game / "config/psxdecomp.profile.toml").read_text()
+    import install
     how = (game / "HOW_WE_WORK.md").read_text()
     line = next(l for l in how.splitlines() if l.startswith("- **This repo:**"))
     assert "PsyQ 4.7" in line and len(line) <= 300
+    conv = how[how.index("## Conventions"):].split("\n## ")[0]      # S10's line sits in the card's conventions section
+    cline = [l for l in conv.splitlines() if l.startswith(install.CONV_MARK)]
+    assert len(cline) == 1 and len(cline[0]) <= 120, cline
+    assert "Fields by name" not in how              # M3: the measured drafting rule is not shipped (ECOSYSTEM K22, M15)
+    assert "`CONTRIBUTING.md`" in cline[0] and "## Names, types and formatting" in (game / "CONTRIBUTING.md").read_text()
+    assert ("docs/prior-art.md" in conv) == (game / "docs/prior-art.md").is_file()   # never a pointer to a missing file
+    assert not (game / "docs/ops/drafting.md").exists()
     env = next(l for l in (game / "docs/ops/decomp-environment.md").read_text().splitlines()
                if l.startswith("| Candidate compiler family"))
     assert env.split("|")[2].strip().startswith("Candidate (S4"), env
@@ -154,9 +555,8 @@ def test_scoped_outputs(game):
         if (game / rel).is_file():
             assert fetch_refs.lint_file(game / rel) == [], rel
     # one home: no sentence psxdecomp writes (the index, its config records, its HOW_WE_WORK lines) is copied elsewhere
-    import install
     ours = ("docs/ops/refs.md", "config/psxdecomp.toml", "config/psxdecomp.profile.toml", "config/refs.toml")
-    mine = lambda l: l.startswith((install.SCOPE_MARK, install.REFS_RULE[:20]))  # noqa: E731
+    mine = lambda l: l.startswith((install.SCOPE_MARK, install.CONV_MARK, install.REFS_RULE[:20]))  # noqa: E731
     written = {s for rel in ours if (game / rel).is_file()
                for _, s in fetch_refs.sentences((game / rel).read_text(), toml=rel.endswith(".toml"))}
     written |= {s for _, s in fetch_refs.sentences("\n\n".join(l for l in how.splitlines() if mine(l)))}
@@ -178,6 +578,10 @@ def test_dump_never_copied(game, toolchain):
             assert blob[2048:2400] not in p.read_bytes(), p
     medium = (game / ".run/bootstrap/medium.json").read_text()
     assert str(toolchain["dump"]) not in medium
+    # the planted debug leftover: S2 reports its name, size and kind, and no byte of it
+    debug = json.loads(medium)["debug_artifacts"]
+    assert debug["files"] == [{"path": "/MAIN.SYM", "size": 8, "kind": "symbols", "psyq_sym": True}], debug
+    assert (debug["count"], debug["psyq_sym"]) == (1, 1) and "MND\\u0001" not in medium
 
 
 def test_s5_dry_run_lists_what_s5_writes(toolchain, tmp_path):
@@ -213,10 +617,376 @@ def test_wrong_kit_refused(tmp_path, kit):
         common.resolve_kit(path=str(copy))
 
 
+def test_s10_refuses_a_copy_with_no_stated_hash(toolchain, tmp_path):
+    """The answers hold a path, the build's id and the hashes of the build's page (PSXDECOMP_BYO_ORACLE_SHA1). A copy
+    where no file has one: S10 fails before anything of the build is written, and names no path. With the page's hash,
+    the build's table says which one matched."""
+    import hashlib
+    import tomllib
+    proto = tmp_path / "outside" / "PROTO.SYM"
+    proto.parent.mkdir()
+    proto.write_bytes(b"MND\x01another build, invented")
+    answers, target = tmp_path / "answers.txt", tmp_path / "wrong"
+
+    def boot(sha, check=True):
+        answers.write_text((ROOT / "fixtures/answers.psx.txt").read_text().rstrip("\n")
+                           + "\nPSXDECOMP_BYO_ORACLE_PATH: %s\nPSXDECOMP_BYO_ORACLE_ID: proto-1999-01-01"
+                             "\nPSXDECOMP_BYO_ORACLE_SHA1: %s %s\n" % (proto, "1" * 40, sha))
+        return run([PY, ROOT / "scripts/install.py", "run", "--target", target, "--answers", answers, "--dump",
+                    toolchain["dump"], "--config-dir", toolchain["cfg"], "--pa3-dir", toolchain["cfg"] / "pa3",
+                    "--intake-fixture", "--no-fetch"], env=toolchain["env"], check=check)
+
+    r = boot("0" * 40, check=False)
+    assert r.returncode == 1 and "no file of the copy has a stated hash" in r.stdout, r.stdout[-1500:]
+    assert not list((target / "config").glob("oracle*"))
+    assert "oracle" not in tomllib.loads((target / "config/psxdecomp.toml").read_text())
+    assert oracle.HASH_GLOB not in common.firewall_lines((target / "config/firewall.txt").read_text(), "required")
+    assert oracle.registered(target) == {}
+    sha = hashlib.sha1(proto.read_bytes()).hexdigest()
+    r = boot(sha)
+    assert "BOOTSTRAP OK through S10" in r.stdout, r.stdout[-1500:]
+    build = oracle.builds(target)[0]
+    assert build["expect"] == sorted(["1" * 40, sha]) and build["matched"] == [sha] and build["image"] == "PROTO.SYM", build
+    assert run(["git", "-C", target, "status", "--porcelain"]).stdout == ""
+    assert re.search(r"DOCTOR oracle\s+OK .*; 1 build\(s\): 1 on this machine$",
+                     run([PY, ROOT / "scripts/doctor.py", "--repo", target, "--offline", "--only", "oracle"]).stdout, re.M)
+
+
+def test_s10_refuses_to_commit_a_builds_item(toolchain, tmp_path):
+    """The scout's report under .run/ lists a checked archive.org item of a build. The same identifier in the
+    prior-art table: S10 names the file and commits nothing. Without it, S10 commits, and the report stays ignored."""
+    target = tmp_path / "item"
+    bootstrap(toolchain, target, "--until", "S9")
+    item = "ExampleQuestJan011999prototype"
+    boot = target / ".run/bootstrap"
+    (boot / "research").mkdir(parents=True, exist_ok=True)
+    (boot / "research/builds.md").write_text(
+        "# builds — invented\n## Leads\n## archive.org items\n| identifier | kind (build or document) | confirmed by | "
+        "file | SHA-1 |\n|---|---|---|---|---|\n| %s | build | the page's hash | 00preview.jpg | %s |\n" % (item, "a" * 40))
+    row = "# Prior art\n\n| L1 | Oracle build: Jan 1, 1999 prototype | the page%s | lead | a byte check |\n"
+    (boot / "prior-art.md").write_text(row % (" (archive.org: %s)" % item))
+    head = run(["git", "-C", target, "rev-parse", "HEAD"]).stdout
+    r = bootstrap(toolchain, target, check=False)
+    assert r.returncode == 1 and "docs/prior-art.md names an archive.org item of a build" in r.stdout, r.stdout[-1500:]
+    assert run(["git", "-C", target, "rev-parse", "HEAD"]).stdout == head
+    (target / "docs/prior-art.md").write_text(row % "")
+    r = bootstrap(toolchain, target)
+    assert "BOOTSTRAP OK through S10" in r.stdout, r.stdout[-1500:]
+    assert run(["git", "-C", target, "status", "--porcelain"]).stdout == ""
+    assert tree(target) == sorted(GOLDEN.read_text().splitlines() + ["docs/prior-art.md"])
+    assert not run(["git", "-C", target, "grep", "-l", item], check=False).stdout
+
+
 @pytest.mark.parametrize("until", ["S5", "S6", "S7", "S8", "S9"])
 def test_resume_from_every_stage(toolchain, tmp_path, until):
     target = tmp_path / ("resume-" + until)
     bootstrap(toolchain, target, "--until", until)
     r = bootstrap(toolchain, target)
     assert "BOOTSTRAP OK through S10" in r.stdout
+    assert tree(target) == GOLDEN.read_text().splitlines()
+
+
+def test_s8_commits_pa3s_own_change_of_pa_json_first(toolchain, tmp_path):
+    """PA3's session-start hook writes a `preset` line into .claude/pa.json when the plain session of S7 opens. S8
+    commits that file when it is the only change, and the kit installs. Any other change still stops S8, by name."""
+    target = tmp_path / "pa-json"
+    bootstrap(toolchain, target, "--until", "S7")
+    pa = target / ".claude/pa.json"
+    text = pa.read_text()
+    assert '"upgrade": "ask",' in text
+    pa.write_text(text.replace('"upgrade": "ask",', '"upgrade": "ask",\n  "preset": "max5",', 1))
+    other = target / "config/firewall.txt"     # S1 writes it on every host; LICENSE needs a gh token there
+    other.write_text(other.read_text() + "\n")
+    r = bootstrap(toolchain, target, "--until", "S8", check=False)
+    assert r.returncode == 1 and "not clean" in r.stdout and "config/firewall.txt" in r.stdout, r.stdout
+    run(["git", "-C", target, "checkout", "--", "config/firewall.txt"])
+    r = bootstrap(toolchain, target)
+    assert "BOOTSTRAP OK through S10" in r.stdout and "pa.json committed first" in r.stdout, r.stdout
+    assert run(["git", "-C", target, "status", "--porcelain"]).stdout == ""
+    assert json.loads(run(["git", "-C", target, "show", "HEAD:.claude/pa.json"]).stdout)["preset"] == "max5"
+    log = run(["git", "-C", target, "log", "--format=%s"]).stdout.splitlines()
+    assert sum(l.startswith("PA3's own change of .claude/pa.json") for l in log) == 1, log
+    assert tree(target) == GOLDEN.read_text().splitlines()
+
+
+def test_resumed_s10_commits_the_card(toolchain, tmp_path):
+    """An S10 that fails after its writes (here: doctor's fixture row) and is run again leaves nothing behind: the card
+    with both of S10's lines is in the handoff commit, the tree is clean and equals the golden tree."""
+    import install
+    target = tmp_path / "resume-s10"
+    bootstrap(toolchain, target, "--until", "S9")
+    sha1 = target / "config/firewall-fixture.sha1"
+    kept = sha1.read_bytes()
+    sha1.unlink()
+    r = bootstrap(toolchain, target, check=False)
+    assert r.returncode == 1 and "fixture: planted-fixture hash missing" in r.stdout, r.stdout
+    assert install.CONV_MARK in (target / "HOW_WE_WORK.md").read_text()          # the failed run wrote the card
+    assert install.CONV_MARK not in run(["git", "-C", target, "show", "HEAD:HOW_WE_WORK.md"]).stdout
+    sha1.write_bytes(kept)
+    r = bootstrap(toolchain, target)
+    assert "BOOTSTRAP OK through S10" in r.stdout
+    assert run(["git", "-C", target, "status", "--porcelain"]).stdout == ""
+    card = run(["git", "-C", target, "show", "HEAD:HOW_WE_WORK.md"]).stdout
+    assert install.CONV_MARK in card and install.SCOPE_MARK in card
+    assert tree(target) == GOLDEN.read_text().splitlines()
+
+
+# ---- the oracle-build question: the firewall's block, the record, each build's checksum file, upgrade, doctor -------
+
+def _copy(game, tmp_path, name="copy"):
+    repo = tmp_path / name
+    shutil.copytree(game, repo)
+    return repo
+
+
+def _audit(repo):
+    return run([PY, "tools/audit_public.py"], cwd=repo, check=False)
+
+
+def _oracle(repo, cmd, *args, env=None):
+    return run([PY, ROOT / "scripts/oracle.py", cmd, "--repo", repo, *args], env=env, check=False)
+
+
+def test_firewall_refuses_a_debug_file_of_any_build(game, tmp_path):
+    """S9 wrote the block: the game's audit exits 1 on a tracked symbol file, debug executable or debug database, in
+    any folder and in any letter case, and names the `glob:` line. A text file named like a link map passes."""
+    fw = (game / "config/firewall.txt").read_text()
+    assert fw.count(common.FIREWALL_DEBUG) == 1 and not common.firewall_debug_due(fw), fw[-600:]
+    assert common.firewall_debug_hits(game) == []
+    repo = _copy(game, tmp_path)
+    (repo / "docs/notes.map").write_text("a note of the game\n")
+    run(["git", "-C", repo, "add", "-f", "docs/notes.map"])
+    assert _audit(repo).returncode == 0, _audit(repo).stdout
+    for rel, glob in (("x/GAME.SYM", "*.[Ss][Yy][Mm]"), ("A.cpe", "*.[Cc][Pp][Ee]"), ("x/Game.pdb", "*.[Pp][Dd][Bb]"),
+                      ("GAME.DBG", "*.[Dd][Bb][Gg]")):
+        (repo / rel).parent.mkdir(exist_ok=True)
+        (repo / rel).write_text("not a byte of any game\n")
+        run(["git", "-C", repo, "add", "-f", rel])
+        r = _audit(repo)
+        assert r.returncode == 1 and "OFFENDER %s: purge path (glob:%s)" % (rel, glob) in r.stdout + r.stderr, r.stdout + r.stderr
+        assert common.firewall_debug_hits(repo) == [rel]
+        run(["git", "-C", repo, "rm", "-q", "--cached", rel])
+    assert _audit(repo).returncode == 0
+
+
+def test_audit_refuses_a_listing_of_any_build(game, tmp_path):
+    """The proof of the kit's listing rule, which a build's disassembly meets whatever its name and its hash: a tracked
+    text file with 70 objdump-shaped lines in a row fails the audit, and one with 60 passes."""
+    repo = _copy(game, tmp_path)
+    listing = lambda n: "".join("%8x:\t27bdffc0 \taddiu\tsp,sp,-64\n" % (0x80010000 + 4 * i) for i in range(n))  # noqa: E731
+    (repo / "docs/proto-notes.txt").write_text("the prototype's first function:\n" + listing(60))
+    run(["git", "-C", repo, "add", "-f", "docs/proto-notes.txt"])
+    assert _audit(repo).returncode == 0, _audit(repo).stdout
+    (repo / "docs/proto-notes.txt").write_text("the prototype's first function:\n" + listing(70))
+    r = _audit(repo)
+    assert r.returncode == 1 and "OFFENDER docs/proto-notes.txt: disassembly-shaped content: 70 contiguous lines (cap 64)" in \
+        r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_s10_records_the_disc_scan(game):
+    """S10 wrote [oracle]: the fixture disc's one debug file, which has the PsyQ SYM magic. No build was supplied: no
+    table, no checksum file and no `required:` line. The dump's path is in the git directory, not in the record."""
+    import tomllib
+    rec = tomllib.loads((game / "config/psxdecomp.toml").read_text())
+    assert rec["oracle"] == {"checked": common.today(), "disc_debug_files": 1, "disc_psyq_sym": 1}, rec["oracle"]
+    assert not list((game / "config").glob("oracle*")) and oracle.builds(game) == []
+    assert oracle.HASH_GLOB not in common.firewall_lines((game / "config/firewall.txt").read_text(), "required")
+    assert "MAIN.SYM" not in (game / "config/psxdecomp.toml").read_text()          # counts only, never a name
+    dump = oracle.registered(game)[oracle.RETAIL]
+    assert pathlib.Path(dump).is_file() and common.local_path(game) == game / ".git" / "psxdecomp" / "local.toml"
+    assert dump not in (game / "config/psxdecomp.toml").read_text()                # the kit's environment page holds it, S8
+
+
+def test_oracle_add_refuses_a_tracked_copy(game, tmp_path):
+    """`oracle add` with a file outside the repository: its SHA-1 is in the build's checksum file under its base name,
+    the firewall reads that file, and the audit then exits 1 on a tracked copy under another name. A path inside the
+    repository is refused and writes nothing, but for the ignored home `disks/builds/<id>/`. A second build has a file
+    and a table of its own. A second worktree of the clone finds each path."""
+    import hashlib
+    repo = _copy(game, tmp_path)
+    proto = tmp_path / "outside" / "PROTO.SYM"
+    proto.parent.mkdir()
+    proto.write_bytes(b"MND\x01" + b"a prototype's symbols, invented" * 9)
+    inside = repo / "docs" / "taken.txt"
+    shutil.copyfile(proto, inside)
+    before = run(["git", "-C", repo, "status", "--porcelain"]).stdout
+    r = _oracle(repo, "add", "--id", "proto-1999-01-01", "--path", inside)
+    assert r.returncode == 1 and "inside the repository" in r.stdout and "Nothing was written" in r.stdout, r.stdout
+    assert run(["git", "-C", repo, "status", "--porcelain"]).stdout == before and not list((repo / "config").glob("oracle*"))
+    inside.unlink()
+    r = _oracle(repo, "add", "--id", "proto-1999-01-01", "--path", proto, "--class", "prototype", "--page", "https://example.org/proto")
+    assert r.returncode == 0 and "proto-1999-01-01: 1 file(s) hashed (1 new), no stated hash; path registered" in r.stdout, r.stdout
+    assert "AUDIT OK" in r.stdout and "NEXT commit config/oracle.proto-1999-01-01.sha1 config/firewall.txt config/oracle.toml" in r.stdout
+    sha = hashlib.sha1(proto.read_bytes()).hexdigest()
+    held = (repo / "config/oracle.proto-1999-01-01.sha1").read_text()
+    assert "%s  PROTO.SYM\n" % sha in held
+    assert str(tmp_path) not in held + (repo / "config/oracle.toml").read_text() + (repo / "config/psxdecomp.toml").read_text()
+    assert common.firewall_lines((repo / "config/firewall.txt").read_text(), "required").count(oracle.HASH_GLOB) == 1
+    assert run(["git", "-C", repo, "status", "--porcelain"]).stdout.split() == [
+        "M", "config/firewall.txt", "??", "config/oracle.proto-1999-01-01.sha1", "??", "config/oracle.toml"]    # never commits
+    # the ignored home inside the repository: a second build, with a file and a table of its own
+    home = repo / "disks" / "builds" / "slpm-00000"
+    home.mkdir(parents=True)
+    (home / "GAME.SYM").write_bytes(b"MND\x01another region, invented")
+    r = _oracle(repo, "add", "--id", "slpm-00000", "--path", home, "--class", "region")
+    assert r.returncode == 0 and "AUDIT OK" in r.stdout, r.stdout
+    assert [b["id"] for b in oracle.builds(repo)] == ["proto-1999-01-01", "slpm-00000"]
+    assert (repo / "config/oracle.proto-1999-01-01.sha1").read_text() == held
+    assert "GAME.SYM" in (repo / "config/oracle.slpm-00000.sha1").read_text() and "PROTO.SYM" not in (repo / "config/oracle.slpm-00000.sha1").read_text()
+    assert "disks" not in run(["git", "-C", repo, "status", "--porcelain"]).stdout     # git sees no file of the home
+    # a second worktree of the clone: the same local record, and no path in a commit
+    run(["git", "-C", repo, "add", "config"])
+    run(["git", "-C", repo, "commit", "-q", "--no-verify", "-m", "two builds"])
+    other = tmp_path / "second-worktree"
+    run(["git", "-C", repo, "worktree", "add", "-q", other, "-b", "second"])
+    assert _oracle(other, "locate", "--id", "proto-1999-01-01").stdout == "%s\n" % proto
+    assert _oracle(other, "locate", "--id", "slpm-00000").stdout == "%s\n" % home
+    assert pathlib.Path(_oracle(other, "locate", "--id", "retail").stdout.strip()).is_file()
+    assert run(["git", "-C", repo, "grep", "-l", "-F", str(tmp_path), "HEAD"], check=False).stdout == ""
+    # the audit refuses a tracked copy of a file of a build, under another name and with no debug extension
+    shutil.copyfile(proto, inside)
+    run(["git", "-C", repo, "add", "-f", "docs/taken.txt"])
+    r = _audit(repo)
+    assert r.returncode == 1 and "OFFENDER docs/taken.txt: game-derived content: sha1 == config/oracle.proto-1999-01-01.sha1:PROTO.SYM" in \
+        r.stdout + r.stderr, r.stdout + r.stderr
+    r = _oracle(repo, "add", "--id", "proto-1999-01-01", "--path", proto)        # and the command says so itself
+    assert r.returncode == 1 and "FAIL the audit refuses the tree" in r.stdout, r.stdout
+
+
+def test_oracle_measure_of_a_second_build(game, tmp_path):
+    """S4's measure on the fixture's second build (make_disc.py --proto: the first build's text moved by 20 words, one
+    more function and its string): the line with the floors, `measured` in the build's table and no class from it,
+    the reversed control near 0, and the string's text in no table (G12)."""
+    repo = _copy(game, tmp_path)
+    proto = pathlib.Path(run([PY, ROOT / "fixtures/homebrew-psx/make_disc.py", "--proto", tmp_path / "proto"]).stdout.split()[1])
+    r = _oracle(repo, "measure", "--id", "proto-1999-01-01", "--path", proto.parent)
+    assert r.returncode == 0 and r.stdout == (
+        "ORACLE measure proto-1999-01-01: exe 512 of 512 words in 1 runs (100.0%); build-only strings 1 (1 with a "
+        "reference); floor: an unrelated PsyQ game maps 22-25%, a sister game 64-65%\n"), r.stdout + r.stderr
+    assert _oracle(repo, "add", "--id", "proto-1999-01-01", "--path", proto.parent, "--class", "prototype").returncode == 0
+    r = _oracle(repo, "measure", "--id", "proto-1999-01-01")                       # the registered copy and dump
+    assert "  changed config/oracle.toml\nNEXT commit config/oracle.toml\n" in r.stdout, r.stdout
+    assert {k: oracle.builds(repo)[0][k] for k in ("class", "measured")} == {"class": "prototype", "measured": "exe 100.0%"}
+    first = pathlib.Path(oracle.registered(repo)[oracle.RETAIL])
+    exe = oracle.boot_exe(first, oracle.identify.load_probe("psx")[1])
+    words = struct.unpack("<%dI" % ((len(exe) - 2048) // 4), exe[2048:])
+    back = tmp_path / "back" / "BACK.EXE"
+    back.parent.mkdir()
+    back.write_bytes(exe[:2048] + struct.pack("<%dI" % len(words), *words[::-1]))
+    r = _oracle(repo, "measure", "--id", "proto-1999-01-01", "--path", proto, "--dump", back, "--dry-run")
+    assert float(re.search(r"\(([\d.]+)%\)", r.stdout).group(1)) < 5, r.stdout          # the reversed control
+    texts = (repo / oracle.MEASURED / "proto-1999-01-01.strings.txt").read_text()
+    assert "proto build %d" in texts
+    held = [p for p in repo.rglob("*.tsv") if "proto build" in p.read_text(errors="replace")]
+    assert held == [] and run(["git", "-C", repo, "grep", "-l", "-F", "proto build", "HEAD"], check=False).stdout == ""
+
+
+def test_upgrade_adds_the_firewall_block_and_asks_for_the_record(game, tmp_path):
+    """A game of an earlier psxdecomp (no block, no [oracle]): the plan lists `firewall-debug` as psxdecomp's and
+    `record-oracle` as the developer's. Apply restores the block, and the next plan holds no psxdecomp action."""
+    import tomllib
+
+    import upgrade
+    repo = _copy(game, tmp_path)
+    fw, rec = repo / "config/firewall.txt", repo / "config/psxdecomp.toml"
+    whole = fw.read_text()
+    fw.write_text(whole.replace("\n" + common.FIREWALL_DEBUG, ""))
+    text = rec.read_text()
+    rec.write_text(text.split("\n# [oracle]:")[0] + "\n")
+    old = tomllib.loads(rec.read_text())
+    assert "oracle" not in old and old == {k: v for k, v in tomllib.loads(text).items() if k != "oracle"}
+    acts = {x["key"]: x for x in upgrade.plan(repo)}
+    assert acts["firewall-debug"]["owner"] == "psxdecomp" and acts["record-oracle"]["owner"] == "manual", sorted(acts)
+    assert "psxd oracle record --repo . --dump <your dump>` " in acts["record-oracle"]["what"]
+    assert "psxd oracle add --repo . --id <id>" in acts["record-oracle"]["what"]
+    assert [k for k, x in acts.items() if x["owner"] == "psxdecomp"] == ["firewall-debug"], sorted(acts)
+    r = run([PY, ROOT / "scripts/upgrade.py", "apply", "--repo", repo])
+    assert "changed config/firewall.txt" in r.stdout and "config/firewall.txt" in r.stdout.splitlines()[-1], r.stdout
+    assert fw.read_text() == whole and _audit(repo).returncode == 0
+    again = {x["key"]: x["owner"] for x in upgrade.plan(repo)}
+    assert "psxdecomp" not in again.values() and again.get("record-oracle") == "manual", again
+    r = _oracle(repo, "record", "--dump", tmp_path / "nope.cue")
+    assert r.returncode == 1 and r.stdout.startswith("FAIL "), r.stdout
+    (repo / "docs/GAME.SYM").write_text("a note\n")                              # with such a file tracked: no write
+    run(["git", "-C", repo, "add", "-f", "docs/GAME.SYM"])
+    fw.write_text(whole.replace("\n" + common.FIREWALL_DEBUG, ""))
+    act = next(x for x in upgrade.plan(repo) if x["key"] == "firewall-debug")
+    assert act["owner"] == "manual" and "docs/GAME.SYM" in act["what"], act
+
+
+def test_doctor_oracle_row(game, toolchain, tmp_path):
+    """doctor's `oracle` row on a real S10 tree: the record of S10 (OK), no [oracle] (WARN with the command, which
+    writes the table S10 wrote), a build on this machine (OK, counted). The row reads no environment variable. The
+    other states: doctor.py's self-test."""
+    def row(repo):
+        r = run([PY, ROOT / "scripts/doctor.py", "--repo", repo, "--offline", "--only", "oracle"],
+                env={"PSXDECOMP_BYO_ORACLE_PATH": str(repo / "tools")}, check=False)
+        m = re.search(r"^DOCTOR oracle +(\S+) +(.*)$", r.stdout, re.M)
+        assert m, r.stdout
+        return m[1], m[2], r.returncode
+
+    scan = "disc: 1 debug file(s), 1 with the PsyQ SYM magic, checked %s" % common.today()
+    st, detail, rc = row(game)
+    assert (st, rc) == ("OK", 0) and detail == scan + "; 0 build(s): 0 on this machine", detail
+    repo = _copy(game, tmp_path)
+    rec = repo / "config/psxdecomp.toml"
+    kept = rec.read_text()
+    rec.write_text(kept.split("\n# [oracle]:")[0] + "\n")
+    st, detail, rc = row(repo)
+    assert (st, rc) == ("WARN", 0) and "psxd oracle record --repo . --dump <your dump>" in detail, detail
+    r = _oracle(repo, "record", "--dump", toolchain["dump"])                     # the command the row names
+    assert r.returncode == 0 and "disc: 1 debug file(s), 1 with the PsyQ SYM magic; 0 build(s)" in r.stdout, r.stdout
+    assert rec.read_text() == kept                                               # the same table S10 wrote
+    proto = tmp_path / "outside" / "PROTO.SYM"
+    proto.parent.mkdir()
+    proto.write_bytes(b"MND\x01invented")
+    assert _oracle(repo, "add", "--id", "proto-1999-01-01", "--path", proto).returncode == 0
+    st, detail, rc = row(repo)
+    assert (st, rc) == ("OK", 0) and detail == scan + "; 1 build(s): 1 on this machine", detail
+
+
+def test_s10_records_the_build_the_gate_was_given(toolchain, tmp_path):
+    """The answers file names the developer's own copy of another build and its id: S10 writes the build's table, its
+    checksum file and the firewall's `required:` line into the handoff commit, the tree is clean, and the two paths
+    are in the git directory alone. The dump's own path, given as the copy, gives no build: the retail manifest covers
+    that disc."""
+    proto = tmp_path / "outside" / "PROTO.SYM"
+    proto.parent.mkdir()
+    proto.write_bytes(b"MND\x01another build, invented")
+
+    def boot(name, byo, more=""):
+        answers = tmp_path / ("%s.answers.txt" % name)
+        answers.write_text((ROOT / "fixtures/answers.psx.txt").read_text().rstrip("\n")
+                           + "\nPSXDECOMP_BYO_ORACLE_PATH: %s\n%s" % (byo, more))
+        target = tmp_path / name
+        r = run([PY, ROOT / "scripts/install.py", "run", "--target", target, "--answers", answers, "--dump",
+                 toolchain["dump"], "--config-dir", toolchain["cfg"], "--pa3-dir", toolchain["cfg"] / "pa3",
+                 "--intake-fixture", "--no-fetch"], env=toolchain["env"])
+        assert "BOOTSTRAP OK through S10" in r.stdout, r.stdout
+        assert run(["git", "-C", target, "status", "--porcelain"]).stdout == ""
+        return target, r.stdout
+
+    target, out = boot("byo", proto, "PSXDECOMP_BYO_ORACLE_ID: proto-1999-01-01\nPSXDECOMP_BYO_ORACLE_CLASS: prototype\n"
+                                     "PSXDECOMP_BYO_ORACLE_PAGE: https://example.org/proto\n")
+    assert "oracle build proto-1999-01-01: 1 file(s) hashed (1 new), no stated hash; path registered" in out, out[-1200:]
+    assert "oracle disc: 1 debug file(s)" in out and "; 1 build(s)" in out, out[-1200:]
+    new = ["config/oracle.proto-1999-01-01.sha1", "config/oracle.toml"]
+    handoff = run(["git", "-C", target, "show", "--name-only", "--format=", "HEAD"]).stdout.split()
+    assert set(new) | {"config/firewall.txt", "config/psxdecomp.toml"} <= set(handoff), handoff
+    assert tree(target) == sorted(GOLDEN.read_text().splitlines() + new)
+    build = oracle.builds(target)[0]
+    assert (build["id"], build["class"], build["page"], build["files"]) == ("proto-1999-01-01", "prototype", "https://example.org/proto", 1)
+    assert common.firewall_lines((target / "config/firewall.txt").read_text(), "required").count(oracle.HASH_GLOB) == 1
+    assert run([PY, "tools/audit_public.py"], cwd=target, check=False).returncode == 0
+    assert str(tmp_path) not in "".join((target / f).read_text() for f in new + ["config/psxdecomp.toml"])
+    assert oracle.registered(target) == {"proto-1999-01-01": str(proto), oracle.RETAIL: str(toolchain["dump"])}
+    assert (target / ".git" / "psxdecomp" / "local.toml").is_file()
+    assert run(["git", "-C", target, "grep", "-l", "-F", str(proto)], check=False).stdout == ""
+    assert re.search(r"DOCTOR oracle\s+OK .*; 1 build\(s\): 1 on this machine", run(
+        [PY, ROOT / "scripts/doctor.py", "--repo", target, "--offline", "--only", "oracle"]).stdout)
+    other = tmp_path / "byo-second"                                              # a second worktree locates the build
+    run(["git", "-C", target, "worktree", "add", "-q", other, "-b", "second"])
+    assert run([PY, ROOT / "scripts/oracle.py", "locate", "--repo", other, "--id", "proto-1999-01-01"]).stdout == "%s\n" % proto
+    target, out = boot("own", toolchain["dump"])
+    assert "the copy is your dump" in out and not list((target / "config").glob("oracle*")), out[-800:]
     assert tree(target) == GOLDEN.read_text().splitlines()

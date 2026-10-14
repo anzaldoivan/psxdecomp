@@ -52,10 +52,10 @@ ref      = "6f6be18615d9b42b1ce07740780623c3cf6cbd2c"
 licence  = "unstated in the repository"
 class    = "facts"
 tier     = "core"
-covers   = "the loader's PsyQ detection and per-version library signatures (data/)"
-topics   = ["ghidra-loader", "psyq-detection", "psyq-signatures", "library-identification", "overlays"]
-paths    = ["README.md", "data"]
-used_by  = "mmx6 R1.2-001; its signatures were the 1.2 authority for library identity (psyq_version 4.7.0, 811 sig functions); BFM (4 docs)"
+covers   = "the loader's PsyQ detection and per-version library signatures (data/); its import script for a PsyQ symbol file (ghidra_scripts/ImportPSX_SYM.java, read at this commit on 2026-10-13)"
+topics   = ["ghidra-loader", "psyq-detection", "psyq-signatures", "library-identification", "overlays", "psyq-sym"]
+paths    = ["README.md", "data", "ghidra_scripts"]
+used_by  = "mmx6 R1.2-001; its signatures were the 1.2 authority for library identity (psyq_version 4.7.0, 811 sig functions); BFM (4 docs); the symbol import script: no use yet"
 checked  = "2026-10-01"
 
 # ---- optional: fetched on demand ----------------------------------------------------------------------------------
@@ -169,6 +169,19 @@ paths    = ["README.md", "values.yaml", "platforms/ps1", "templates/ps1"]
 used_by  = "BFM P33 E1 (tools/decompme_replica.sh, docs/decompme-preset.md: the preset proven locally before it was saved); the kit manifest's decompme_replica.sh row"
 checked  = "2026-10-01"
 
+[[ref]]
+name     = "psx-mnd-sym"
+url      = "https://github.com/mefistotelis/psx_mnd_sym"
+ref      = "546480d905779c5d40efb0d515a2b5777d616bd4"
+licence  = "Unlicense (its UNLICENSE file)"
+class    = "adapt"
+tier     = "optional"
+when     = "a symbol file is supplied (a PsyQ .SYM with the MND magic) and you need its text, or a C header of its types and declarations, without Ghidra"
+covers   = "the PsyQ MND symbol format as this Go parser reads it at this commit; its default output is the text of the SDK's own symbol dumper"
+topics   = ["psyq-sym", "symbol-file", "types", "declarations", "oracle-build"]
+used_by  = "FedericoMilesi/soul-re docs/CONTRIBUTING.MD at 59d1ee8 (read 2026-10-13): a declarations header from its prototype's symbol file, through a fork of this parser; no psxdecomp game yet"
+checked  = "2026-10-13"
+
 # ---- byo: never fetched -------------------------------------------------------------------------------------------
 
 [[ref]]
@@ -181,6 +194,17 @@ topics   = ["psyq", "libraries", "headers", "libref", "libover", "sample-source"
 covers   = "the release matching the game's stamp (config/psxdecomp.toml [psyq]); instructions only, never a URL (psxdecomp docs/REFS.md)"
 used_by  = "BFM: runtime library 4.2, the 4.6 libraries and the 4.0 sample C source (linked build, drafting shapes)"
 note     = "Never fetched. The user gives a local path; only that a path was given is recorded. Purged by the firewall (tools/psyq/)."
+
+[[ref]]
+name     = "oracle-build"
+url      = ""
+ref      = ""
+licence  = "proprietary (the game's publisher)"
+class    = "byo"
+topics   = ["oracle-build", "symbols", "link-map", "prototype", "debug-build", "names", "function-boundaries"]
+covers   = "another build of the same program that carries more than the target: a symbol file on the developer's own disc, another region's disc, a prototype, a demo, a port. It speaks for its own build only (see the traps). Instructions only, never a URL (psxdecomp docs/REFS.md)"
+used_by  = "the practice of three PS1 projects (READMEs read 2026-10-13): Caesar0007/NFSHS-PSX-decomp (a symbol file on the retail disc), diabpsx/psx_decomp (the Japanese disc), FedericoMilesi/soul-re (a prototype); no psxdecomp game yet"
+note     = "Never fetched. The developer gives a local path outside the repository (PSXDECOMP_BYO_ORACLE_PATH); only that a path was given is recorded. No name enters the repository before its bytes agree."
 
 # ---- links --------------------------------------------------------------------------------------------------------
 
@@ -215,6 +239,25 @@ class    = "link"
 licence  = "CC BY 3.0 (site text)"
 topics   = ["prototypes", "versions", "unused-content", "debug-menus"]
 used_by  = "BFM (3), mmx6 (prior-art L8)"
+note     = "A person reads the live page. The site refuses AI tools by policy and serves an agent a decoy with injected instructions (read 2026-10-13): no agent fetches tcrf.net. An agent takes the fact from other sources, then checks the page's Wayback Machine snapshot."
+
+[[ref]]
+name     = "hidden-palace"
+url      = "https://hiddenpalace.org"
+class    = "link"
+licence  = "public domain (site text, as the site states; read 2026-10-13)"
+topics   = ["prototypes", "review-builds", "debug-symbols", "build-dates", "oracle-build"]
+covers   = "prototype and review builds by build date; a build's page states whether it contains debugging symbols. Read the page only: never fetch a build"
+used_by  = "psxdecomp 0.6.0 tier 3 run on Dino Crisis 2 (2026-10-13): its S3 added a row for a prototype page, whose debugging-symbols line reads N/A"
+
+[[ref]]
+name     = "psxdatacenter"
+url      = "https://psxdatacenter.com"
+class    = "link"
+licence  = "n/a"
+topics   = ["serials", "regions", "release-list", "versions"]
+covers   = "the releases of a game by serial and region: which discs exist, not what their bytes hold"
+used_by  = "mmx5 docs/prior-art.md L10 (the target release among four serials, read 2026-10-13); psxdecomp 0.6.0 tier 3 run on Dino Crisis 2 (2026-10-13)"
 
 [[ref]]
 name     = "redump"
@@ -232,6 +275,54 @@ licence  = "unstated (source: github.com/decompals/decompedia)"
 topics   = ["gcc-patterns", "codegen-idioms", "platform-notes"]
 covers   = "technique leads; its PSX gcc 'generally 2.6-2.8' is contradicted by PsyQ 4.6 shipping gcc 2.95.2 (psyq.toml, seen 2026-10-01)"
 used_by  = "BFM docs/matching-cookbook.md 28a (GCC patterns, PS1-applicable subset; 7 citations)"
+
+# ---- exemplar projects: how other agent-driven decompilations keep "matched" apart from "finished". Links only:
+# read them for practice, copy nothing (the licence of each row says what may be adapted) -------------------------
+[[ref]]
+name     = "parasite-eve-decomp"
+url      = "https://github.com/khasinski/parasite-eve-decomp"
+class    = "link"
+licence  = "none selected (its LICENSE.md, licence read 2026-10-12 at commit a357ac0c and 2026-10-14 at c578deb): ideas only, no text and no code"
+topics   = ["exemplar", "debt-baseline", "verify-gate", "asm-evidence", "pinned-toolchain", "finished-file", "objdiff-complete", "file-names"]
+covers   = "practice on a PS1 project (seen 2026-10-12 and 2026-10-14): debt baselines that must equal the tree, one verify gate, an evidence record for each assembly function, a toolchain that refuses a patched checkout, a definition of a finished file apart from a matched one, a `complete` mark for a fully matched C unit, file names that start with a placeholder"
+used_by  = "psxdecomp 0.6.0 (2026-10-12): the equal-baseline rule of the debt check, the `make verify` convention, the dirty-checkout check of the toolchain pins, the idea of the finished-file rule (rules/FIN1.md, its text written fresh); psxdecomp 0.6.0 (2026-10-14): a `complete` mark on decomp.dev for a fully matched C unit, a file name that starts with a placeholder counted as kind filename, also with a suffix"
+
+[[ref]]
+name     = "kings-field-decomp"
+url      = "https://github.com/sushi-shi/kings-field-decomp"
+class    = "link"
+licence  = "CC0-1.0 (read 2026-10-12 at commit e4930cd2; kings-field-2-decomp 7a8e5f04 and homm2-decomp 716e50b3 are CC0-1.0 too)"
+topics   = ["exemplar", "names-ledger", "bank-ledger", "budgets", "triage-order"]
+covers   = "practice on two PS1 projects and one PC project of the same author (seen 2026-10-12): a naming-review ledger with evidence and a decision, a bank with a high-water mark, a time and an attempt budget for each function"
+used_by  = "psxdecomp 0.6.0 (2026-10-12): the columns of config/names.tsv, the budgets and the triage order of the campaign templates"
+
+[[ref]]
+name     = "snowboardkids2-decomp"
+url      = "https://github.com/cdlewis/snowboardkids2-decomp"
+class    = "link"
+licence  = "none (no licence file, read 2026-10-12 at commit 3b1bd5db): ideas only, no text and no code"
+topics   = ["exemplar", "guard-hooks", "give-up-report", "agent-workflow"]
+covers   = "practice on an N64 project (seen 2026-10-12): hooks that refuse an edit of assembly and hash files, a fixed report when an agent gives up on a function"
+used_by  = "psxdecomp 0.6.0 (2026-10-12): the guard hook and its default rules, the give-up report of the campaign templates; (2026-10-13, its history) the rules that keep a session from a commit with no hook, and cleanup and names as separate work after the match"
+
+[[ref]]
+name     = "ff7-decomp"
+url      = "https://github.com/Xeeynamo/ff7-decomp"
+class    = "link"
+licence  = "none stated (read 2026-10-13 at commit ae7d9d45): ideas only, no text and no code"
+topics   = ["exemplar", "preprocessed-lint", "naming-rule"]
+covers   = "practice on a PS1 project with no AI contributions (seen 2026-10-13): a linter that runs the game's own preprocessor before it scans and takes the file of a finding from the line markers, clang-tidy with no tolerated finding, the rule that a name is not required as part of decompiling code and that a wrong name is debt"
+used_by  = "psxdecomp 0.6.0 (2026-10-13): the `[floor] cpp` view of the debt count (pin, goto, barrier, asm), and the rule of rules/NAME1.md that no check asks for a name"
+
+# ---- an oracle-build precedent. A link only: its licence grants nothing, so read it for the practice ---------------
+[[ref]]
+name     = "nfshs-psx-decomp"
+url      = "https://github.com/Caesar0007/NFSHS-PSX-decomp"
+class    = "link"
+licence  = "all rights reserved (its LICENSE grants no licence, read 2026-10-13 at commit e6547638): facts only, no text and no code"
+topics   = ["oracle-build", "own-disc-symbols", "symbol-file", "byo"]
+covers   = "practice on a PS1 project (seen 2026-10-13): the retail disc holds the game's own symbol file; the project keeps it outside the repository, refuses a file of another size, and dumps it to text on demand (tools/retail_sym.py)"
+used_by  = "psxdecomp (2026-10-13): the debug-leftover scan of S2's probe, the own-disc class of S3's builds question"
 
 # ---- which source wins, per topic ---------------------------------------------------------------------------------
 
@@ -267,6 +358,17 @@ order = ["psyq-sdk", "psy-q-decomp", "sotn-decomp"]
 rule  = "the byo SDK of the stamped version wins; psy-q-decomp only at that version; sotn's psxsdk is a fallback with non-Sony extensions"
 
 [[authority]]
+topic = "the exact name of a PsyQ library function"
+order = ["ghidra-psx-ldr", "psyq-sdk", "psy-q-decomp"]
+rule  = "take the name as the signature or the SDK header of the linked version spells it; never invent, translate or shorten an SDK name"
+
+[[authority]]
+topic = "what a function or a variable of the game's own code is called"
+order = ["oracle-build"]
+scope = "psxdecomp docs/REFS.md, Oracle builds (2026-10-13)"
+rule  = "symbols on the target disc itself win; then another build of the same program, only where the function's bytes are identical at the mapped address; then a sibling game's symbols; then a wiki or a manual, which gives a word and proves no address"
+
+[[authority]]
 topic = "hardware"
 order = ["psx-spx"]
 rule  = "psx-spx over any SDK header comment"
@@ -292,6 +394,16 @@ do       = "gcc-2.7.2-src pins the /old-gnu/ tarball by sha256"
 what     = "sotn-decomp's include/psxsdk/libgte.h adds 7 gte_* macros Sony's inline_c.h does not have"
 evidence = "BFM Phase 36 log"
 do       = "treat sotn's psxsdk headers as a project's, not Sony's; check the byo SDK"
+
+[[trap]]
+what     = "a byte-identical match proves what the code does, not what it is called: a matched function can carry a name that says another behaviour"
+evidence = "sushi-shi/homm2-decomp docs/semantic-naming-audit.md at commit 716e50b (read 2026-10-12): its audit of matched code found names that claimed a behaviour of another routine"
+do       = "record every name with its evidence in config/names.tsv; check a game term against a source in this file before it is accepted"
+
+[[trap]]
+what     = "a prototype's symbols speak for the prototype, not for retail addresses: code moves, grows and disappears between builds, and another region's disc is another build too"
+evidence = "FedericoMilesi/soul-re and diabpsx/psx_decomp each target the build that carries the symbols (a prototype, the Japanese disc), not another one (READMEs read 2026-10-13)"
+do       = "map a name to the target by a byte check: the function body is identical at both addresses, or the name stays a lead; when most bodies differ, weigh the symbol-bearing build as the first target"
 
 [[trap]]
 what     = "a build rule's name is not its toolchain: mmx4's cc1_263/aspsx_263 rules run gcc 2.7.2 and maspsx 2.56"

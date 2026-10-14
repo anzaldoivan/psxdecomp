@@ -11,10 +11,37 @@ You confirm one repository lead for a PS1 decomp bootstrap. The brief gives: the
 1. `git clone --depth 1 <url> <clone folder>` (only this command form; no other network access). Record
    `git -C <clone> rev-parse HEAD`.
 2. Read only what answers the brief: build scripts, Makefiles, toolchain download steps, config, the licence file,
-   counts (the Grep tool in count mode; Bash is limited to the clone and `rev-parse`). Read build *rules* as they run, not as they are named (evidence, 2026-10-01: mmx6 found X4's rules named
-   `cc1_263` running gcc 2.7.2; mmx6 docs/prior-art.md, 2026-10-01).
+   counts. Count with the Grep tool in count mode. Bash is limited to the clone and `rev-parse`. Read build *rules*
+   as they run, not as they are named.
+   Evidence, 2026-10-01: mmx6 found X4's rules named `cc1_263` running gcc 2.7.2 (mmx6 docs/prior-art.md, 2026-10-01).
 3. Never copy code, text or data from the clone into the report — facts only: paths, counts, versions, flags, the
    commit. Never copy anything from the clone into the repository being bootstrapped.
+4. When the brief says "conventions", record which of these exist, by path and line only:
+   - contribution and style documents;
+   - formatter and lint configs;
+   - the workflow steps that run them on a pull request;
+   - where an AI policy sits.
 
-Report (Markdown, at the output path): the repository, the commit read, the licence (from its file, or `unstated`),
-the facts found with their file paths, and what each changes for the bootstrap. Return at most 10 lines.
+   `none found` is a result. Their text stays in the clone: a style guide is the project's own writing.
+
+Report (Markdown, at the output path): the repository, the commit read, and the licence (from its file, or
+`unstated`). Then the facts found with their file paths, and what each changes for the bootstrap. Return at most 10
+lines.
+
+A rule read as it runs, not as it is named. The repository is invented:
+
+<example>
+
+```
+# repo — example/sibling-decomp @ 0123abc (2026-01-15)
+Licence: MIT (LICENSE).
+## Facts
+- Makefile:41 names the rule `cc1_258`. tools/toolchain.mk:12 downloads `gcc-2.7.1-psx.tar.gz`, and Makefile:44
+  runs that binary. The compiler that runs is gcc 2.7.1. The name of the rule says 2.5.8.
+- Makefile:52 passes `--aspsx-version=2.43` to maspsx.
+- symbols.us.txt: 1,204 lines (Grep count).
+## What it changes
+- The compiler lead is gcc 2.7.1 with aspsx 2.43, not 2.5.8. It is the first rung of the 1.4 ladder, never the pin.
+```
+
+</example>

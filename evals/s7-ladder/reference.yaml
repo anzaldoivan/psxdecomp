@@ -1,0 +1,6 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "The intake is done: PROJECT_CONTEXT.md carries the kit's eleven-phase ladder and is committed. S7 is marked. Stopped at --until S7; the next stage is S8, the kit's installer (`/psxdecomp:new --resume`)."
+bad:
+  - "This is not a plain session. Exit, then run `claude --agent plain` here."
+  - "I wrote the constitution and the generation plan."

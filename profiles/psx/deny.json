@@ -7,6 +7,12 @@
       "Bash(git * push)",
       "Bash(* --no-verify *)",
       "Bash(* --no-verify)",
+      "Bash(git commit -n *)",
+      "Bash(git commit -n)",
+      "Bash(git commit * -n *)",
+      "Bash(git commit * -n)",
+      "Bash(*core.hooksPath*)",
+      "Bash(*core.hookspath*)",
       "Bash(gh pr *)",
       "Bash(gh repo *)",
       "Bash(gh api * -X *)",
@@ -18,7 +24,12 @@
       "Bash(python3 tools/psxd_publish.py land)",
       "Bash(python3 tools/psxd_publish.py settings *)",
       "Bash(python3 tools/psxd_publish.py verify-pr *)",
-      "Bash(python3 tools/psxd_publish.py hook *)"
+      "Bash(python3 tools/psxd_publish.py hook *)",
+      "Edit(/asm/**)",
+      "Edit(/config/check.*.sha)",
+      "Edit(/config/medium.sha1)",
+      "Edit(/config/debt-baseline.txt)",
+      "Edit(/config/style-ratchet.txt)"
     ]
   }
 }

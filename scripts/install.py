@@ -28,6 +28,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import answers as answers_mod  # noqa: E402
 import common  # noqa: E402
 import fetch_refs  # noqa: E402
+import floor  # noqa: E402
+import plan  # noqa: E402
 import publish  # noqa: E402
 
 BOOT = ".run/bootstrap"
@@ -263,6 +265,21 @@ def upgrade_ask(c: Ctx) -> str:
     return "; pa.json upgrade: ask (commit %s)" % sha
 
 
+def settle_pa_json(c: Ctx) -> str:
+    """PA3's session-start hook writes keys of its own into .claude/pa.json (a `preset` line, PA3 3.14.2) after S6
+    committed that file, and the kit's installer refuses a tree that is not clean. When that file is the only change,
+    commit it. Any other change stays the developer's: the kit's dry run names it. Returns a note for the DONE line."""
+    if c.dry or c.git("status", "--porcelain", check=False).stdout.splitlines() != [" M .claude/pa.json"]:
+        return ""
+    try:
+        json.loads(common.read(c.p(".claude/pa.json")))
+    except ValueError:
+        return ""
+    sha = c.commit([".claude/pa.json"], "PA3's own change of .claude/pa.json (its session-start hook), committed before "
+                                        "the kit's installer")
+    return "; pa.json committed first (%s)" % sha
+
+
 PA3_GI_HEAD = "# Project Architect 3.0"
 
 
@@ -310,10 +327,17 @@ WROTE_RE = re.compile(r"^- (created|changed|edited|appended) `([^`]+)`")
 
 
 def s8_kit(c: Ctx) -> str:
-    """The pinned decomp-architect installer: its dry run first, then the run; the two path lists are compared."""
+    """The pinned decomp-architect installer: its dry run first, then the run; the two path lists are compared. A
+    constitution that does not name the eleven ladder phases is a recorded deviation, never a failure: the kit lets
+    the intake merge phases."""
     kit, devs = common.resolve_kit(c.a.force_untested, c.a.kit)
     for d in devs:
         c.deviation(d)
+    ctx = c.p(plan.CONTEXT)
+    missing = plan.ladder_missing(common.read(ctx)) if ctx.is_file() else []
+    if missing:
+        c.deviation("%s names %d of the %d ladder phases; not named: %s (the roadmap floor checks the plan's ladder)" % (
+            plan.CONTEXT, len(plan.LADDER) - len(missing), len(plan.LADDER), ", ".join("1.%d" % n for n in missing)))
     record = c.p("docs/decomp-architect-install.md")
     if record.is_file():
         return "kit already installed (docs/decomp-architect-install.md)%s" % readme_standard(c, kit)
@@ -326,6 +350,7 @@ def s8_kit(c: Ctx) -> str:
     c.write(KIT_ANSWERS, answers_mod.render(kit_vals, note))
     if c.dry:
         return "would run the kit's dry run and install"
+    settled = settle_pa_json(c)
     py = c.python()
     base = [py, kit / "install.py", "--project", c.target, "--answers", c.p(KIT_ANSWERS)]
     r = common.run(base + ["--dry-run"], check=False, timeout=600)
@@ -342,8 +367,8 @@ def s8_kit(c: Ctx) -> str:
     if extra:
         c.deviation("the kit's dry run named paths its run did not write: %s" % ", ".join(extra[:6]))
     last = [l for l in r.stdout.splitlines() if l.startswith("summary:")]
-    return "%s; dry run listed %d of the %d written paths%s" % (last[0] if last else "kit installed",
-                                                               len(would & wrote), len(wrote), readme_standard(c, kit))
+    return "%s; dry run listed %d of the %d written paths%s%s" % (
+        last[0] if last else "kit installed", len(would & wrote), len(wrote), readme_standard(c, kit), settled)
 
 
 README_TEMPLATE = common.PLUGIN_ROOT / "profiles" / "psx" / "README.md.template"
@@ -455,10 +480,13 @@ def s9_refs(c: Ctx) -> str:
     if "!/refs/" not in ig.splitlines():
         c.write(".ignore", ig + ("" if not ig or ig.endswith("\n") else "\n") + "%s: search refs/ though git ignores "
                 "it ----\n!/refs/\n" % PSX_MARK)
-    fw = c.p("config/firewall.txt")
-    if fw.is_file() and "purge: refs/" not in common.read(fw):
-        c.write("config/firewall.txt", common.read(fw).rstrip("\n") +
-                "\n\n%s: the reference library (upstream clones; never tracked) ----\npurge: refs/\n" % PSX_MARK)
+    fw = c.p(common.FIREWALL)
+    if fw.is_file():                              # one write: the purge line, and the block for a debug file of any build
+        rules = common.read(fw)
+        if "purge: refs/" not in rules:
+            rules = (rules.rstrip("\n") + "\n\n%s: the reference library (upstream clones; never tracked) ----\n"
+                     "purge: refs/\n" % PSX_MARK)
+        c.write(common.FIREWALL, common.with_firewall_debug(rules))
     how = c.p("HOW_WE_WORK.md")
     if how.is_file() and REFS_RULE not in common.read(how):
         c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Docs map", REFS_RULE))
@@ -517,6 +545,25 @@ def insert_in_section(text: str, heading: str, line: str) -> str:
 # ---- S10 handoff ----------------------------------------------------------------------------------------------
 
 SCOPE_MARK = "- **This repo:**"
+CONV_MARK = "- **C conventions:**"
+
+
+def conventions_line(prior: bool) -> str:
+    """The card's conventions line: pointers, no rule text. The one drafting rule that was measured (fields by name)
+    is not written here: in a game's own brief it cost a match and 59% more per draft (docs/ECOSYSTEM.md rows K22
+    and M15, which hold its wording for a game that adopts it)."""
+    return "%s `CONTRIBUTING.md`.%s" % (CONV_MARK, " Prior-art rules and the decision: `docs/prior-art.md`." if prior else "")
+
+
+def with_conventions(card: str, line: str) -> str:
+    """The card with `line` as its one C-conventions line: an older line is replaced where it stands, else the line
+    ends the conventions section. S10 and upgrade's `card-conv` both write through here."""
+    lines = card.split("\n")
+    at = [i for i, l in enumerate(lines) if l.startswith(CONV_MARK)]
+    if not at:
+        return insert_in_section(card, "## Conventions", line)
+    lines[at[0]] = line
+    return "\n".join(l for i, l in enumerate(lines) if i not in at[1:])
 
 
 def psyq_record(medium: dict | None) -> tuple[list[str], str]:
@@ -566,44 +613,143 @@ def s10_handoff(c: Ctx) -> str:
     medium = json.loads(common.read(med)) if med.is_file() else None
     psyq_lines, psyq_v = psyq_record(medium)
     rec += psyq_lines
+    import upgrade                                  # the delivery table: the hash of each owned file S10 writes
+    record = "\n".join(rec)
+    for d in upgrade.DELIVERY:
+        if d.cls == "owned" and not d.split:
+            record = upgrade.record_set(record, "delivered", d.path, upgrade._sha((common.PLUGIN_ROOT / d.src).read_bytes()))
+    for rid in common.PROFILE_RULES:              # and of each rule's body, where the game's rules tool writes it below
+        rel, body = common.rule_paths(rid)
+        if c.p(common.STE_TOOL).is_file():
+            record = upgrade.record_set(record, "delivered", rel, upgrade._sha(common.read(body).strip().encode("utf-8")))
     # written once: a re-run on a later day leaves the record alone (/psxdecomp:upgrade is what rewrites it)
-    for rel, body in ((RECORD, "\n".join(rec)),
+    for rel, body in ((RECORD, record),
                       ("config/psxdecomp.profile.toml", common.read(common.PLUGIN_ROOT / "profiles/psx/profile.toml")),
                       ("docs/ops/host-recipe.md", common.read(common.PLUGIN_ROOT / ("profiles/psx/hosts/%s.md" % recipe)))):
         if not c.p(rel).exists():
             c.write(rel, body)
     paths = [RECORD, "config/psxdecomp.profile.toml", "docs/ops/host-recipe.md"]
+    import oracle                                 # the oracle-build question: the developer's copy first, then the scan
+    byo, dump = ans.get("PSXDECOMP_BYO_ORACLE_PATH") or None, ans.get("DUMP_PATH") or None
+    own = bool(byo and dump) and os.path.realpath(os.path.expanduser(byo)) == os.path.realpath(os.path.expanduser(dump))
+    bid = ans.get("PSXDECOMP_BYO_ORACLE_ID", "")
+    if byo and not own and not c.dry and bid not in [b["id"] for b in oracle.builds(c.target)]:
+        got, line = oracle.add(c.target, bid, byo, ans.get("PSXDECOMP_BYO_ORACLE_SHA1", "").split(),
+                               ans.get("PSXDECOMP_BYO_ORACLE_CLASS") or None, None,
+                               ans.get("PSXDECOMP_BYO_ORACLE_PAGE") or None)       # a refusal: nothing was written
+        c.written += got
+        print("     oracle build %s" % line)
+        try:                                      # the share of the dump's executable that the build holds: a measure
+            got, line = oracle.measure(c.target, bid, byo, dump)
+            c.written += got
+            print("     oracle %s" % line)
+        except common.Fail as e:                  # a copy with no executable (a symbol file alone) has no measure
+            print("     oracle measure %s: not measured (%s)" % (bid, e))
+    if not c.dry and "oracle" not in upgrade.record_tables(c.target):
+        got, line = oracle.record(c.target, (medium or {}).get("debug_artifacts"), dump)   # and the dump's path, locally
+        c.written += got
+        print("     oracle %s%s" % (line, "; the copy is your dump: the retail manifest covers it" if own else ""))
+    paths += [oracle.BUILDS, common.FIREWALL] + sorted(x.relative_to(c.target).as_posix()
+                                                       for x in c.p("config").glob("oracle.*.sha1"))
     pa_src = c.boot("prior-art.md")
     if pa_src.is_file() and not c.p("docs/prior-art.md").exists():
         c.write("docs/prior-art.md", common.read(pa_src))
+    if pa_src.is_file():                          # always: a run that S10 refused left the table staged
         paths.append("docs/prior-art.md")
     readme_policy(c)                              # S8 did it; a repo whose S8 predates it gets it here
-    for rel, body, mode in ((publish.VENDORED, common.read(common.PLUGIN_ROOT / "scripts" / "publish.py"), 0o755),
-                            (publish.WORKFLOW, common.read(common.PLUGIN_ROOT / "profiles/psx/psxdecomp-readme.yml"),
-                             None)):
-        c.write(rel, body, mode=mode)
-        paths.append(rel)
+    for d in upgrade.DELIVERY:                    # every owned file: the two vendored tools, the workflow, the floor's doc
+        if d.cls == "owned" and not d.split:
+            c.write(d.path, common.read(common.PLUGIN_ROOT / d.src), mode=0o755 if d.path.endswith(".py") else None)
+            paths.append(d.path)
+            if d.path.startswith("docs/ops/") and c.p(upgrade.OPS_INDEX).is_file():
+                row = common.ops_index_row(common.read(c.p(upgrade.OPS_INDEX)), d.path.rsplit("/", 1)[1],
+                                           common.read(common.PLUGIN_ROOT / d.src))
+                if row:
+                    c.write(upgrade.OPS_INDEX, row)
+    if not c.p(floor.GUARD).exists():             # the guard's rules: written once, before the hook that reads them
+        c.write(floor.GUARD, common.read(common.PROFILE_GUARD))
+    paths += [floor.GUARD, upgrade.OPS_INDEX]
     how = c.p("HOW_WE_WORK.md")
     if how.is_file() and SCOPE_MARK not in common.read(how):
         c.write("HOW_WE_WORK.md", insert_in_section(common.read(how), "## Docs map", scope_line(ans, psyq_v)))
-        paths.append("HOW_WE_WORK.md")
+    if how.is_file() and CONV_MARK not in common.read(how):     # the card's conventions slot is empty after S7
+        c.write("HOW_WE_WORK.md", with_conventions(common.read(how), conventions_line(c.p("docs/prior-art.md").exists())))
+    paths.append("HOW_WE_WORK.md")                  # always: a run that failed after these writes left the card dirty
     seeds = c.boot("seeds.txt")
-    if c.dry:
-        return "would write the record, the profile, the host recipe and docs/prior-art.md"
+    # the profile's deny rules (native enforcement from the first commit) and its style hook: one write of the file
+    why, hook_why = common.deny_missing(c.target)[1], common.hooks_missing(c.target)[1]
+    text = common.settings_due(c.target)
+    if text:
+        c.write(common.SETTINGS, text)
+    if why:
+        print("     deny rules not written: %s; add profiles/psx/deny.json by hand" % why)
+    if hook_why:
+        print("     style and guard hooks not written: %s; add profiles/psx/hooks.json by hand" % hook_why)
+    if not (why and hook_why):                    # a re-run after a failed S10 finds nothing missing but the file staged
+        paths.append(common.SETTINGS)
+    due, other = publish.hooks_due(c.target)      # the git hooks of this clone: no file of the tree, so no path to commit
+    if due and not c.dry:
+        print("     git hooks written: %s" % ", ".join(publish.install_hooks(c.target)))
+    if other:
+        print("     git hook(s) not written, another hook stands there: %s; merge psxdecomp's by hand (`python3 %s hook`)"
+              % (", ".join(other), publish.VENDORED))
+    for rid in common.PROFILE_RULES:              # the profile's rules, each written with the game's own tool
+        rel, body = common.rule_paths(rid)
+        if common.rule_state(c.target, rid) == "manual":
+            print("     rule %s not written: no %s here; PA3's rules_add.py must write %s from %s"
+                  % (rid, common.STE_TOOL, rel, body))
+        else:
+            c.written += common.rule_write(c.target, c.python(), rid, c.dry)
+            paths += [rel, common.STE_INDEX]
+    for rel, cols in upgrade.LEDGER_HEAD.items():  # the two ledgers: a header line, once
+        if not c.p(rel).exists():
+            c.write(rel, "\t".join(cols) + "\n")
+        paths.append(rel)
+    if not c.p(publish.STYLE_RATCHET_REL).exists():   # last: each write above can change a count; never rewritten
+        c.write(publish.STYLE_RATCHET_REL, "" if c.dry else common.first_ratchet(c.target))
+    paths.append(publish.STYLE_RATCHET_REL)
+    if not c.p(floor.BASELINE).exists():          # the debt of the source at the handoff: none, a mode for each kind
+        c.write(floor.BASELINE, "" if c.dry else floor.first_baseline(c.target))
+    paths.append(floor.BASELINE)
+    if c.dry:                                     # every write of the stage is listed above; a dry run counts nothing
+        return ("would write the record (with the oracle-build table and a supplied build), the tools, the settings, the rules, the ledgers "
+                "and the two baselines")
     c.git("add", "--", *[x for x in paths if c.p(x).exists()])   # the README lint counts tracked paths, not local
     import doctor
     rows = doctor.check(c.target)
     bad = [r for r in rows if r[1] == "FAIL"]
     for r in rows:
-        print("     doctor %-12s %-4s %s" % r)
+        print("     doctor %-*s %-4s %s" % (doctor.WIDTH, *r))
     if bad:
         raise common.Fail("doctor: %s" % "; ".join("%s: %s" % (r[0], r[2]) for r in bad))
     card_check(c)
+    named = items_named(c)                        # an archive.org item is named in the gate's question, never in a commit
+    if named:
+        raise common.Fail("%s names an archive.org item of a build (%s lists it): take the identifier out. The row "
+                          "keeps the build's date, its page and its hashes" % (", ".join(named), BUILDS_REPORT))
     sha = c.commit(paths, "psxdecomp handoff: the bootstrap record (pins, profile, host recipe), the prior-art table, "
-                          "and the README standard's lint and its CI")
-    nxt = ("Next: a bare `claude` in this repository; PA3's planner drafts GENERATION_PLAN.md from the ladder."
+                          "the README standard's lint and its CI, the writing rule of the public files (STE1, "
+                          "its hook, the first ratchet), and the floor (its tool, its reference, the guard, the two "
+                          "readability rules, the ledgers, the first debt baseline)")
+    nxt = ("Next: a bare `claude` in this repository; PA3's planner drafts GENERATION_PLAN.md from the ladder. "
+           "The steps after it: %s." % upgrade.FLOOR_DOC
            + (" Phase 1.2 leads: %s." % (BOOT + "/seeds.txt") if seeds.is_file() else ""))
     return "record %s, commit %s. %s" % (RECORD, sha, nxt)
+
+
+BUILDS_REPORT = BOOT + "/research/builds.md"
+
+
+def items_named(c: Ctx) -> list[str]:
+    """The tracked or staged files that hold a build identifier of the scout's builds report (docs/REFS.md, "Oracle
+    builds"). The report itself lies under the ignored .run/."""
+    import oracle
+    report = c.p(BUILDS_REPORT)
+    items = oracle.build_items(common.read(report)) if report.is_file() else []
+    if not items:
+        return []
+    r = c.git("grep", "--cached", "-l", "-I", "-F", *sum((["-e", i] for i in items), []), check=False)
+    return sorted(set(r.stdout.split("\n")) - {""})
 
 
 def pa_upgrade(c: Ctx) -> str:
@@ -816,12 +962,22 @@ def self_test() -> int:
     ok &= asked.count("\n") == pa.count("\n") + 1
     ok &= json.loads(with_upgrade_ask(pa.replace('"x"', '"x", "upgrade": "auto"')))["upgrade"] == "ask"
     ok &= "--resume" in RESTART and "--agent plain" in RESTART
+    conv = conventions_line(True)
+    ok &= len(conv) <= 120 and "`CONTRIBUTING.md`" in conv and "docs/prior-art.md" not in conventions_line(False)
+    card = "# C\n## Conventions\n- a\n\n## Next\n- b\n"
+    ok &= with_conventions(card, conv) == "# C\n## Conventions\n- a\n%s\n\n## Next\n- b\n" % conv
+    old = card.replace("- a", "- a\n%s an older pointer.\n- c\n%s twice." % (CONV_MARK, CONV_MARK))
+    ok &= with_conventions(old, conv) == card.replace("- a", "- a\n%s\n- c" % conv)      # replaced in place, once
+    ok &= with_conventions(with_conventions(card, conv), conv) == with_conventions(card, conv)
     readme = "# G\n\nLead.\n\n## How this project is made\n\n%s\n\nThe standard.\n" % common.OLD_DISCLOSURE
     swapped = common.with_ai_policy(readme, replace=common.OLD_DISCLOSURE)
     ok &= common.OLD_DISCLOSURE not in swapped and swapped.count(common.AI_POLICY_MARK) == 1
     ok &= "made\n\nThe standard." in swapped and common.with_ai_policy(swapped, common.OLD_DISCLOSURE) == swapped
     own = readme.replace(common.OLD_DISCLOSURE, "We disclose AI use per pull request.")
     ok &= "We disclose AI use" in common.with_ai_policy(own, replace="We disclose AI use per pull request.")
+    aged = "# G\n\n%s\n## Status\n\nOurs; kept.\n"                # an older text of the policy: the block alone changes
+    ok &= common.with_ai_policy(aged % common.ai_policy_block().replace("decisions. AI", "decisions; AI")) == \
+        aged % common.ai_policy_block() == common.with_ai_policy(aged % common.ai_policy_block())
     skel = "# {{PROJECT_NAME}}\n\n{{GAME_TITLE}} ({{GAME_SERIAL}}).\n\n## Made\n\n{{AI_DISCLOSURE}}\n\n*{{GAME_TITLE}}*\n"
     filled = skel.replace("{{PROJECT_NAME}}", "g").replace("{{GAME_TITLE}}", "Game X").replace(
         "{{GAME_SERIAL}}", "USA, SLUS-01234").replace("{{AI_DISCLOSURE}}", common.OLD_DISCLOSURE + ".")
@@ -839,6 +995,49 @@ def self_test() -> int:
         st = common.State(td)
         st.mark("S0", "done")
         ok &= st.first_open() == "S1"
+    with tempfile.TemporaryDirectory() as td:       # S10's last refusal: a staged file that names a build's item
+        repo = pathlib.Path(td).resolve()
+        common.git(repo, "init", "--quiet")
+        c = Ctx(argparse.Namespace(target=str(repo), dry_run=False))
+        row = "| L3 | Oracle build: Jan 1, 1999 prototype | the page | lead | %s |\n"
+        common.write(repo / "docs/prior-art.md", row % "ExampleQuestJan011999prototype")
+        common.write(repo / "notes.md", "example-quest-manual\n")
+        c.git("add", "--", "docs/prior-art.md", "notes.md")
+        ok &= items_named(c) == []                                                      # no report: nothing to hold
+        common.write(repo / BUILDS_REPORT, "## archive.org items\n| identifier | kind | confirmed by | file | SHA-1 |\n|---|---|---|---|---|\n"
+                                    "| ExampleQuestJan011999prototype | build | hash | a.jpg | x |\n"
+                                    "| example-quest-manual | document | link | m.pdf | y |\n")
+        ok &= items_named(c) == ["docs/prior-art.md"]                                   # the document item may be a row
+        common.write(repo / "docs/prior-art.md", row % "sha1 0f0f")
+        c.git("add", "--", "docs/prior-art.md")
+        ok &= items_named(c) == []
+    fw = "purge: disks/\nglob:  SCPH*.BIN\n"         # S9's firewall block: both lines, once, whatever the file held
+    blocked = common.with_firewall_debug(fw)
+    ok &= blocked == fw + "\n" + common.FIREWALL_DEBUG and common.with_firewall_debug(blocked) == blocked
+    ok &= common.firewall_debug_due(fw + "glob:  %s\n" % common.FIREWALL_DEBUG_GLOBS[0]) and not common.firewall_debug_due(blocked)
+    ok &= common.firewall_lines(blocked, "glob") == ["SCPH*.BIN"] + list(common.FIREWALL_DEBUG_GLOBS)
+    import fnmatch
+    hit = lambda p: any(fnmatch.fnmatchcase(p, g) for g in common.FIREWALL_DEBUG_GLOBS)  # noqa: E731
+    ok &= all(map(hit, ("GAME.SYM", "x/y/game.sym", "tools/a.Cpe"))) and not any(map(hit, ("notes.map", "sym.txt", "a.symbols")))
+    with tempfile.TemporaryDirectory() as td:       # S10's writes that need no PA3: the settings, the rule, the ratchet
+        repo = pathlib.Path(td)
+        common.git(repo, "init", "--quiet")
+        own = {"matcher": "Bash", "hooks": [{"type": "command", "command": "true"}]}
+        common.write(repo / common.SETTINGS, json.dumps({"hooks": {"PostToolUse": [own]}}))
+        ok &= common.write(repo / common.SETTINGS, common.settings_due(repo)) == "changed"   # one write holds both
+        got = json.loads(common.read(repo / common.SETTINGS))
+        prof = [json.loads(common.read(f)) for f in (common.PROFILE_HOOKS, common.PROFILE_DENY)]
+        ok &= got["hooks"]["PostToolUse"] == [own] + prof[0]["hooks"]["PostToolUse"]     # the game's own group stays first
+        ok &= got["permissions"]["deny"] == prof[1]["permissions"]["deny"]
+        ok &= common.settings_due(repo) is None and common.hooks_missing(repo) == ([], None)
+        ok &= "|" not in common.STE_TITLE and "\n" not in common.STE_TITLE          # one cell of the index row
+        ok &= common.ste_rule_state(repo) == "manual" and common.ste_rule_write(repo, sys.executable) == []
+        common.write(repo / common.STE_RULE, "# STE1 — t\nadded: 2026-01-01\n\n" + common.read(common.PROFILE_STE))
+        ok &= common.ste_rule_state(repo) is None
+        for rel in ("docs/a.md", common.KIT_PROSE[0]):
+            common.write(repo / rel, "Run it; then stop.\n")
+        rat = common.first_ratchet(repo).splitlines()
+        ok &= rat[3:] == ["skip %s" % k for k in common.KIT_PROSE] + ["1 docs/a.md"] and "style --update" in rat[1]
     return common.self_test_banner("install", ok)
 
 
