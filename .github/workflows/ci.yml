@@ -52,8 +52,8 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get install -y --no-install-recommends ripgrep; else brew install ripgrep; fi
           rg --version | head -1
-      - name: Static checks, eval schemas and grader controls, every script's self-test
-        run: pytest -q -rs tests/test_static.py tests/test_scripts.py
+      - name: Static checks, eval schemas and grader controls, every script's self-test, the floor tool's scenarios
+        run: pytest -q -rs tests/test_static.py tests/test_scripts.py tests/test_floor.py
 
   tier1:
     name: tier 1 (the installer on the homebrew fixture)

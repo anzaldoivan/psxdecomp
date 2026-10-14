@@ -77,7 +77,7 @@ commit and the kit's content digest: the kit is not yet a git repository of its 
 
 | Tier | When | What |
 |---|---|---|
-| 0 | every push | Manifests validate. Schemas hold: profile, answers, refs, compat, eval cases. Skills are invocation-only. Links resolve. The repo's own firewall passes with its control. Every script's `--self-test` passes, and the writing count does not rise (`tests/golden/style.txt`) |
+| 0 | every push | Manifests validate. Schemas hold: profile, answers, refs, compat, eval cases. Skills are invocation-only. Links resolve. The repo's own firewall passes with its control. Every script's `--self-test` and the floor tool's scenarios (`tests/test_floor.py`) pass, and the writing count does not rise (`tests/golden/style.txt`) |
 | 1 | every push | `install.py run` on the homebrew fixture: the tree equals the golden tree, and a second run changes nothing. The S5 dry run lists what S5 writes. The firewall control fails on the planted blob. A wrong PA3 or kit is refused. Every stage resumes, and so does an S10 that failed. The dump is never copied |
 | 1b | weekly | the fixture exe: extract → splat split → all-asm build → sha1 equal, in the profile container |
 | 1c | every push | split mode end to end on the fixture (`tests/test_split_e2e.py`) |
