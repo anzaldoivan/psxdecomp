@@ -1,13 +1,13 @@
 #!/bin/sh
 # A bootstrap at the gate, with the developer's copy of another build in the ignored disks/builds/<id>/ of the folder.
-# The homebrew fixture disc is built in the ignored disks/dump/ of the folder (the eval sandbox reads nothing outside
-# it) and identified (S2); its planted debug file is taken out of medium.json. The copy is the fixture's second build (make_disc.py --proto). S3's drafts hold an invented lead for it:
+# The homebrew fixture disc is built outside the folder and identified (S2); its planted debug file is taken out of
+# medium.json. Then the disc is copied into the ignored disks/dump/ of the folder: the eval sandbox reads nothing
+# outside it. The copy is the fixture's second build (make_disc.py --proto). S3's drafts hold an invented lead for it:
 # a review build, whose page states the copy's SHA-1. S4 must measure it and keep the page's class.
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-disc="$(pwd -P)/disks/dump"
-mkdir -p "$disc"
+disc=$(mktemp -d)
 python3 "$root/fixtures/homebrew-psx/make_disc.py" "$disc" >/dev/null
 python3 "$root/fixtures/homebrew-psx/make_disc.py" --proto disks/builds/review-1999-01-01 >/dev/null
 sha=$(python3 -c 'import hashlib,sys; print(hashlib.sha1(open(sys.argv[1],"rb").read()).hexdigest())' disks/builds/review-1999-01-01/PROTO.EXE)
@@ -22,6 +22,7 @@ for k in ("files", "file_list"):
         d[k] = [x for x in d[k] if "MAIN.SYM" not in json.dumps(x)]
 json.dump(d, open(p, "w"), indent=2, sort_keys=True)
 PY
+mkdir -p disks/dump && cp "$disc"/* disks/dump/ && disc="$(pwd -P)/disks/dump"
 for s in S0 S1 S2 S3; do python3 "$root/scripts/install.py" mark "$s" --target . --note scaffold >/dev/null; done
 sed "s|^DUMP_PATH: .*|DUMP_PATH: $disc/HOMEBREW.cue|" "$root/fixtures/answers.psx.txt" > .run/bootstrap/answers.draft.txt
 cp "$root/profiles/psx/refs.toml" .run/bootstrap/refs.draft.toml
