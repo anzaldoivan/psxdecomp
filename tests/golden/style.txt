@@ -5,7 +5,7 @@
 1 SECURITY.md
 4 agents/scout-repo.md
 4 docs/ARCHITECTURE.md
-105 docs/ECOSYSTEM.md
+104 docs/ECOSYSTEM.md
 5 docs/PROFILES.md
 134 docs/PUBLISHING.md
 15 docs/REFS.md
