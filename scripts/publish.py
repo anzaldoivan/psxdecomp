@@ -143,7 +143,7 @@ ARTIFACT = re.compile(r"^[A-Za-z0-9._-]+_report$")
 
 # ---- what psxdecomp writes into a game repository from this standard (S10, /psxdecomp:upgrade) -------------------
 VENDORED = "tools/psxd_publish.py"                        # this file, byte for byte
-VERSION = "0.6.0"                                         # psxdecomp's version: a game's tool changes only to a later one
+VERSION = "0.6.4"                                         # psxdecomp's version: a game's tool changes only to a later one
 WORKFLOW = ".github/workflows/psxdecomp-readme.yml"       # profiles/psx/psxdecomp-readme.yml: lint + the freeze
 
 # ---- the category list ------------------------------------------------------------------------------------------

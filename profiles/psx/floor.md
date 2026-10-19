@@ -179,6 +179,7 @@ The tool reads four kinds in the text that the compiler gets. These are the kind
 | `goto-unmarked` | a `goto` with no such comment |
 | `barrier-unmarked` | a barrier with no such comment |
 | `asm` | an assembly file, or an assembly statement that holds an instruction or emits data, with no row in `config/asm-evidence.tsv` |
+| `gte` | an assembly statement from a macro of `include/gte.h`. It holds cop2 instructions and `nop` only, and one cop2 at least. It is not `asm` |
 
 - `[floor] cpp` in `config/psxdecomp.toml` names the preprocess command of the game, with `{file}` for the unit.
 - An example is `cpp = "mipsel-linux-gnu-cpp -nostdinc -undef -D__GNUC__=2 -Iinclude {file}"`.
@@ -251,6 +252,8 @@ The baseline holds one policy line for each kind. `debt --recount` writes the st
 | `raise <kind> <n> <date> <reason>` | The developer lets one change go over by `n`. |
 
 - The starting mode is `down` for `asm`, `pin-unmarked`, `goto-unmarked` and `barrier-unmarked`.
+- `gte` starts in `count`. A version 2 baseline that lacks its line gets `mode gte count` at the next
+  `debt --update`.
 - Each other kind starts in `count`. Its row shows the debt that each commit brings.
 - No kind about names starts in `down`. A function that matches is never refused for its name.
 - The tool compares the total of the tree that a change starts from with the total of the tree that it makes.
@@ -284,6 +287,8 @@ A register pin or an empty assembly statement is a crutch. It forces the compile
 - The tool first changes a comment only. It refuses a probe that then gives another answer.
 - One marker covers one crutch. It stands on the line of the crutch, or alone on the line above.
 - A marker with no reason covers nothing. The pin then counts as `pin-unmarked`.
+- A pin that a macro of `include/gte.h` expands is judged by the markers inside that macro, one per pin.
+  A marker at the call site does not cover it.
 
 ## Names and assembly evidence
 
