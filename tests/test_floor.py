@@ -83,14 +83,14 @@ def self_test_debt(check) -> None:
             "# config/debt-baseline.txt: ") and text.endswith(
             "mode pin count\nmode pin-unmarked down\nmode goto count\nmode goto-unmarked down\nmode barrier count\n"
             "mode barrier-unmarked down\nmode offset count\nmode address count\nmode cast count\nmode field count\n"
-            "mode asm down\nmode placeholder count\nmode placeholder-use count\n"
+            "mode asm down\nmode gte count\nmode placeholder count\nmode placeholder-use count\n"
             "mode struct count\nmode extern count\nmode filename count\n1 goto\n1 asm\n"), text)
         rc, out = run(recount=True)
         check("--recount writes it", rc == 0 and base_file.read_text() == text and "DEBT RECOUNT written" in out
               and "DEBT INFO policy written: pin: count\n" in out, out)
         rc, out = run()
         check("an equal baseline passes", rc == 0 and "DEBT CHECK OK (0 rise(s), 0 stale row(s); down: pin-unmarked, goto-unmarked, "
-              "barrier-unmarked, asm; count: pin, goto, barrier, offset, address, cast, field, placeholder, "
+              "barrier-unmarked, asm; count: pin, goto, barrier, offset, address, cast, field, gte, placeholder, "
               "placeholder-use, struct, extern, filename)" in out, out)
         floor._git(repo, "add", "config")
         floor._commit(repo, "the floor")

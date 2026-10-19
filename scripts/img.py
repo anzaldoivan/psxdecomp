@@ -538,7 +538,7 @@ def write(path, rows, head=""):
 # ---- the contract: the game's units and functions, the paths of the tables -----------------------------------------
 
 VENDORED = "tools/psxd_img.py"                       # this file, byte for byte
-VERSION = "0.6.0"                                    # psxdecomp's version: a game's tool changes only to a later one
+VERSION = "0.6.4"                                    # psxdecomp's version: a game's tool changes only to a later one
 UNITS, FUNCTIONS, RETAIL = "config/oracle.units.tsv", ".run/oracle/functions.tsv", "config/oracle.retail"
 STRNAMES, ALIASES = "config/oracle.strnames.tsv", "config/oracle.strnames.aliases.tsv"
 TEXTS, SCRATCH = ".run/strnames/strings.txt", ".run/oracle"
