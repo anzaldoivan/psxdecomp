@@ -8,8 +8,9 @@ docs/PUBLISHING.md, Cutover order, step 4). Standard library only.
 
 Every regular file of every layer is hashed. A HIT is a file with the sha1 of one under DIR's inputs/ or backup/. A
 NAME is a file that is named like a game or SDK file: an input's own name, a boot executable (SLUS_000.00), a disc
-image, a PsyQ tool. Exit 1 on either; a deleted file still sits in its layer, so every layer is read, not the final
-filesystem.
+image, a PsyQ tool. ALLOW exempts a NAME only at its exact path with its exact sha256: the open-source
+psyq-obj-parser of the SDK leg (Dockerfile). Exit 1 on either; a deleted file still sits in its layer, so every layer
+is read, not the final filesystem.
 """
 from __future__ import annotations
 
@@ -24,13 +25,20 @@ import tarfile
 import tempfile
 
 SUSPECT = re.compile(r"^[A-Z]{4}_\d{3}\.\d{2}$|\.(cue|chd|ecm|pbp|ccd|mdf|mds)$|^(psyq|psy-q)|^(cc1psx|ccpsx|aspsx|psylink)\.exe$", re.I)
+# {path in the layer: sha256} of a file SUSPECT names that is no SDK file: the Dockerfile's PSYQ_OBJ_PARSER_SHA256
+ALLOW = {"usr/local/bin/psyq-obj-parser": "f02ccb5f9849d7e96c82dbe86dadb867de4cd46623f07b2b8abc21975a561a81"}
+
+
+def digests(f, *names: str) -> list[str]:
+    hs = [hashlib.new(n) for n in names]
+    for chunk in iter(lambda: f.read(1 << 20), b""):
+        for h in hs:
+            h.update(chunk)
+    return [h.hexdigest() for h in hs]
 
 
 def sha1_of(f) -> str:
-    h = hashlib.sha1()
-    for chunk in iter(lambda: f.read(1 << 20), b""):
-        h.update(chunk)
-    return h.hexdigest()
+    return digests(f, "sha1")[0]
 
 
 def private_set(directory) -> tuple[dict[str, str], set[str]]:
@@ -57,8 +65,9 @@ def layers(image: tarfile.TarFile):
         yield l["digest"], blob(l["digest"])
 
 
-def audit(image_path, hashes: dict[str, str], names: set[str]) -> tuple[list[str], int, int]:
-    """(findings, layers read, files hashed)."""
+def audit(image_path, hashes: dict[str, str], names: set[str],
+          allow: dict[str, str] = ALLOW) -> tuple[list[str], int, int]:
+    """(findings, layers read, files hashed). A file at a path of `allow` is also hashed with sha256."""
     found, n_layers, n_files = [], 0, 0
     with tarfile.open(image_path) as image:
         for digest, f in layers(image):
@@ -69,10 +78,13 @@ def audit(image_path, hashes: dict[str, str], names: set[str]) -> tuple[list[str
                         continue
                     n_files += 1
                     base = member.name.rsplit("/", 1)[-1]
-                    hit = hashes.get(sha1_of(layer.extractfile(member)))
+                    want = allow.get(member.name.removeprefix("./"))
+                    sha1, sha256 = digests(layer.extractfile(member), "sha1", "sha256") if want else (
+                        sha1_of(layer.extractfile(member)), None)
+                    hit = hashes.get(sha1)
                     if hit:
                         found.append("HIT  %s in layer %s is %s" % (member.name, digest[7:19], hit))
-                    elif base.lower() in names or SUSPECT.search(base):
+                    elif (base.lower() in names or SUSPECT.search(base)) and not (want and sha256 == want):
                         found.append("NAME %s in layer %s" % (member.name, digest[7:19]))
     return found, n_layers, n_files
 
@@ -140,6 +152,14 @@ def self_test() -> int:
         ok &= len(got["hit"][0]) == 1 and got["hit"][0][0].startswith("HIT  tmp/renamed in layer ")
         ok &= got["hit"][0][0].endswith(" is inputs/disks/GAME.DAT")
         ok &= [x.split()[1] for x in got["name"][0]] == ["work/SLUS_000.00", "work/game.dat", "t/PSYQ.zip"]
+        tool = "usr/local/bin/psyq-obj-parser"                       # ALLOW: that path with that sha256, nothing else
+        allow = {tool: hashlib.sha256(b"synthetic tool\n").hexdigest()}
+        _image(root / "allowed.tar", clean + [{tool: b"synthetic tool\n"}])
+        _image(root / "other.tar", clean + [{tool: b"another tool\n"}])
+        ok &= audit(root / "allowed.tar", hashes, names, allow) == ([], 3, 4)
+        for image, a in (("other", allow), ("allowed", ALLOW)):                   # other bytes, then the real pin
+            ok &= [x.split()[:2] for x in audit(root / (image + ".tar"), hashes, names, a)[0]] == [["NAME", tool]]
+        ok &= set(ALLOW) == {tool} and re.fullmatch(r"[0-9a-f]{64}", ALLOW[tool]) is not None
         ok &= main([str(root / "clean.tar"), "--private", str(root / "private")]) == 0
         ok &= main([str(root / "hit.tar"), "--private", str(root / "private")]) == 1
         ok &= main([str(root / "clean.tar"), "--private", str(root)]) == 1         # an empty private set proves nothing

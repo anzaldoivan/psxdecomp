@@ -20,7 +20,8 @@ older one WARNs); publish-tool (WARN only: tools/psxd_publish.py and its workflo
 the public repository, the pre-push hook is in place, every workflow action is pinned to a full commit SHA); the
 interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
-PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
+PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository,
+and each file of config/sdk.psyq<version>.sha256 under it with its sha256);
 oracle (the disc scan in the record's [oracle] and the builds of config/oracle.toml: `oracle_row`);
 gate, toolchain, names and debt (the tooling and readability floor, each WAIT until its phase: one gate command and
 the hash files once 1.3 is closed, FAIL without them once 1.9 is closed; docs/ops/compiler-pin.md and
@@ -653,8 +654,31 @@ def card_row(repo: pathlib.Path) -> tuple[str, str] | None:
                    "`tools/card.py check` refuses a card write until then" % (CARD, n, cap, n - cap)
 
 
+SDK_HASHES = "config/sdk.psyq%s.sha256"      # [psyq] version 4.7: `<sha256>  <path in the SDK>` per byo SDK file
+SDK_LINE = re.compile(r"^([0-9a-fA-F]{64}) [ *](.+)$")
+
+
+def sdk_check(hashes: pathlib.Path, sdk: pathlib.Path) -> tuple[int, list[str]]:
+    """(lines of the checksum file, each listed file of `sdk` that is missing or differs). It hashes and writes
+    nothing else, and it prints no SDK byte."""
+    lines = [l for l in common.read(hashes).splitlines() if l.strip()]
+    bad = []
+    for line in lines:
+        m = SDK_LINE.match(line)
+        if not m:
+            bad.append("%r (not `<sha256>  <path>`)" % line[:40])
+        elif sdk.resolve() not in (sdk / m[2]).resolve().parents:
+            bad.append(m[2] + " (outside the SDK folder)")
+        elif not (sdk / m[2]).is_file():
+            bad.append(m[2] + " (missing)")
+        elif common.sha256_file(sdk / m[2]) != m[1].lower():
+            bad.append(m[2] + " (differs)")
+    return len(lines), bad
+
+
 def sdk_row(psyq: dict | None, repo: pathlib.Path, byo: str | None) -> tuple[str, str] | None:
-    """The PsyQ release the game links and what a byo SDK must be; a byo path inside the repo is a firewall FAIL."""
+    """The PsyQ release the game links and what a byo SDK must be; a byo path inside the repo is a firewall FAIL. With
+    the checksum file of that release (SDK_HASHES), each file it lists must be under the byo path with its sha256."""
     if not psyq and not byo:
         return None
     v = (psyq or {}).get("version", "unknown")
@@ -672,7 +696,16 @@ def sdk_row(psyq: dict | None, repo: pathlib.Path, byo: str | None) -> tuple[str
         return "FAIL", what + "; $PSXDECOMP_BYO_PSYQ_PATH is inside the repository (firewall): move it outside"
     if not path.is_dir():
         return "WARN", what + "; $PSXDECOMP_BYO_PSYQ_PATH %s does not exist" % path
-    return "OK", what + "; byo path given"
+    hashes = SDK_HASHES % str(v).replace(".", "")
+    if not psyq or not (repo / hashes).is_file():
+        return "OK", what + "; byo path given"
+    n, bad = sdk_check(repo / hashes, path)
+    if not n:
+        return "FAIL", what + "; %s lists no file" % hashes
+    if bad:
+        return "FAIL", what + "; byo differs from %s in %d of %d files: %s%s" % (
+            hashes, len(bad), n, ", ".join(bad[:3]), ", ..." if len(bad) > 3 else "")
+    return "OK", what + "; byo matches %s (%d files)" % (hashes, n)
 
 
 def oracle_row(table: dict | None, repo: pathlib.Path) -> tuple[str, str]:
@@ -1231,6 +1264,32 @@ def self_test() -> int:
         for got, want in cases:
             ok &= (got[0] if got else None) == want
         print("  sdk row: %s" % cases[0][0][1])
+        # the checksum file: no file leaves the row as it was, then matching files, a changed file, a missing file, a
+        # path out of the SDK folder, an empty file
+        with tempfile.TemporaryDirectory() as bd:
+            byo = pathlib.Path(bd)
+            common.write(byo / "LIB" / "A.LIB", "synthetic a")
+            common.write(byo / "DOCS" / "B C.TXT", "synthetic b")
+            ok &= sdk_row(q, repo, bd) == ("OK", sdk_row(q, repo, None)[1] + "; byo path given")
+            common.write(repo / (SDK_HASHES % "47"), "".join("%s  %s\n" % (common.sha256_file(byo / r), r)
+                                                            for r in ("LIB/A.LIB", "DOCS/B C.TXT")))
+            cases = [(sdk_row(q, repo, bd), "OK")]
+            ok &= cases[-1][0][1].endswith("; byo matches config/sdk.psyq47.sha256 (2 files)")
+            common.write(byo / "LIB" / "A.LIB", "synthetic a!")
+            cases += [(sdk_row(q, repo, bd), "FAIL")]
+            ok &= cases[-1][0][1].endswith("; byo differs from config/sdk.psyq47.sha256 in 1 of 2 files: LIB/A.LIB (differs)")
+            (byo / "DOCS" / "B C.TXT").unlink()
+            cases += [(sdk_row(q, repo, bd), "FAIL")]
+            ok &= cases[-1][0][1].endswith(" in 2 of 2 files: LIB/A.LIB (differs), DOCS/B C.TXT (missing)")
+            common.write(repo / (SDK_HASHES % "47"), "%s  ../x\n" % ("0" * 64))      # a path out of the SDK folder
+            cases += [(sdk_row(q, repo, bd), "FAIL")]
+            ok &= cases[-1][0][1].endswith(" in 1 of 1 files: ../x (outside the SDK folder)")
+            common.write(repo / (SDK_HASHES % "47"), "\n")
+            cases += [(sdk_row(q, repo, bd), "FAIL")]
+            ok &= cases[-1][0][1].endswith("; config/sdk.psyq47.sha256 lists no file")
+            ok &= [got[0] for got, _ in cases] == [want for _, want in cases]
+            (repo / (SDK_HASHES % "47")).unlink()
+        print("  sdk row: %s" % cases[-3][0][1].rsplit("; ", 1)[1])
         # the oracle row: no table, no scan, a checksum file the firewall does not read, a build without its file, then
         # the record as `oracle add` leaves it: a copy on this machine, its image by size, a path that is gone, a path
         # that the firewall refuses, no copy
