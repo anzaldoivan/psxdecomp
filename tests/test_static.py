@@ -1194,9 +1194,9 @@ def test_debt_kinds(tmp_path):
     bl = floor.parse_baseline(floor.first_baseline(repo))
     want = {(k, "src/%s.c" % kind): n for kind, (_, got) in floor.C_DEBT.items() for k, n in got.items()}
     assert bl.totals == {k: n for k, n in floor._kind_totals(want).items() if n} and bl.skip == [] and len(bl.head) == len(floor.BASELINE_HEAD), bl.totals   # no stub header here: no skip line
-    assert set(bl.totals) == set(floor.KINDS) - {"filename"} and not bl.lacks() and not bl.by_file
+    assert set(bl.totals) == set(floor.KINDS) - {"filename", "gte"} and not bl.lacks() and not bl.by_file
     assert bl.summary() == "down: pin-unmarked, goto-unmarked, barrier-unmarked, asm; count: pin, goto, barrier, " \
-                           "offset, address, cast, field, placeholder, placeholder-use, struct, extern, filename"
+                           "offset, address, cast, field, gte, placeholder, placeholder-use, struct, extern, filename"
     (repo / "config").mkdir()
     (repo / floor.BASELINE).write_text(floor.first_baseline(repo))
     r = _floor("debt", "--repo", repo)
