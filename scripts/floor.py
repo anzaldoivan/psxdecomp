@@ -59,6 +59,10 @@ the raw text of each file, where a construct inside a macro is counted once, at 
                    `.incbin`), with no row in config/asm-evidence.tsv. A file-scope asm statement that holds
                    assembler directives only (`.include`, `.section`, `.set`, `.macro`) is a stub or its plumbing, and
                    no debt: the progress report gives a stub no credit
+  gte              (with `[floor] cpp` only) an `asm` statement whose marker line, in the raw text of its file, invokes
+                   a macro that include/gte.h defines, and whose every instruction is a cop2 one (mtc2 mfc2 ctc2 cfc2
+                   lwc2 swc2 cop2) or a `nop`, with one cop2 at least: the GTE's access, which C has no form for. Any
+                   other instruction (lw, sw, addu, ...) keeps it `asm`
 The other kinds are patterns over the raw text. They are counted and shown, and a pattern can be respelled:
   offset           a field read by its offset: `*(T *)(p + N)`, `((T *)p)[N]`, `M2C_FIELD(`, a byte pointer plus a
                    number, each also with a minus, or a macro that hides one (each use). A sum with a variable
@@ -287,7 +291,7 @@ def sibling() -> pathlib.Path:
 
 # ---- the readability debt -----------------------------------------------------------------------------------------
 KINDS = ("pin", "pin-unmarked", "goto", "goto-unmarked", "barrier", "barrier-unmarked", "offset", "address", "cast",
-         "field", "asm", "placeholder", "placeholder-use", "struct", "extern", "filename")
+         "field", "asm", "gte", "placeholder", "placeholder-use", "struct", "extern", "filename")
 RETIRED = ("obscured", "unbased", "macro", "flag", "reservation")   # kinds of an earlier build: their lines are dropped
 NUM = r"(?:0[xX][0-9A-Fa-f]+|\d+)"
 OFFX = rf"(?:\([^()]*\)|{NUM}|[A-Za-z_]\w*)(?:\s*[-+*]\s*(?:\([^()]*\)|{NUM}|[A-Za-z_]\w*))*"
@@ -497,6 +501,62 @@ def asm_emits(text: str) -> bool:
     return False
 
 
+GTE_HEADER = "include/gte.h"                         # the game's GTE header: an `asm` of its pure cop2 macros counts `gte`
+COP2 = ("mtc2", "mfc2", "ctc2", "cfc2", "lwc2", "swc2", "cop2")
+GTE_CALL: dict[tuple, re.Pattern | None] = {}
+ASM_TEMPLATE = re.compile(r'\s*((?:"(?:\\.|[^"\\\n])*"\s*)+)[:)]')        # the template of an asm statement, also with operands
+
+
+def _asm_strings(code: str, plain: str, at: int) -> str | None:
+    """The joined template strings of the asm statement at `at` (its keyword in `code`); None when unreadable."""
+    head = INLINE_ASM.match(code, at)
+    strings = ASM_TEMPLATE.match(plain, head.end()) if head else None
+    return None if strings is None else "".join(re.findall(r'"((?:\\.|[^"\\\n])*)"', strings[1]))
+
+
+def cop2_only(text: str) -> bool:
+    """Every instruction of an asm template is a cop2 one (COP2) or a `nop`, and it holds one cop2 at least. Read as
+    asm_emits reads."""
+    try:
+        text = text.encode("latin-1", "backslashreplace").decode("unicode_escape")
+    except (UnicodeError, ValueError):
+        return False
+    ops = []
+    for l in re.split(r"[\n\r;]", text):
+        l = re.sub(r"^[\w.$]+:\s*", "", l.strip())
+        if l and not l.startswith(("#", "/*", "//")):
+            ops.append(l.split()[0])
+    return any(o in COP2 for o in ops) and all(o in COP2 or o == "nop" for o in ops)
+
+
+def gte_call(header: str | None) -> re.Pattern | None:
+    """The pattern of an invocation (`NAME(`) of a function-like or any macro that the GTE header's text defines."""
+    names = tuple(sorted({m[1] for m in DEFINE.finditer(strip(header or ""))}))
+    if names not in GTE_CALL:
+        GTE_CALL[names] = re.compile(r"\b(?:%s)\s*\(" % "|".join(map(re.escape, names))) if names else None
+    return GTE_CALL[names]
+
+
+GTE_COVER: dict[bytes, dict] = {}
+
+
+def gte_cover(header: str | None) -> dict[str, tuple[int, int]]:
+    """{macro: (the pins its `#define` body holds, those of them that a `!FAKE:` marker with a reason covers)} of the
+    GTE header's text. A pin that a GTE macro expands at a call site is covered by the markers inside the macro (one
+    per pin), never by the call site's. Direct invocations only: a macro that invokes another brings none of its pins."""
+    key = hashlib.sha1((header or "").encode("utf-8", "replace")).digest()
+    if key not in GTE_COVER:
+        code = strip(header or "")
+        pins = [c for c in _crutches(header or "", code) if c["kind"] == "pin"]
+        out = {}
+        for d in DEFINE.finditer(code):
+            inside = [c for c in pins if d.start() <= c["a"] < d.end()]
+            if inside:
+                out[d[1]] = (len(inside), sum(1 for c in inside if reason_ok(c["reason"])))
+        GTE_COVER[key] = out
+    return GTE_COVER[key]
+
+
 def keywords(text: str, code: str) -> tuple[list[dict], list[tuple[str, int]]]:
     """(the crutches of a text as `_crutches` finds them, [(kind, position)] for what is no crutch): the word `goto`
     in any other form than `goto label;`, an asm statement that holds an instruction, emits data or cannot be read
@@ -523,11 +583,16 @@ def keywords(text: str, code: str) -> tuple[list[dict], list[tuple[str, int]]]:
 def marked(hits: list[tuple[str, int]], marks: dict) -> list[tuple[str, int]]:
     """[(kind, line)] with a `<kind>-unmarked` beside each pin, goto and barrier that no marker covers. `hits`:
     [(kind, line from 0)]; `marks`: `markers` of the file. One marker covers one construct: the one on its line, or
-    the one on the line below when the marker stands alone. A marker with no reason covers none."""
+    the one on the line below when the marker stands alone. A marker with no reason covers none. The internal kinds
+    of unit_view, a pin that a GTE macro expands, are judged by the macro's markers in the GTE header, not by `marks`:
+    `pin-gte` (covered) is a pin, `pin-gte-bare` a pin and a `pin-unmarked`."""
     out, used = [], set()
     for kind, line in sorted(hits, key=lambda h: h[1]):
+        if kind in ("pin-gte", "pin-gte-bare"):
+            out += [("pin", line)] + ([("pin-unmarked", line)] if kind == "pin-gte-bare" else [])
+            continue
         out.append((kind, line))
-        if kind == "asm":
+        if kind in ("asm", "gte"):
             continue
         mark = next((at for at in (line, line - 1) if at in marks and at not in used and (at == line or marks[at][1])), None)
         used.add(mark)
@@ -580,11 +645,14 @@ def _cpp_argv(cmd: str, unit: str) -> list[str]:
     return [a.replace("{file}", unit) for a in argv] if "{file}" in cmd else argv + [unit]
 
 
-def unit_view(out: str, unit: str, root: str) -> tuple[dict[tuple[str, str, int], int], set[str]]:
+def unit_view(out: str, unit: str, root: str, gte=None) -> tuple[dict[tuple[str, str, int], int], set[str]]:
     """({(kind, file, line from 0): count}, the files it read) for the preprocessor output of one unit. The output
     is cut at its line markers into runs. A construct is found in the whole text, so a run may end inside one, and it
     gets the file and the line of the run that holds its first character. A file that the unit includes twice is
-    read once: of each line, the most that one run holds."""
+    read once: of each line, the most that one run holds. `gte`: (gte_call of the GTE header, a reader of a file's
+    raw text[, gte_cover of the GTE header]): an `asm` whose template is cop2 only and whose marker line invokes a
+    GTE macro counts `gte`. Of the pins of a line that invokes GTE macros, as many as those macros' bodies hold are
+    judged by the macros' markers (`pin-gte` covered, `pin-gte-bare` not; `marked` maps them); the rest stay `pin`."""
     runs, texts, at, pos = [], [], 0, 0                # a run: (its start in the joined text, its file, its first line)
     file, n = unit, 1
     for m in LINE_MARK.finditer(out):
@@ -605,15 +673,40 @@ def unit_view(out: str, unit: str, root: str) -> tuple[dict[tuple[str, str, int]
     if "asm" not in text and "goto" not in text:
         return {}, files
     starts = [r[0] for r in runs]
-    found, more = keywords(text, strip(text))
+    code = strip(text)
+    found, more = keywords(text, code)
     hits: dict[tuple, int] = {}
+    plain, raws = None, {}
     for kind, at in [(c["kind"], c["a"]) for c in found] + more:
         i = bisect.bisect_right(starts, at) - 1
         key = (kind, runs[i][1], runs[i][2] + text.count("\n", runs[i][0], at) - 1, i)
+        if kind == "asm" and gte and gte[0] is not None:
+            if key[1] not in raws:
+                raws[key[1]] = lines(gte[1](key[1]))
+            raw = raws[key[1]]
+            plain = uncommented(text) if plain is None else plain
+            strings = _asm_strings(code, plain, at)
+            if 0 <= key[2] < len(raw) and gte[0].search(raw[key[2]]) and strings is not None and cop2_only(strings):
+                key = ("gte",) + key[1:]
         hits[key] = hits.get(key, 0) + 1
     once: dict[tuple[str, str, int], int] = {}
     for (kind, f, line, _), c in hits.items():
         once[(kind, f, line)] = max(once.get((kind, f, line), 0), c)
+    cover = gte[2] if gte and len(gte) > 2 and gte[0] is not None else None
+    for (kind, f, line), n in list(once.items()) if cover else ():
+        if kind != "pin" or f == GTE_HEADER:
+            continue
+        if f not in raws:
+            raws[f] = lines(gte[1](f))
+        calls = [re.match(r"\w+", m[0])[0] for m in gte[0].finditer(raws[f][line])] if 0 <= line < len(raws[f]) else []
+        own = min(n, sum(cover.get(name, (0, 0))[0] for name in calls))   # the pins of the macros that the line invokes
+        if own:
+            ok = min(own, sum(cover.get(name, (0, 0))[1] for name in calls))
+            for k, v in (("pin", n - own), ("pin-gte", ok), ("pin-gte-bare", own - ok)):
+                if v:
+                    once[(k, f, line)] = v
+                else:
+                    once.pop((k, f, line), None)
     return once, files
 
 
@@ -707,7 +800,10 @@ def compiler_view(repo, tree: "Tree", cmd: str) -> dict[str, list[tuple[str, int
         for key, n in hits.items():
             total[key] = max(total.get(key, 0), n)
 
-    slot = lambda unit: hashlib.sha1(("%s\0%s" % (cmd, unit)).encode()).hexdigest()  # noqa: E731
+    call = gte_call(whole.read(GTE_HEADER))            # the GTE macros of this tree: a unit's slot is keyed on them too
+    cover = gte_cover(whole.read(GTE_HEADER))          # and on what the markers inside them cover
+    gte = (call, lambda f: whole.read(f) if whole.has(f) else None, cover)
+    slot = lambda unit: hashlib.sha1(("%s\0%s\0%s\0%s" % (cmd, unit, call.pattern if call else "", sorted(cover.items()))).encode()).hexdigest()  # noqa: E731
 
     def cached(unit):
         e = held.get(slot(unit))
@@ -751,7 +847,7 @@ def compiler_view(repo, tree: "Tree", cmd: str) -> dict[str, list[tuple[str, int
                     if out is None:
                         failed.append((unit, err))
                         continue
-                    hits, files = unit_view(out, unit, root)
+                    hits, files = unit_view(out, unit, root, gte)
                     take(unit, hits, files)
                     deps = {f: whole.blob(f) for f in files}
                     if all(deps.values()):             # every file it read is a file of this tree: the result can be kept
@@ -1364,6 +1460,9 @@ def cmd_debt(repo, update=False, down=None, source: str | None = None, against: 
                 _write_baseline(repo, text)
                 print("DEBT RECOUNT written %s (%d total(s))" % (BASELINE, len(parse_baseline(text).totals)))
                 return 0
+            if update and bl.version == 2 and bl.lacks() == ["gte"]:   # the kind of 0.6.4: its starting mode
+                bl.modes["gte"] = "count"
+                print("DEBT INFO policy written: gte: count")
             if bl.version != 2 or bl.lacks():
                 print("DEBT FAIL %s" % fails[0])
                 return 1
@@ -2318,6 +2417,31 @@ def self_test() -> int:
     check("a clean file has no debt", file_debt("src/a.c", C_CLEAN) == {}, file_debt("src/a.c", C_CLEAN))
     for kind, (text, want) in C_DEBT.items():
         check("one planted file: " + kind, file_debt("src/a.c", text) == want, file_debt("src/a.c", text))
+    call = gte_call('#define GTE_MTC2(r, val) __asm__ volatile("mtc2 %0, $" #r : : "r"(val))\n')
+    raw = lambda f: "void f(int x) {\n    GTE_MTC2(9, x);\n}\n" if f == "src/a.c" else None  # noqa: E731
+    bare = lambda f: "void f(int x) {\n    __asm__ volatile(\"nop\");\n}\n" if f == "src/a.c" else None  # noqa: E731
+    for name, tmpl, want, read in (("gte: a gte.h macro of pure cop2", '"mtc2 %0, $" "9"', "gte", raw),
+                                   ("gte: the macro nop;nop;cop2 is gte", '"nop\\n\\tnop\\n\\tcop2 %0"', "gte", raw),
+                                   ("gte: the macro with a lw is asm", '"lw $12, 0(%0)\\n\\tmtc2 $12, $" "9"', "asm", raw),
+                                   ("gte: a bare nop outside gte.h is asm", '"nop"', "asm", bare)):
+        out = '# 1 "src/a.c"\nvoid f(int x) {\n    __asm__ volatile(%s : : "r"(x));\n}\n' % tmpl
+        got = unit_view(out, "src/a.c", ".", (call, read))[0]
+        check(name, got == {(want, "src/a.c", 1): 1}, got)
+    pin_h = '#define GTE_P(p) do { register int a_ asm("$12") = (p); %s\\\n    } while (0)\n'
+    pin_c = 'do { register int a_ asm("$12") = x; } while (0);'
+    for name, mark, cpp_line, raw_line, want in (
+            ("gte pin: a reasoned gte.h marker covers the macro's pin", "/* !FAKE: fixed reg */", pin_c, "GTE_P(x);", ["pin"]),
+            ("gte pin: a reasonless gte.h marker covers nothing", "/* !FAKE: */", pin_c, "GTE_P(x);", ["pin", "pin-unmarked"]),
+            ("gte pin: a gte.h marker covers no other pin of the line", "/* !FAKE: fixed reg */",
+             pin_c + ' register int y asm("$16") = x;', 'GTE_P(x); register int y asm("$16") = x;', ["pin", "pin", "pin-unmarked"]),
+            ("gte pin: a C-file marker covers no macro pin", "", pin_c, "GTE_P(x); /* !FAKE: the C file's reason */",
+             ["pin", "pin-unmarked"])):
+        header = pin_h % mark
+        src = "void f(int x) {\n    %s\n}\n" % raw_line
+        out = '# 1 "src/a.c"\nvoid f(int x) {\n    %s\n}\n' % cpp_line
+        hits = unit_view(out, "src/a.c", ".", (gte_call(header), lambda f, s=src: s if f == "src/a.c" else None, gte_cover(header)))[0]
+        got = sorted(k for k, _ in marked([(k, l) for (k, _, l), n in hits.items() for _ in range(n)], markers(src)))
+        check(name, got == want, (hits, got))
     global _sibling_run
     keep = _sibling_run
     _sibling_run = lambda repo, *args: (0, [])  # noqa: E731    the other tool's checks are its own
