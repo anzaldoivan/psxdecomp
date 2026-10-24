@@ -348,6 +348,8 @@ assembly. It proves that each library function is Sony's object at its address. 
 repository or the image.
 
 - `SDK` is a build variable, off by default. The build without it does not change.
+- Keep your SDK in `tools/psyq/` or outside the repository. Git ignores `tools/psyq/` and the firewall purges it.
+  The doctor's `sdk` row refuses any other folder of the repository.
 - Your SDK enters the container through a read-only volume: `-v <your SDK>:/sdk:ro`.
 - `config/sdk.psyq<version>.sha256` holds one `<sha256>  <path>` line for each file of the SDK, and no other text.
   Each path is relative to the SDK folder. `<version>` is the `[psyq]` version of `config/psxdecomp.toml` without

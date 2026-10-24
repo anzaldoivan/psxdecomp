@@ -20,7 +20,8 @@ older one WARNs); publish-tool (WARN only: tools/psxd_publish.py and its workflo
 the public repository, the pre-push hook is in place, every workflow action is pinned to a full commit SHA); the
 interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
-PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository,
+PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: outside the repository or in
+tools/psyq/, which git ignores and the firewall purges,
 and each file of config/sdk.psyq<version>.sha256 under it with its sha256);
 oracle (the disc scan in the record's [oracle] and the builds of config/oracle.toml: `oracle_row`);
 gate, toolchain, names and debt (the tooling and readability floor, each WAIT until its phase: one gate command and
@@ -655,6 +656,7 @@ def card_row(repo: pathlib.Path) -> tuple[str, str] | None:
 
 
 SDK_HASHES = "config/sdk.psyq%s.sha256"      # [psyq] version 4.7: `<sha256>  <path in the SDK>` per byo SDK file
+SDK_HOME = "tools/psyq"                       # the one folder of the repository that may hold a byo SDK
 SDK_LINE = re.compile(r"^([0-9a-fA-F]{64}) [ *](.+)$")
 
 
@@ -676,8 +678,24 @@ def sdk_check(hashes: pathlib.Path, sdk: pathlib.Path) -> tuple[int, list[str]]:
     return len(lines), bad
 
 
+def sdk_home_problem(repo: pathlib.Path, path: pathlib.Path) -> str | None:
+    """Why a byo SDK path inside the repository is refused, or None: it lies in SDK_HOME, which the firewall purges
+    and git ignores (the rule of an oracle build's home, oracle.py)."""
+    rel = path.relative_to(repo).as_posix()
+    if rel != SDK_HOME and not rel.startswith(SDK_HOME + "/"):
+        return "is inside the repository and not in %s/ (firewall): move it there or outside" % SDK_HOME
+    fw = repo / common.FIREWALL
+    if not [p for p in (common.firewall_lines(common.read(fw), "purge") if fw.is_file() else ())
+            if (rel + "/").startswith(p.rstrip("/") + "/")]:
+        return "is in %s/, which %s does not purge: add `purge: %s/`" % (SDK_HOME, common.FIREWALL, SDK_HOME)
+    if common.git(repo, "check-ignore", "-q", "--", rel + "/x", check=False).returncode != 0:
+        return "is in %s/, which git does not ignore: add `/%s/` to .gitignore" % (SDK_HOME, SDK_HOME)
+    return None
+
+
 def sdk_row(psyq: dict | None, repo: pathlib.Path, byo: str | None) -> tuple[str, str] | None:
-    """The PsyQ release the game links and what a byo SDK must be; a byo path inside the repo is a firewall FAIL. With
+    """The PsyQ release the game links and what a byo SDK must be; a byo path inside the repo and out of SDK_HOME is a
+    firewall FAIL. With
     the checksum file of that release (SDK_HASHES), each file it lists must be under the byo path with its sha256."""
     if not psyq and not byo:
         return None
@@ -692,8 +710,9 @@ def sdk_row(psyq: dict | None, repo: pathlib.Path, byo: str | None) -> tuple[str
     if not byo:
         return "OK", what
     path = pathlib.Path(byo).expanduser().resolve()
-    if path == repo or repo in path.parents:
-        return "FAIL", what + "; $PSXDECOMP_BYO_PSYQ_PATH is inside the repository (firewall): move it outside"
+    problem = sdk_home_problem(repo, path) if path == repo or repo in path.parents else None
+    if problem:
+        return "FAIL", what + "; $PSXDECOMP_BYO_PSYQ_PATH " + problem
     if not path.is_dir():
         return "WARN", what + "; $PSXDECOMP_BYO_PSYQ_PATH %s does not exist" % path
     hashes = SDK_HASHES % str(v).replace(".", "")
@@ -1264,6 +1283,15 @@ def self_test() -> int:
         for got, want in cases:
             ok &= (got[0] if got else None) == want
         print("  sdk row: %s" % cases[0][0][1])
+        # tools/psyq/ once the firewall purges it and git ignores it; another folder of the repository stays refused
+        (repo / "refs" / "sdk").mkdir(parents=True)
+        common.git(repo, "init", "--quiet")
+        common.write(repo / common.FIREWALL, "purge: tools/psyq/\n")
+        ok &= "which git does not ignore" in sdk_row(q, repo, str(repo / "tools" / "psyq"))[1]
+        common.write(repo / ".gitignore", "/tools/psyq/\n/refs/\n")
+        ok &= sdk_row(q, repo, str(repo / "tools" / "psyq"))[0] == "OK"
+        ok &= sdk_row(q, repo, str(repo / "refs" / "sdk"))[1].endswith("is inside the repository and not in tools/psyq/ "
+                                                                      "(firewall): move it there or outside")
         # the checksum file: no file leaves the row as it was, then matching files, a changed file, a missing file, a
         # path out of the SDK folder, an empty file
         with tempfile.TemporaryDirectory() as bd:

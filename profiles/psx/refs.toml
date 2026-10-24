@@ -94,10 +94,10 @@ licence  = "GPL-2.0"
 class    = "copyleft"
 tier     = "optional"
 when     = "you supplied PsyQ libraries (byo) and need to convert their .OBJ files to ELF"
-covers   = "the PsyQ .OBJ format as this parser reads it at this commit; it converts no crt0 (see the traps). Its .comm and relocation handling changed in Sep-Oct 2025 (43b8eee, 7194546, e12d98b, 919c597): a game pins the binary it runs by sha256 (the kit's image/Dockerfile)"
+covers   = "the PsyQ .OBJ format as this parser reads it at this commit; it converts no crt0 (see the traps). Its .comm and relocation handling changed in Sep-Oct 2025 (43b8eee, 7194546, e12d98b, 919c597): a game pins the binary it runs by sha256. The kit's image/Dockerfile builds it from this commit. Against the prebuilt binary of Xeeynamo/psyz's `requirements` release, 2125 of the 2133 objects of PsyQ 4.7 convert the same up to symbol and section order, and 8 differ in the .bss layout of their .comm symbols (psxdecomp, 2026-10-24)"
 topics   = ["psyq-obj", "lnk-format", "relocations", "library-conversion", "obj-to-elf", "sdk-leg"]
 paths    = ["LICENSE", "tools/psyq-obj-parser"]
-used_by  = "BFM: vendor library conversion (tools/psyq_build_libs.sh, 20 files); mmx6 phase 1.9 T4 (cee67b0d, 2026-10-24): the SDK leg, with the psyz binary above; silent-hill-decomp and parasite-eve-2-decomp: a one-time conversion whose objects they commit; chrono-cross-decomp: tools/scripts/extract_psyq_objs.sh (read 2026-10-24)"
+used_by  = "BFM: vendor library conversion (tools/psyq_build_libs.sh, 20 files); mmx6 phase 1.9 T4 (cee67b0d, 2026-10-24): the SDK leg, with psyz's prebuilt binary; silent-hill-decomp and parasite-eve-2-decomp: a one-time conversion whose objects they commit; chrono-cross-decomp: tools/scripts/extract_psyq_objs.sh (read 2026-10-24)"
 checked  = "2026-10-24"
 
 [[ref]]

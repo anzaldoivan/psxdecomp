@@ -26,7 +26,7 @@ import tempfile
 
 SUSPECT = re.compile(r"^[A-Z]{4}_\d{3}\.\d{2}$|\.(cue|chd|ecm|pbp|ccd|mdf|mds)$|^(psyq|psy-q)|^(cc1psx|ccpsx|aspsx|psylink)\.exe$", re.I)
 # {path in the layer: sha256} of a file SUSPECT names that is no SDK file: the Dockerfile's PSYQ_OBJ_PARSER_SHA256
-ALLOW = {"usr/local/bin/psyq-obj-parser": "f02ccb5f9849d7e96c82dbe86dadb867de4cd46623f07b2b8abc21975a561a81"}
+ALLOW = {"usr/local/bin/psyq-obj-parser": "56ea873e5e6a5b417e99fe19eaad6da224ca2b1d267c710ce8cd9e48a691a36a"}
 
 
 def digests(f, *names: str) -> list[str]:

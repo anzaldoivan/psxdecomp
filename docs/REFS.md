@@ -63,8 +63,9 @@ a game repo's phase 1.2 check.
 ## Sourcing PsyQ (policy, 2026-10-01; not legal advice)
 
 - **Instructions only.** PsyQ is Sony's and never distributed. The game repo names the release (`config/psxdecomp.toml
-  [psyq]`, from [`psyq.toml`](../profiles/psx/psyq.toml)); the developer supplies a copy outside the repository
-  (`PSXDECOMP_BYO_PSYQ_PATH`, checked by the doctor's `sdk` row).
+  [psyq]`, from [`psyq.toml`](../profiles/psx/psyq.toml)). The developer supplies a copy in `tools/psyq/` or
+  outside the repository (`PSXDECOMP_BYO_PSYQ_PATH`, checked by the doctor's `sdk` row). Git ignores `tools/psyq/`
+  and the firewall purges it.
 - **No PsyQ URL and no downloader** in any file. **Never a source:** mkst/esa releases, FoxdieTeam/psyq_sdk,
   persona-psx `lib/psyq`, psx.arthus.net, fuerchter/psyq-3.0-converted, the PsyQ archives of Xeeynamo/psyz's
   `requirements` release, and the prebuilt objects that chrono-cross-decomp downloads.
