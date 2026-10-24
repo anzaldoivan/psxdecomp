@@ -215,7 +215,8 @@ class World:
                 f.write_text(body)
 
     def router(self, msg, files, *paths):
-        """A developer or router commit in dev, through the agents' own commit_task.sh (agent paused)."""
+        """A developer or loop commit in dev, through the agents' own commit_task.sh (agent paused). PA3 3.2's mod
+        still commits its own plan edits with the `router` id."""
         self.put(self.dev, files)
         r = subprocess.run(["bash", "tools/commit_task.sh", "router", msg] + list(paths or files), cwd=self.dev,
                            env=self.env, capture_output=True, text=True)
@@ -321,8 +322,9 @@ class World:
 
 
 class Agent(threading.Thread):
-    """The router and its coders: each step marks .run/status.json busy, writes the AUTO areas, appends to a listed
-    source, pulls a file back from the 'volume' under the gate's apply.lock, and commits through commit_task.sh."""
+    """PA3 3.2's mod and its coders: each step marks .run/status.json and .run/mod/loop.json busy, writes the AUTO
+    areas, appends to a listed source, pulls a file back from the 'volume' under the gate's apply.lock, and commits
+    through commit_task.sh."""
 
     def __init__(self, w: World):
         super().__init__(daemon=True)
@@ -331,8 +333,10 @@ class Agent(threading.Thread):
         self.idle.set()
 
     def status(self, task):
-        st = {"task": task, "kind": "code" if task else None, "waiting": None, "router_session": "s1"}
-        self.w.put(self.w.dev, {".run/status.json": json.dumps(st)})
+        st = {"task": task, "kind": "task" if task else None, "waiting": None, "router_session": "s1"}
+        loop = {"v": 1, "ownerSid": "s1", "heartbeatAt": int(time.time() * 1000) if task else 0,
+                "state": "running" if task else "off", "holds": [], "task": {"id": task} if task else None}
+        self.w.put(self.w.dev, {".run/status.json": json.dumps(st), ".run/mod/loop.json": json.dumps(loop)})
 
     def step(self):
         self.n += 1
@@ -472,7 +476,7 @@ def _story(w: World, agent: Agent):
     w.importer()
     agent.status("T-busy")
     rc, out = w.land()
-    assert rc == 1 and "router is busy" in out, out
+    assert rc == 1 and "a PA3 task is in flight" in out and "the loop is running" in out, out
     agent.status(None)
     for name, make, word in _blockers(w):
         undo = make()
@@ -717,11 +721,12 @@ def _blockers(w: World):
         fcntl.flock(fd, fcntl.LOCK_EX)
         return fd.close
 
-    def warmer():
-        f = d / ".run/warmer/s1.pid"
+    def session():
+        f = d / ".run/mod/loop.json"
+        old = f.read_text() if f.exists() else None
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text("%d\n" % os.getpid())
-        return f.unlink
+        f.write_text(json.dumps({"ownerSid": "s1", "heartbeatAt": int(time.time() * 1000), "state": "off", "task": None}))
+        return lambda: f.write_text(old) if old is not None else f.unlink()
 
     def dirty():
         f = d / "src/agent_log.c"
@@ -730,7 +735,7 @@ def _blockers(w: World):
         return lambda: f.write_bytes(old)
 
     return [("INBOX", inbox, "INBOX.md has a pending bullet"), ("REVIEW", review, "REVIEW.md exists"),
-            ("gate lock", flock, "flock held"), ("warmer", warmer, "warmer s1 is alive"),
+            ("gate lock", flock, "flock held"), ("session", session, "session s1 owns the loop"),
             ("dirty", dirty, "uncommitted changes")]
 
 

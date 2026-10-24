@@ -2,7 +2,7 @@
 name: doctor
 description: Check an existing PS1 decomp repository against psxdecomp's tested pins — PA3 version, the kit's install record, the interpreter, the ROM firewall, the reference library. Read-only. Invoked as /psxdecomp:doctor.
 disable-model-invocation: true
-argument-hint: "[--repo DIR]"
+argument-hint: "[--repo DIR] [--offline] [--only ROW[,ROW]]"
 ---
 
 # /psxdecomp:doctor
@@ -11,7 +11,7 @@ Read-only. Run `"${CLAUDE_PLUGIN_ROOT}/scripts/psxd" preflight --target . --resu
 about the machine. Otherwise run:
 
 ```
-"${CLAUDE_PLUGIN_ROOT}/scripts/psxd" doctor --repo ${ARGUMENTS:-.}
+"${CLAUDE_PLUGIN_ROOT}/scripts/psxd" doctor --repo . $ARGUMENTS
 ```
 
 Report the `FAIL` and `WARN` rows, one line each, with the fix each row names. Never fix anything from this skill: it
@@ -39,6 +39,7 @@ floor are explained in the game's `docs/ops/psxdecomp-floor.md`.
 | `cpp` | WAIT, WARN or FAIL | After phase 1.4: `[floor] cpp` of the record, the preprocess command of the game. WARN: none, so pins, gotos and assembly are read in raw text. FAIL: the command does not run on this machine | the developer adds the key (the row gives the form) |
 | `readme` | FAIL | A README lint failure. The standard: `docs/PUBLISHING.md` in the plugin | the row names it; the generated blocks: `python3 tools/psxd_publish.py render README.md --write` |
 | `card` | WARN only | `HOW_WE_WORK.md` is over PA3's cap | move a section to `docs/ops/` and link it |
+| `pa3-retired` | WAIT or WARN, never FAIL | The tracked text that names a PA3 name 3.24 or 3.25 removed (the list is psxdecomp's `common.PA3_RETIRED`: old commands, agents and scripts). PA3's own files and `phase-ends/` are not read. `PROJECT_CONTEXT.md` is frozen: named, not counted. WAIT: PA3 is older than 3.24 | after PA3's update, rewrite each named file's lines to the names PA3 now uses. The developer or a plan task does it, never this skill |
 
 - A `WAIT` row never fails the run. The last line counts the rows that are not due.
 - `--offline` skips the network rows. Their rows say `SKIP`: a check that did not run is never `OK`. The last line

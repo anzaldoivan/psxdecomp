@@ -1,6 +1,6 @@
 schema_version: "1.0"
 name: s7-ladder
-description: The intake (S7) in a plain session writes a constitution that carries the kit's eleven-phase ladder, and leaves GENERATION_PLAN.md to the planner.
+description: The intake (S7) in a session PA3's mod does not drive writes a constitution that carries the kit's eleven-phase ladder, and leaves GENERATION_PLAN.md to the planner.
 tags: [flow, tier2]
 context:
   scaffold_script: scaffold.sh
@@ -10,8 +10,8 @@ execution:
   timeout_seconds: 1500
   allowed_tools: [Skill, Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion]
   append_system_prompt: |
-      This session was opened with `claude --agent plain` in a repository that Project Architect installed
-      (.claude/pa.json exists). It is a plain session: do the intake here. The developer confirmed every answer at
+      This session was opened with a bare `claude` in a repository that Project Architect installed. Its
+      .claude/pa.json says "mod": "off", so PA3's mod does not drive this session: do the intake here. The developer confirmed every answer at
       the gate; ask nothing that `.run/bootstrap/answers.txt` already answers. No developer is at the keyboard in
       this run. For an intake item that the answers do not cover, and at each confirmation gate of the intake, take
       your own recommended answer, say in one line that you did, and go on until PROJECT_CONTEXT.md is written. If
@@ -94,4 +94,4 @@ graders:
     target: last_message
     pattern: "\\bS8\\b|--resume"
     flags: "i"
-expected_outcome: The skill sees a plain session at NEXT S7, reads the kit's intake file that `install where` prints, writes PROJECT_CONTEXT.md with the eleven ladder phases, commits it, marks S7 and stops at --until S7. psxdecomp's `plan.py ladder PROJECT_CONTEXT.md` then exits 0.
+expected_outcome: The skill sees the mod off at NEXT S7, reads the kit's intake file that `install where` prints, writes PROJECT_CONTEXT.md with the eleven ladder phases, commits it, marks S7 and stops at --until S7. psxdecomp's `plan.py ladder PROJECT_CONTEXT.md` then exits 0.

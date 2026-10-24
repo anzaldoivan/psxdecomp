@@ -29,7 +29,9 @@ baseline equal to the tree from the first C file, FAIL on a rise or a stale row;
 guard (the profile's hook groups are in .claude/settings.json and config/guard.tsv parses: FAIL when psxdecomp could
 add a group or a rules line is no rule, WARN when it cannot edit the settings or the rules file is absent);
 hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs; it also counts the
-writing findings, publish.lint_style); card (WARN only: HOW_WE_WORK.md over PA3's cap); progress (when a workflow
+writing findings, publish.lint_style); card (WARN only: HOW_WE_WORK.md over PA3's cap); pa3-retired (tracked text that
+names a PA3 name 3.24 or 3.25 removed, common.PA3_RETIRED: WAIT before PA3 3.24, WARN after, never FAIL; PA3's files,
+history and the frozen PROJECT_CONTEXT.md are not counted); progress (when a workflow
 builds a decomp.dev report: its safety lint, and whether decomp.dev lists the repo, in split mode the public
 [public].repo, WARN only; with no such workflow: WAIT until phase 1.9 opens, WARN while it is open, FAIL once it is
 closed); github (WARN only, through `gh api`, skipped offline or logged out: the repository's security
@@ -66,7 +68,7 @@ NETWORK_ROWS = ("progress", "github", "dev-ci", "private-repo", "public-standard
 SPLIT_ROWS = ("private-repo", "public-standard")
 ROWS = ("record", "sdk", "oracle", "pa3", "pa3-drift", "python", "kit", "roadmap", "gate", "toolchain", "names", "debt", "cpp",
         "readme", "publish-tool", "deny", "guard", "git-hooks", "split-guard",
-        "categories", "ignore", "audit", "fixture", "refs", "refs-ignored", "hygiene", "card") + NETWORK_ROWS
+        "categories", "ignore", "audit", "fixture", "refs", "refs-ignored", "hygiene", "card", "pa3-retired") + NETWORK_ROWS
 WIDTH = max(map(len, ROWS))                     # the name column of every printed row (doctor, upgrade audit, S10)
 
 
@@ -168,7 +170,9 @@ def base_rows(repo: pathlib.Path, add):
     gi = repo / ".gitignore"
     gtext = common.read(gi) if gi.is_file() else ""
     add("ignore", "OK" if "# ROM firewall — in force from the FIRST commit" in gtext else "FAIL",
-        "the kit's firewall block %s" % ("present" if "ROM firewall" in gtext else "missing from .gitignore"))
+        "the kit's firewall block %s" % ("present" if "ROM firewall" in gtext else "missing from .gitignore — fix: "
+                                         "append the kit's templates/gitignore.decomp to .gitignore (the block the "
+                                         "kit's S2 writes) and commit it before any game file"))
     audit = repo / "tools" / "audit_public.py"
     if audit.is_file():
         py = common.find_python() or sys.executable
@@ -199,6 +203,9 @@ def base_rows(repo: pathlib.Path, add):
     card = card_row(repo)
     if card:
         add("card", *card)
+    retired = pa3_retired_row(repo)
+    if retired:
+        add("pa3-retired", *retired)
 
 
 def _table(rec: dict, name: str) -> dict:
@@ -421,8 +428,9 @@ def machine_pa3_version() -> str | None:
 
 
 def pa3_drift_row(conf: dict, machine: str | None, pin: str) -> tuple[str, str]:
-    """WARN when the machine's PA3 left the pin (an upstream clone it follows, or an upgrade) or when pa.json lets the
-    router upgrade unasked (a missing `upgrade` key is PA3's auto). Never FAIL: the repo still builds."""
+    """WARN when the machine's PA3 left the pin (an upstream clone it follows, or an upgrade), when pa.json lets PA3
+    upgrade unasked (a missing `upgrade` key is PA3's auto: a newer release installs at a session start), or when PA3's
+    mod is off (S6 turns it off for the intake, S10 on; off, no plan task runs). Never FAIL: the repo still builds."""
     warns = []
     if machine and machine != pin:
         warns.append("this machine runs PA3 %s, psxdecomp pins %s — fix: re-run the pinned installer with `--root "
@@ -430,9 +438,12 @@ def pa3_drift_row(conf: dict, machine: str | None, pin: str) -> tuple[str, str]:
     if conf.get("upgrade") != "ask":
         warns.append('.claude/pa.json "upgrade" is %s (PA3 auto-upgrades off the pin) — fix: set "upgrade": "ask" '
                      "and commit it" % json.dumps(conf.get("upgrade", "absent")))
+    if conf.get("mod") != "on":
+        warns.append('.claude/pa.json "mod" is %s (no plan task runs) — fix: set "mod": "on" once the bootstrap is '
+                     "past S10, commit it, restart claude" % json.dumps(conf.get("mod", "absent")))
     if warns:
         return "WARN", "; ".join(warns)
-    return "OK", "PA3 %s on this machine; upgrades ask first" % (machine or "not installed")
+    return "OK", "PA3 %s on this machine; upgrades ask first; the mod is on" % (machine or "not installed")
 
 
 def readme_row(text: str | None, repo: pathlib.Path | None = None) -> tuple[str, str]:
@@ -651,6 +662,44 @@ def card_row(repo: pathlib.Path) -> tuple[str, str] | None:
         return "OK", "%s %d of %d characters (%d free)" % (CARD, n, cap, cap - n)
     return "WARN", "%s %d of %d characters: free %d (move a section to docs/ops/ and link it); PA3's " \
                    "`tools/card.py check` refuses a card write until then" % (CARD, n, cap, n - cap)
+
+
+RETIRED_SKIP = ("phase-ends/", "research/", ".claude/pa3-upgrade/")   # history: a record of what ran, never rewritten
+RETIRED_FROZEN = ("PROJECT_CONTEXT.md",)                              # the constitution: named apart, never counted
+RETIRED_FROM = (3, 24)                                                # the first PA3 without the names (common.PA3_RETIRED)
+
+
+def pa3_retired_row(repo: pathlib.Path) -> tuple[str, str] | None:
+    """The game's tracked text that names a PA3 name 3.24 or 3.25 removed (common.PA3_RETIRED): an agent that reads
+    it uses what is gone. PA3's own files (.claude/pa3-managed.json and what it lists) are PA3's to refresh; history
+    (RETIRED_SKIP) is never rewritten; the frozen constitution is named apart. WAIT before PA3 3.24, where the names
+    still work; WARN after; never FAIL. No .claude/pa.json: no row."""
+    pa = repo / ".claude" / "pa.json"
+    if not pa.is_file():
+        return None
+    conf = json.loads(common.read(pa))
+    ver = str(conf.get("pa_version") or "")
+    r = common.git(repo, "ls-files", "-z", check=False)
+    rels = [p for p in r.stdout.split("\0") if p] if r.returncode == 0 else []
+    pa3 = repo / publish.PA3_REL
+    theirs = set(publish._pa3_files(common.read(pa3)) if pa3.is_file() else ()) | {publish.PA3_REL}
+    hist = tuple(dict.fromkeys(RETIRED_SKIP + (str(conf.get("phase_ends_dir") or "phase-ends").rstrip("/") + "/",)))
+    rels = [p for p in rels if p not in theirs and not p.startswith(hist)]
+    per: dict[str, int] = {}
+    for rel, _, _ in common.retired_hits(repo, rels):
+        per[rel] = per.get(rel, 0) + 1
+    frozen = {f: per.pop(f) for f in RETIRED_FROZEN if f in per}
+    note = "; %s (frozen, no action)" % ", ".join("%s %d" % kv for kv in frozen.items()) if frozen else ""
+    n = sum(per.values())
+    if not n:
+        return "OK", "no tracked text names a PA3 name that 3.24 or 3.25 removed%s" % note
+    files = ", ".join("%s (%d)" % kv for kv in sorted(per.items(), key=lambda kv: (-kv[1], kv[0])))
+    if tuple(int(x) for x in re.findall(r"\d+", ver)[:2]) < RETIRED_FROM:
+        return "WAIT", "PA3 %s still has these names. After PA3's update to 3.24 or later, rewrite %d line(s) in %d " \
+                       "file(s): %s%s" % (ver or "?", n, len(per), files, note)
+    return "WARN", "%d line(s) in %d file(s) name a PA3 name that 3.24 or 3.25 removed: %s — fix: rewrite each line " \
+                   "to what PA3 %s names (`grep -nE` the patterns of psxdecomp's common.PA3_RETIRED)%s" % (
+                       n, len(per), files, ver, note)
 
 
 def sdk_row(psyq: dict | None, repo: pathlib.Path, byo: str | None) -> tuple[str, str] | None:
@@ -1305,11 +1354,12 @@ def self_test() -> int:
         ok &= full == ("OK", "HOW_WE_WORK.md 7000 of 7000 characters (0 free)") and over[0] == "WARN" and \
             "free 1 " in over[1] and raised[0] == "OK" and "7001 of 8000" in raised[1]
         ok &= not list((repo / ".run").glob("**/*")) if (repo / ".run").exists() else True   # doctor wrote nothing
-    pin = "3.14.2"
-    drift = [pa3_drift_row({"upgrade": "ask"}, pin, pin), pa3_drift_row({"upgrade": "ask"}, None, pin),
-             pa3_drift_row({}, pin, pin), pa3_drift_row({"upgrade": "ask"}, "3.15.2", pin)]
+    pin, on = common.compat()["pa3"]["version"], {"upgrade": "ask", "mod": "on"}
+    drift = [pa3_drift_row(on, pin, pin), pa3_drift_row(on, None, pin), pa3_drift_row({"mod": "on"}, pin, pin),
+             pa3_drift_row(on, "3.14.2", pin), pa3_drift_row({"upgrade": "ask", "mod": "off"}, pin, pin)]
     print("  pa3-drift: %s" % "; ".join(d[0] for d in drift))
-    ok &= [d[0] for d in drift] == ["OK", "OK", "WARN", "WARN"] and "--no-clone" in drift[3][1]
+    ok &= [d[0] for d in drift] == ["OK", "OK", "WARN", "WARN", "WARN"] and "--no-clone" in drift[3][1]
+    ok &= '"mod" is "off"' in drift[4][1] and "mod" not in drift[2][1]
     good = "# G\n\nLead.\n\n%s\n## A\n" % common.ai_policy_block()
     rm = [readme_row(None), readme_row("# G\n\nLead.\n"), readme_row(good),
           readme_row(good + "\n%s; a person reviews each phase gate.\n" % common.OLD_DISCLOSURE)]
@@ -1344,6 +1394,7 @@ def self_test() -> int:
         "; ".join(r[0] for r in rm), tool[0], cats[0], cats_gone[0]))
     ok &= [r[0] for r in rm] == ["WARN", "FAIL", "WARN", "WARN", "OK", "FAIL"] and "predates" in rm[2][1]
     ok &= tool[0] == "WARN" and cats[0] == "OK" and cats_gone[0] == "FAIL" and "'ovl.stage1'" in cats_gone[1]
+    ok &= self_test_retired()
     ok &= self_test_roadmap()
     ok &= self_test_floor()
     ok &= self_test_deny()
@@ -1352,6 +1403,37 @@ def self_test() -> int:
     ok &= self_test_split()
     ok &= self_test_summary()
     return common.self_test_banner("doctor", ok)
+
+
+def self_test_retired() -> bool:
+    """pa3-retired: a planted card line WARNs on 3.28.8; hits in the constitution only are OK with the frozen note;
+    PA3's own files and history are never counted; on 3.14.2 the same line WAITs."""
+    with tempfile.TemporaryDirectory() as td:
+        repo = pathlib.Path(td).resolve()
+        common.git(repo, "init", "--quiet")
+        ok = pa3_retired_row(repo) is None                              # not a PA3 project: no row
+        (repo / ".claude").mkdir()
+        pa = lambda v: (repo / ".claude/pa.json").write_text(json.dumps({"pa_version": v}))  # noqa: E731
+        pa("3.28.8")
+        (repo / "PROJECT_CONTEXT.md").write_text("Open a thought with /discuss.\n")
+        (repo / "phase-ends").mkdir()
+        (repo / "phase-ends/T1.md").write_text("spawned expert-opus55\n")
+        (repo / "tools").mkdir()
+        (repo / "tools/pa3.py").write_text("# pa-session\n")
+        (repo / publish.PA3_REL).write_text(json.dumps({"files": {"tools/pa3.py": "h"}, "note": "/plangen"}))
+        common.git(repo, "add", "-A")
+        frozen = pa3_retired_row(repo)
+        (repo / CARD).write_text("# card\n- Think it through with /discuss first.\n")
+        common.git(repo, "add", "-A")
+        warn = pa3_retired_row(repo)
+        pa("3.14.2")
+        wait = pa3_retired_row(repo)
+    print("  pa3-retired: frozen only %s; a card line %s; on 3.14.2 %s" % (frozen[0], warn[0], wait[0]))
+    ok &= frozen == ("OK", "no tracked text names a PA3 name that 3.24 or 3.25 removed; PROJECT_CONTEXT.md 1 (frozen, "
+                           "no action)")
+    ok &= warn[0] == "WARN" and "1 line(s) in 1 file(s)" in warn[1] and "HOW_WE_WORK.md (1)" in warn[1]
+    ok &= wait[0] == "WAIT" and "PA3 3.14.2" in wait[1] and "HOW_WE_WORK.md (1)" in wait[1]
+    return ok
 
 
 def self_test_roadmap() -> bool:

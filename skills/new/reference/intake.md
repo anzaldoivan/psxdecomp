@@ -1,10 +1,11 @@
-# S7 — PA3's intake (in a `claude --agent plain` session)
+# S7 — PA3's intake (in a bare `claude`, PA3's mod off)
 
-This is PA3 3.14.2's tested path, unchanged. A plain session hands PA3's Mode 1 intake the kit's pre-answered intake.
+This is PA3 3.28.8's tested path, unchanged. A session the mod does not drive hands PA3's Mode 1 intake the kit's
+pre-answered intake.
 psxdecomp supplies only the answers it already has. The intake then asks the developer only what is still open.
 
-1. Confirm the session is a plain one. `.claude/pa.json` exists here, and `claude --agent plain` opened this session.
-   If unsure, ask once with AskUserQuestion. If it is not plain, give the restart line and stop.
+1. Confirm PA3's mod is off. `.claude/pa.json` exists here with `"mod": "off"`. S6 wrote it, and the mod reads it at
+   a session start. If it says `"on"`, give the restart line with that fix (the SessionStart hook's line) and stop.
 2. `"$PSXD" install where --target .` prints `INTAKE <path>` (the kit's `intake.decomp.md`, outside this repository).
 3. Write `.run/bootstrap/intake-prompt.md`:
 

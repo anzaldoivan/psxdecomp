@@ -251,7 +251,8 @@ Two different changes to one key, or a deletion on one side and a change on the 
 builds the merged tree before dev moves.
 
 `land` is developer-only and runs at a phase end. It fast-forwards dev to the import chain only when the agents are
-idle (`.run/status.json` clear, no live warmer, no gate lock, no pending INBOX bullet or REVIEW/REPLAN, no open wave)
+idle (`.run/status.json` clear, PA3's loop off with no live session, no gate lock, no pending INBOX bullet or
+REVIEW/REPLAN, no open wave)
 and the chain's tree passes `[public].land_check`, the game's byte check. Each refused condition is named.
 
 ### The local guard on dev
@@ -382,7 +383,7 @@ read-only.
    and prints these commands; the key pair goes in `~/.ssh/psxd/`. On a personal account its owner, the only
    collaborator, can still fork it, even into an organization that disallows private forks; doctor's `private-repo`
    row FAILs on any fork.
-3. Stop the game's agents (`.run/status.json` clear, no live warmer, no open wave, no build container): this step
+3. Stop the game's agents (`.run/status.json` clear, no PA3 session, no open wave, no build container): this step
    commits to dev. First record the sha1 of what the agents left pending (`.run/status.json`, untracked logs,
    `phase-ends/current/INBOX.md`), outside the repository: those files are byte-identical when the agents resume.
    Put what must stay private beyond the agent files in `[public].deny`, take `list --draft` as
@@ -535,7 +536,7 @@ runs `style --hook`. The hook reports the findings in the public text that the a
   vendored lint or its workflow differ from the plugin's; the `categories` row checks the list and its freeze.
 - **`/psxdecomp:upgrade`:** writes the vendored lint and the workflow (psxdecomp owns both), and lists the README's
   lint failures as a manual action; the prose is the developer's.
-- **Phase 1.9:** a suggested `verified by:` clause for the Publish phase:
+- **Phase 1.9:** a suggested milestone command for the Publish phase (its last task's `Verified:` line):
   `python3 tools/psxd_publish.py lint README.md --release && python3 tools/psxd_publish.py categories --history`
   and a validated report uploaded as `<EXE>_report`.
 

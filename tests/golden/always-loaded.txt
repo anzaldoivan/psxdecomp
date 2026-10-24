@@ -3,4 +3,4 @@
 197 agent:scout-repo
 268 agent:scout-web
 0 hook:SessionStart
-470 hook:SessionStart (paused bootstrap)
+403 hook:SessionStart (paused bootstrap)

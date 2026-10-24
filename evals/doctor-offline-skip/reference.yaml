@@ -1,0 +1,6 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "3 FAIL rows (deny, guard, audit) and 6 WARN rows, each with its fix. Offline, `github` and `dev-ci` did not run: they are SKIP, not checked, and say nothing about the repository's settings."
+bad:
+  - "3 FAIL rows; github OK, dev-ci OK."
+  - "3 FAIL rows (deny, guard, audit) and 6 WARN rows."

@@ -1,6 +1,6 @@
 schema_version: "1.0"
 name: restart-handoff
-description: A bootstrap paused after S6, resumed in a session that is not a plain one, gives the full restart line and stops before the intake.
+description: A bootstrap paused after S6, resumed in a session that PA3's mod drives (pa.json "mod" is "on"), gives the fix and the full restart line and stops before the intake.
 tags: [flow, tier2]
 context:
   scaffold_script: scaffold.sh
@@ -11,10 +11,15 @@ execution:
   allowed_tools: [Skill, Bash, Read, Glob, Grep, AskUserQuestion]
 runs: 1
 graders:
-  - name: says-plain-session
+  - name: says-bare-claude
     type: regex
     target: last_message
-    pattern: "claude --agent plain"
+    pattern: "run `?claude`? here"
+  - name: says-mod-off
+    type: regex
+    target: last_message
+    pattern: "\"?mod\"?[^\\n]{0,40}\"?off\"?"
+    flags: "i"
   - name: says-resume
     type: regex
     target: last_message
@@ -29,4 +34,4 @@ graders:
     input_match: "stage S8"
     min: 0
     max: 0
-expected_outcome: The skill reads the plan (NEXT S7), sees it is not a plain session, quotes "Exit, then run `claude --agent plain` here and type `/psxdecomp:new --resume`." and stops.
+expected_outcome: 'The skill reads the plan (NEXT S7), sees .claude/pa.json "mod": "on", says to set it to "off", quotes "Exit, then run `claude` here and type `/psxdecomp:new --resume`." and stops.'

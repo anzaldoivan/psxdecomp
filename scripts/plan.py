@@ -167,7 +167,8 @@ def _id_rx(pid: str) -> re.Pattern:
 
 
 def _named(changes: list[str], pid: str) -> bool:
-    """A `## Changes` line names the id (the router's own `phase 1.4 status -> closed` lines do not count)."""
+    """A `## Changes` line names the id (PA3's own `router: phase 1.4 status -> closed` lines do not count; 3.28.8's
+    phase close still writes them, `plan_edit.py gen-close` with `--by router`)."""
     rx = _id_rx(pid)
     return any(rx.search(c) and not ROUTER_LINE.search(c) for c in changes)
 

@@ -53,27 +53,53 @@ def test_always_loaded_bytes(game):
     check_golden(ROOT / "tests" / "golden" / "always-loaded-fixture.txt", items)
 
 
+
+def test_no_retired_pa3_names(game, tmp_path):
+    """A fresh game names no PA3 name that 3.24 or 3.25 removed (common.PA3_RETIRED) in its own tracked text: the kit's
+    files, psxdecomp's, the intake's. PA3's own files (.claude/pa3-managed.json) and the history (phase-ends/) are
+    PA3's to keep. Control: a planted line in a scanned file is found."""
+    import publish
+    managed = set(publish._pa3_files((game / publish.PA3_REL).read_text()))
+    rels = [r for r in run(["git", "-C", game, "ls-files"]).stdout.splitlines()
+            if r not in managed and not r.startswith("phase-ends/")]
+    assert "docs/decomp-architect.md" in rels and "docs/ops/decomp-environment.md" in rels, rels
+    assert not common.retired_hits(game, rels)
+    planted = tmp_path / "docs/ops/decomp-environment.md"
+    planted.parent.mkdir(parents=True)
+    planted.write_text((game / "docs/ops/decomp-environment.md").read_text() + "Open `claude --agent plain` here.\n")
+    assert [(r, p) for r, _, p in common.retired_hits(tmp_path, ["docs/ops/decomp-environment.md"])] == [
+        ("docs/ops/decomp-environment.md", r"--agent plain\b")]
+
 def test_clean_tree_and_commits(game):
     assert run(["git", "-C", game, "status", "--porcelain"]).stdout == ""
     log = run(["git", "-C", game, "log", "--format=%s"]).stdout.splitlines()[::-1]
     assert log[0].startswith("Firewall first") and len(log) == 9, log
-    assert any(l.startswith("PA3 upgrades ask first") for l in log) and any(
+    assert any(l.startswith("PA3 keys for the bootstrap") for l in log) and any(
         l.startswith("README: psxdecomp's README standard") for l in log), log
 
 
 def test_s6_restart_line_and_upgrade_ask(toolchain, game):
-    """S6's DONE line carries the whole restart line; pa.json says "upgrade": "ask", which PA3's own session hook
-    reads as ask (no auto-upgrade off the pin), and the record says so."""
+    """S6's DONE line carries the whole restart line (a bare `claude`); pa.json says "upgrade": "ask", which PA3's own
+    session hook reads as ask (no auto-upgrade off the pin), and the record says so. S6 committed "mod": "off" for the
+    intake and S10 "on": PA3's own reader sees the mod on in the handed-off game."""
     import importlib
     import sys
     note = json.loads((game / ".run/bootstrap/state.json").read_text())["stages"]["S6"]["note"]
-    assert "`claude --agent plain`" in note and "`/psxdecomp:new --resume`" in note, note
+    assert "`claude`" in note and "--agent" not in note and "`/psxdecomp:new --resume`" in note, note
+    assert '"mod": "off"' in note, note
     assert json.loads((game / ".claude/pa.json").read_text())["upgrade"] == "ask"
     assert run(["git", "-C", game, "status", "--porcelain", ".claude/pa.json"]).stdout == ""
     sys.path.insert(0, str(toolchain["pkg"]))
     try:
         ss = importlib.import_module("pa.hooks.session_start")
         assert ss._upgrade_mode(str(game)) == "ask"
+        health = importlib.import_module("pa.health")
+        env_off = os.environ.pop("PA_MOD_OFF", None)
+        try:
+            assert health.mod_on(str(game))
+        finally:
+            if env_off is not None:
+                os.environ["PA_MOD_OFF"] = env_off
     finally:
         sys.path.remove(str(toolchain["pkg"]))
     assert 'upgrade = "ask"' in (game / "config/psxdecomp.toml").read_text()
@@ -224,7 +250,7 @@ def test_s10_writes_the_style_hook_beside_the_deny_rules(game):
     conf = json.loads((game / common.SETTINGS).read_text())
     assert conf["hooks"]["PostToolUse"].count(_hook_group()) == 1, conf.get("hooks")
     want = json.loads((ROOT / "profiles/psx/deny.json").read_text())["permissions"]["deny"]
-    assert set(want) <= set(conf["permissions"]["deny"]) and conf["agent"] == "pa-session", conf
+    assert set(want) <= set(conf["permissions"]["deny"]) and "agent" not in conf, conf        # PA3 3.24 left the pin
     assert common.hooks_missing(game) == ([], None) and common.settings_due(game) is None
     assert run(["git", "-C", game, "status", "--porcelain", common.SETTINGS]).stdout == ""
     assert run(["git", "-C", game, "ls-files", common.SETTINGS]).stdout.strip() == common.SETTINGS
@@ -509,8 +535,10 @@ def test_doctor_and_record(game):
     hyg = next(l for l in r.stdout.splitlines() if l.split()[1:2] == ["hygiene"])     # the kit's own text may WARN;
     assert hyg.split()[2] in {"OK", "WARN"} and not any(                                 # psxdecomp's never is named
         f in hyg for f in ("refs.md", "psxdecomp.toml", "psxdecomp.profile.toml", "config/refs.toml")), hyg
+    ret = next(l for l in r.stdout.splitlines() if l.split()[1:2] == ["pa3-retired"])   # a fresh game: no retired name
+    assert ret.split()[2] == "OK", ret
     rec = (game / "config/psxdecomp.toml").read_text()
-    assert 'tag = "v3.14.2"' in rec and "--intake-fixture" in rec
+    assert 'tag = "v%s"' % common.compat()["pa3"]["version"] in rec and "--intake-fixture" in rec
     assert run(["git", "-C", game, "check-ignore", "-q", "refs/x"], check=False).returncode == 0
     assert "!/refs/" in (game / ".ignore").read_text().splitlines()       # searchable though git-ignored
     (game / "refs" / "probe").mkdir(parents=True, exist_ok=True)

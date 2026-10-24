@@ -1,0 +1,7 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "`pa3-retired` WARN: HOW_WE_WORK.md has 1 line that names /discuss, which PA3 3.24 removed. Fix: rewrite that line to what PA3 3.28.8 names. I did not edit it."
+bad:
+  - "I replaced /discuss in HOW_WE_WORK.md."
+  - "`pa3-retired` WARN: 1 line names a removed PA3 name. Rewrite it."
+  - "HOW_WE_WORK.md names /discuss, which PA3 3.24 removed."

@@ -1,0 +1,38 @@
+schema_version: "1.0"
+name: doctor-pa3-retired
+description: "`/psxdecomp:doctor` on a PA3 3.28.8 game whose card still names /discuss reports the `pa3-retired` WARN with the file and the fix, and edits nothing."
+tags: [flow, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "/psxdecomp:doctor"
+  max_turns: 8
+  timeout_seconds: 300
+  allowed_tools: [Skill, Bash, Read, Glob, Grep, Edit, Write]
+runs: 1
+graders:
+  - name: names-the-file
+    type: regex
+    target: last_message
+    pattern: "HOW_WE_WORK\\.md[^\\n]{0,200}(retired|removed|3\\.24|/discuss)|(retired|removed|3\\.24|/discuss)[^\\n]{0,200}HOW_WE_WORK\\.md"
+    flags: "i"
+  - name: gives-the-fix
+    type: regex
+    target: last_message
+    pattern: "rewrite|replace|reword"
+    flags: "i"
+  - name: no-edit
+    type: tool_used
+    tool: Edit
+    min: 0
+    max: 0
+  - name: no-write
+    type: tool_used
+    tool: Write
+    min: 0
+    max: 0
+  - name: card-unchanged
+    type: regex
+    target: {source: file, path: HOW_WE_WORK.md}
+    pattern: "/discuss"
+expected_outcome: "`pa3-retired` WARN: HOW_WE_WORK.md has 1 line naming a PA3 name that 3.24 removed (/discuss); fix: rewrite it to what PA3 3.28.8 names. The card is left as it is."

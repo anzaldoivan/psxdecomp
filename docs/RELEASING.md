@@ -3,6 +3,8 @@
 ## A release
 
 1. Tiers 0 and 1 green locally (`pytest -q`) and in CI.
+   - Before the pull request, run `/code-review` on the release diff in a fresh session. Act only on findings about
+     correctness or the release's requirements.
 2. Tier 1b green (`bash fixtures/homebrew-psx/smoke/run.sh` → `SMOKE OK`).
 3. Tier 2: `claude plugin eval . --ablation none --runs 1 --no-publish`.
    - Run it from a worktree with no repository copy under it: the command runs every `evals/` folder it finds.

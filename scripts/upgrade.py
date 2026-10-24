@@ -622,7 +622,8 @@ def plan(repo: pathlib.Path) -> list[dict]:
         conf = json.loads(common.read(pa))
         if conf.get("pa_version") != comp["pa3"]["version"]:
             add("manual", "PA3: the repository is at %s, psxdecomp is tested on %s; update with PA3's own installer "
-                "(`<python> <pa3>/pa_install.py --project %s`), then /psxdecomp:doctor"
+                "(`<python> <pa3>/pa_install.py --project %s`), then /psxdecomp:upgrade again (it re-asserts the deny "
+                "rules and hooks of .claude/settings.json after PA3's merge) and /psxdecomp:doctor"
                 % (conf.get("pa_version"), comp["pa3"]["version"], repo), "PA3 version", "pa3")
         if conf.get("python") and not os.path.exists(conf["python"]):
             add("manual", "python: pa.json names %s, missing on this machine; re-run PA3's --project install here"
@@ -706,6 +707,10 @@ def written_paths(written: list[str]) -> list[str]:
 
 
 def apply(repo: pathlib.Path, dry: bool, fetch: bool, take=()) -> list[str]:
+    busy = [] if dry else publish.task_in_flight(repo, owner=False)
+    if busy:                                         # a task writes the same files: apply after it, never under it
+        raise common.Fail("a PA3 task is in flight: %s. Nothing was written: apply again once the task is done" % (
+            "; ".join(busy)))
     planned = plan(repo)
     acts = {a["key"] for a in planned if a["owner"] == "psxdecomp"}
     edited = sorted(a["key"][:-len("-edited")] for a in planned if a["key"].endswith("-edited"))
@@ -913,6 +918,13 @@ def main(argv=None) -> int:
         return 1
 
 
+def busy(repo: pathlib.Path, verb: str) -> None:
+    """`<VERB> BUSY ...` when a PA3 task is in flight: apply refuses then, so the skill stops before it asks."""
+    lines = publish.task_in_flight(repo, owner=False)
+    if lines:
+        print("%s BUSY a PA3 task is in flight (%s): apply refuses until it is done" % (verb, "; ".join(lines)))
+
+
 def run(a, repo: pathlib.Path, ap) -> int:
     if a.cmd == "audit":
         for r in doctor.check(repo):
@@ -926,6 +938,7 @@ def run(a, repo: pathlib.Path, ap) -> int:
         for i, x in enumerate(acts, 1):
             print("PLAN %d [%s] %s — %s" % (i, x["owner"], x["what"], x["why"]))
         print("PLAN %d action(s)%s" % (len(acts), "" if acts else " — up to date"))
+        busy(repo, "PLAN")
         return 0
     if a.cmd == "apply":
         written = apply(repo, a.dry_run, a.fetch, a.take)
@@ -940,6 +953,8 @@ def run(a, repo: pathlib.Path, ap) -> int:
         print("APPLY %s %d write(s); nothing committed%s" % (
             "DRY RUN" if a.dry_run else "FAIL" if failed else "OK", len(would) if a.dry_run else len(paths),
             "; %d step(s) failed, the others are written: repair the cause and apply again" % len(failed) if failed else ""))
+        if a.dry_run:
+            busy(repo, "APPLY")
         paths = commit_paths(repo, paths) if not a.dry_run else []
         if paths and not failed:
             print("COMMIT %s" % commit_command(repo, paths))
@@ -1369,6 +1384,53 @@ def self_test_style(repo: pathlib.Path) -> bool:
     return ok and not left and apply(repo, True, False) == []
 
 
+def self_test_busy() -> bool:
+    """apply refuses while a PA3 task is in flight (3.2's loop running, or 3.14's status.json naming a task) and
+    writes nothing; --dry-run still prints; an `off` loop with no task applies, its live owner heartbeat included
+    (the session that runs the upgrade may be the owner)."""
+    import time
+    with tempfile.TemporaryDirectory() as td:
+        repo = pathlib.Path(td)
+        common.git(repo, "init", "--quiet")
+        (repo / ".gitignore").write_text("/.run/*\n")
+        (repo / ".claude").mkdir()
+        (repo / ".claude/pa.json").write_text(json.dumps({"pa_version": "3.28.8", "python": sys.executable}))
+        (repo / ".run/mod").mkdir(parents=True)
+        loop = lambda **d: (repo / publish.LOOP_REL).write_text(json.dumps(d))  # noqa: E731
+        files = lambda: sorted(p.relative_to(repo).as_posix() for p in repo.rglob("*")  # noqa: E731
+                               if ".git" not in p.parts and p.is_file())
+        loop(state="running", task={"id": "T1"}, ownerSid="s1", heartbeatAt=time.time() * 1000)
+        before = files()
+        try:
+            apply(repo, False, False)
+            running = None
+        except common.Fail as e:
+            running = str(e)
+        ok = bool(running) and "a PA3 task is in flight" in running and "task T1" in running and files() == before
+        ok &= bool(apply(repo, True, False)) and files() == before          # the dry run still shows the writes
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["plan", "--repo", str(repo)])
+            main(["apply", "--dry-run", "--repo", str(repo)])
+        ok &= out.getvalue().count(" BUSY a PA3 task is in flight") == 2 and files() == before
+        (repo / publish.LOOP_REL).unlink()
+        (repo / ".run/status.json").write_text(json.dumps({"task": "T40.16", "kind": "expert"}))
+        before = files()
+        try:
+            apply(repo, False, False)
+            old = None
+        except common.Fail as e:
+            old = str(e)
+        ok &= bool(old) and ".run/status.json" in old and files() == before
+        (repo / ".run/status.json").write_text(json.dumps({"task": None, "kind": None, "waiting": None}))
+        loop(state="off", task=None, ownerSid="s1", heartbeatAt=time.time() * 1000)
+        idle = apply(repo, False, False)
+        ok &= bool(written_paths(idle)) and files() != before
+    print("  busy: running loop %s; 3.14 status task %s; idle loop with a live owner %d write(s)" % (
+        "refused" if running else "APPLIED", "refused" if old else "APPLIED", len(written_paths(idle))))
+    return ok
+
+
 def self_test() -> int:
     ok = True
     with tempfile.TemporaryDirectory() as td:
@@ -1390,6 +1452,7 @@ def self_test() -> int:
         ok &= "docs/ops/refs.md" in written_paths(first)                  # a new index is a path to commit
         ok &= install.REFS_RULE in (repo / "HOW_WE_WORK.md").read_text()
         ok &= self_test_record(repo)
+        ok &= self_test_busy()
         ok &= self_test_card(repo)
         keys2 = {x["key"] for x in plan(repo)}
         ok &= "deny" in keys and not ({"adopt", "refs-add", "ignore", "publish", "deny"} & keys2)

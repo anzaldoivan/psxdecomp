@@ -1,0 +1,7 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "A PA3 task is in flight here: .run/mod/loop.json says the loop is running task T7.3. The script refuses to apply under it, so I wrote nothing. Run `/psxdecomp:upgrade` again once T7.3 is done; the dry run shows 16 writes."
+bad:
+  - "The plan has 19 lines. Shall I apply them?"
+  - "A PA3 task is running, so I stopped."
+  - "Applied 16 writes; T7.3 can continue."

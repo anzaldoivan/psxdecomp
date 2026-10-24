@@ -53,6 +53,23 @@ def test_skills_are_invocation_only(skill):
     assert re.search(r"^name:\s*%s\s*$" % skill, front, re.M)
 
 
+
+@pytest.mark.parametrize("skill", ["new", "doctor", "upgrade"])
+def test_skill_shape(skill):
+    """Anthropic's skill-authoring practice: SKILL.md under 500 lines; its reference files one level deep (each named
+    in SKILL.md, no folder below reference/); a reference file over 100 lines opens with a contents list (in its first
+    15 lines); the description in the third person (no I, no you)."""
+    d = ROOT / "skills" / skill
+    text = (d / "SKILL.md").read_text()
+    assert len(text.splitlines()) < 500
+    refs = sorted((d / "reference").glob("**/*")) if (d / "reference").is_dir() else []
+    assert all(r.is_file() and r.parent == d / "reference" for r in refs), refs
+    assert [r.name for r in refs if r.name not in text] == []
+    long_ = [r for r in refs if len(r.read_text().splitlines()) > 100]
+    assert [r.name for r in long_ if not re.search(r"(?m)^(## )?Contents\b", "\n".join(r.read_text().splitlines()[:15]))] == []
+    person = re.compile(r"\b(I|I'm|I'll|me|my|you|your|you'll)\b", re.I)
+    assert person.search("Use this when you need it") and not person.search(front(text, "description"))
+
 def test_agents_frontmatter():
     for p in (ROOT / "agents").glob("*.md"):
         front = p.read_text().split("---")[1]
@@ -152,6 +169,8 @@ def test_eval_cases():
     assert {"no-autofire", "interview-first", "answers-path", "refs-grep", "refs-grep-ignored", "refuse-nonpsx",
             "backtest-x6", "backtest-x5", "backtest-dc2", "backtest-bfm", "poisoned-grep", "poisoned-grep-raw", "unpinned-candidate",
             "kit-calibration-scope", "id-collision", "id-collision-tool", "restart-handoff", "psyq-question",
+            "upgrade-pa3-old", "upgrade-dry-run", "upgrade-task-running", "doctor-reads-only", "doctor-offline-skip",
+            "doctor-pa3-retired",
             "s7-ladder", "backtest-nfshs", "backtest-diablo", "oracle-question", "oracle-item"} <= names
 
 
@@ -216,6 +235,49 @@ def test_poisoned_fixture_builds(tmp_path):
         assert ("**This repo:**" in how) == (v != "raw")
         assert (tmp_path / v / "docs/ops/compiler-pin.md").is_file() == (v != "unpinned")
         assert "gcc 2.6.3 + aspsx 2.63 first" in (tmp_path / v / "PROJECT_CONTEXT.md").read_text()
+
+
+def test_old_game_fixture(tmp_path):
+    """The upgrade and doctor cases' shared fixture (evals/_fixtures/old-game): each variant, through the command its
+    skill runs, prints the lines the graders depend on, so a bad scaffold fails here before a run is paid for."""
+    import doctor
+    build, psxd, pin = ROOT / "evals/_fixtures/old-game/build.sh", ROOT / "scripts/psxd", common.compat()["pa3"]["version"]
+
+    def make(v):
+        (tmp_path / v).mkdir()
+        run(["sh", build, v], cwd=tmp_path / v)
+        return tmp_path / v
+
+    def psx(*a):
+        return run([psxd, *a], check=False)
+
+    def rows(text):
+        return {w[1]: (w[2], l) for l in text.splitlines() for w in [l.split()] if len(w) > 2 and w[1] in doctor.ROWS}
+
+    old = make("pa3-old")
+    plan_out = psx("upgrade", "plan", "--repo", old).stdout                       # upgrade-pa3-old
+    pa3 = [l for l in plan_out.splitlines() if l.startswith("PLAN ") and "[manual] PA3:" in l]
+    assert len(pa3) == 1 and "3.14.2" in pa3[0] and pin in pa3[0] and "/psxdecomp:upgrade again" in pa3[0], plan_out
+    assert "BUSY" not in plan_out
+    dry = psx("upgrade", "apply", "--dry-run", "--repo", old).stdout             # upgrade-dry-run
+    assert "would be created tools/psxd_floor.py" in dry and "APPLY DRY RUN" in dry and "BUSY" not in dry, dry
+    assert not (old / "tools/psxd_floor.py").exists()
+    doc = psx("doctor", "--offline", "--repo", old).stdout                        # doctor-offline-skip
+    got = rows(doc)
+    assert got["github"][0] == "SKIP" and got["dev-ci"][0] == "SKIP" and "2 not run" in doc.splitlines()[-1], doc
+    assert got["pa3-retired"][0] == "OK"
+    busy = make("task-running")                                                    # upgrade-task-running
+    assert "PLAN BUSY a PA3 task is in flight" in psx("upgrade", "plan", "--repo", busy).stdout
+    r = psx("upgrade", "apply", "--repo", busy)
+    assert r.returncode == 1 and "APPLY FAIL a PA3 task is in flight" in r.stdout and "task T7.3" in r.stdout, r.stdout
+    assert not (busy / "tools/psxd_floor.py").exists() and not (busy / "config/refs.toml").exists()
+    assert run(["git", "status", "--porcelain"], cwd=busy).stdout == ""
+    ign = rows(psx("doctor", "--offline", "--repo", make("no-firewall")).stdout)["ignore"]   # doctor-reads-only
+    assert ign[0] == "FAIL" and "templates/gitignore.decomp" in ign[1], ign
+    ret = rows(psx("doctor", "--offline", "--repo", make("retired")).stdout)["pa3-retired"]  # doctor-pa3-retired
+    assert ret[0] == "WARN" and "HOW_WE_WORK.md (1)" in ret[1] and "rewrite" in ret[1], ret
+    again = run(["sh", build, "retired"], cwd=old, check=False)                   # never into an existing game
+    assert again.returncode == 2 and "already holds" in again.stderr
 
 
 def test_markdown_links_resolve():
@@ -330,6 +392,17 @@ def test_style_ratchet():
     assert all(any(rel.startswith(g) for rel in found) for g in GAME_FILES), "a GAME_FILES entry names no document"
     check_golden(golden, {rel: "." * len(f) for rel, f in found.items() if f})       # the count as the item's length
 
+
+
+def test_no_retired_pa3_names():
+    """No text psxdecomp delivers to a game, or that Claude reads as the plugin, names a PA3 name 3.24 or 3.25 removed
+    (common.PA3_RETIRED): the profile, GAME_FILES among it, and the skills, agents and hooks. Clean at 0.7.0; the test
+    keeps it clean. A new file counts before its first commit (--others)."""
+    rels = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "profiles/psx/", "skills/", "agents/",
+                "hooks/"], cwd=ROOT).stdout.split()
+    assert all(any(r.startswith(g) for r in rels) for g in GAME_FILES), "a GAME_FILES entry is not tracked"
+    assert any(r.startswith("skills/") for r in rels) and any(r.startswith("hooks/") for r in rels)
+    assert not common.retired_hits(ROOT, rels)
 
 def test_search_ignore():
     """.ignore keeps the deliberately stale eval and fixture text out of a root search (rg, Claude's Grep): every entry
@@ -463,7 +536,7 @@ def test_builds_question_reaches_the_gate():
     assert all(w in stages.split("| S10 handoff |")[1].split("\n")[0] for w in (
         "`[oracle]`", "`config/oracle.toml`", "`config/oracle.<id>.sha1`", "`required: config/oracle.*.sha1`", "`psxdecomp/local.toml`"))
     for rel, words in (("skills/upgrade/SKILL.md", ("`firewall-debug`", "`record-oracle`", "`oracle-public`")),
-                       ("skills/doctor/SKILL.md", ("| `oracle` |", "No image is hashed", "the row names the command"))):
+                       ("skills/doctor/SKILL.md", ("| `oracle` |", "No image is hashed", "the row names the command", "| `pa3-retired` |"))):
         assert all(w in (ROOT / rel).read_text() for w in words), rel
     for key in ("PATH", "ID", "SHA1", "CLASS", "PAGE"):
         assert "PSXDECOMP_BYO_ORACLE_" + key in answers.EXTRAS and "PSXDECOMP_BYO_ORACLE_" + key not in answers.KEY_NAMES

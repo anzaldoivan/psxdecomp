@@ -1,0 +1,44 @@
+schema_version: "1.0"
+name: doctor-reads-only
+description: "`/psxdecomp:doctor` on a game without the kit's firewall block reports the `ignore` FAIL and the fix the row names, and changes nothing."
+tags: [flow, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "/psxdecomp:doctor"
+  max_turns: 8
+  timeout_seconds: 300
+  allowed_tools: [Skill, Bash, Read, Glob, Grep, Edit, Write]
+runs: 1
+graders:
+  - name: names-the-firewall-fail
+    type: regex
+    target: last_message
+    pattern: "firewall[^\\n]{0,120}\\.gitignore|\\.gitignore[^\\n]{0,120}firewall"
+    flags: "i"
+  - name: gives-the-fix
+    type: regex
+    target: last_message
+    pattern: "gitignore\\.decomp"
+  - name: no-edit
+    type: tool_used
+    tool: Edit
+    min: 0
+    max: 0
+  - name: no-write
+    type: tool_used
+    tool: Write
+    min: 0
+    max: 0
+  - name: no-upgrade
+    type: tool_used
+    tool: Bash
+    input_match: "upgrade (apply|plan|audit|own)"
+    min: 0
+    max: 0
+  - name: gitignore-unchanged
+    type: regex
+    target: {source: file, path: .gitignore}
+    pattern: "ROM firewall"
+    match: not_contains
+expected_outcome: "The FAIL rows one line each: `ignore` (append the kit's templates/gitignore.decomp and commit it), deny, guard, audit; the WARN rows with their fixes. No file is changed and no upgrade runs."

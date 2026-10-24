@@ -1,0 +1,36 @@
+schema_version: "1.0"
+name: upgrade-task-running
+description: PA3 3.2's loop is running a task in the game; the upgrade names the task, says the apply waits for it, and writes nothing.
+tags: [flow, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "/psxdecomp:upgrade"
+  max_turns: 10
+  timeout_seconds: 300
+  allowed_tools: [Skill, Bash, Read, Glob, Grep, AskUserQuestion]
+runs: 1
+graders:
+  - name: says-task-in-flight
+    type: regex
+    target: last_message
+    pattern: "task[^\\n]{0,80}(in flight|running)|(in flight|running)[^\\n]{0,80}task"
+    flags: "i"
+  - name: names-the-task
+    type: regex
+    target: last_message
+    pattern: "T7\\.3"
+  - name: no-question
+    type: tool_used
+    tool: AskUserQuestion
+    min: 0
+    max: 0
+  - name: no-floor-written
+    type: file_exists
+    path: tools/psxd_floor.py
+    exists: false
+  - name: no-refs-written
+    type: file_exists
+    path: config/refs.toml
+    exists: false
+expected_outcome: "The plan prints `PLAN BUSY ... task T7.3`; the skill stops after the dry run and says the upgrade waits for the task. Nothing is written."

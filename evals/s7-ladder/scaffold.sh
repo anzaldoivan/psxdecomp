@@ -1,7 +1,7 @@
 #!/bin/sh
 # A bootstrap at the intake: the homebrew fixture disc, and S0 to S6 run for real against the pinned PA3 in a throwaway
-# config folder (as tests/conftest.py does; needs the network for the pinned PA3 clone). The case tells the child that
-# it is a plain session, so `/psxdecomp:new --resume --until S7` runs the intake. The constitution it writes must
+# config folder (as tests/conftest.py does; needs the network for the pinned PA3 clone). S6 leaves "mod": "off", and
+# the case tells the child so, so `/psxdecomp:new --resume --until S7` runs the intake. The constitution it writes must
 # carry the kit's ladder, and no GENERATION_PLAN.md: the planner writes that after S10.
 # The cache is the default one under $HOME. `claude plugin eval` gives the scaffold and the child one sandbox home, so
 # the kit that this script fetches is the kit that the child's `install where` finds: the child needs no network and
