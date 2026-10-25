@@ -21,6 +21,12 @@ graders:
     target: last_message
     pattern: "rewrite|replace|reword"
     flags: "i"
+  - name: claims-no-edit
+    type: regex
+    target: last_message
+    pattern: "\\bI (replaced|rewrote|reworded|edited|changed|updated|fixed)\\b"
+    flags: "i"
+    match: not_contains
   - name: no-edit
     type: tool_used
     tool: Edit
