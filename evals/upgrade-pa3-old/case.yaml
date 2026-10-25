@@ -1,0 +1,38 @@
+schema_version: "1.0"
+name: upgrade-pa3-old
+description: An older game (psxdecomp 0.6.0 on PA3 3.14.2) gets the plan with PA3's own update as the developer's step and the upgrade again after it; nothing is applied without the developer's word.
+tags: [flow, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "/psxdecomp:upgrade"
+  max_turns: 12
+  timeout_seconds: 300
+  allowed_tools: [Skill, Bash, Read, Glob, Grep, AskUserQuestion]
+runs: 1
+graders:
+  - name: names-the-pa3-pin
+    type: regex
+    target: last_message
+    pattern: "3\\.14\\.2[^\\n]{0,200}3\\.30\\.7|3\\.30\\.7[^\\n]{0,200}3\\.14\\.2"
+  - name: pa3-is-the-developers
+    type: regex
+    target: last_message
+    pattern: "PA3[^\\n]{0,160}(yours|you run|your own|run it yourself|yourself|the developer)|(yours|yourself)[^\\n]{0,160}PA3"
+    flags: "i"
+  - name: says-upgrade-again
+    type: regex
+    target: last_message
+    pattern: "upgrade`?[^\\n]{0,40}again"
+    flags: "i"
+  - name: no-apply-unasked
+    type: tool_used
+    tool: Bash
+    input_match: "upgrade apply(?!.*--dry-run)"
+    min: 0
+    max: 0
+  - name: no-floor-written
+    type: file_exists
+    path: tools/psxd_floor.py
+    exists: false
+expected_outcome: "audit, plan and the dry run; the PA3 line (3.14.2 -> 3.30.7) is the developer's, run with PA3's installer, then /psxdecomp:upgrade again and /psxdecomp:doctor. The picker is unanswered, so nothing is applied."

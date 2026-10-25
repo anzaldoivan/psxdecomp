@@ -4,9 +4,9 @@
 
 [pa3]
 repo    = "https://github.com/Druthulu/ProjectArchitect.git"
-tag     = "v3.14.2"
-sha     = "0ccf0dfaf95e36435ec1b7e58f3be3f863acb19b"   # the commit the tag points at (refs/tags/v3.14.2^{})
-version = "3.14.2"                                      # the package's VERSION line
+tag     = "v3.30.7"
+sha     = "265217be05fe22378b0aa7bd4b43e65ab9abeebd"   # the commit the tag points at (refs/tags/v3.30.7^{})
+version = "3.30.7"                                      # the package's VERSION line
 subdir  = "project-architect-3.0"
 
 [kit]
@@ -14,14 +14,15 @@ subdir  = "project-architect-3.0"
 # anzaldoivan/BFM-decomp, fetched shallow and sparse at `sha` (scripts/common.py resolve_kit); the content digest
 # (tree_digest) is the second check. --kit or $PSXDECOMP_KIT overrides the fetch with a local folder (digest-checked).
 repo         = "https://github.com/anzaldoivan/BFM-decomp.git"
-sha          = "898aeb324d557ae3c5c672ef08bdbbc3db080962"     # branch anzaldoivan/kit-pa3, 2026-09-30
+sha          = "35a07b04f90cf5c9e70fefcd05305e8809206fc3"     # branch anzaldoivan/kit-pa3, 2026-10-24 (PA 3.3 text)
 subdir       = "decomp-architect"
-digest       = "sha256:581f5ec0553b8c9119fca08ebb3b863caeb3bb2c1e5039402aa67f403ce6e748"
-tested_pa3   = "3.14.2"                                 # the kit's own TESTED_PA3
+digest       = "sha256:d16cdcc5f2c6972c2cd397d52b0cedd1fc0386c7441607344efafaaba7c78207"
+tested_pa3   = "3.30.7"                                 # the kit's own TESTED_PA3 (tier 1 runs it on the [pa3] pin)
 default_path = ""
 
 [tested_on]
-date    = "2026-10-13"
+date    = "2026-10-24"
 hosts   = ["macOS 27 arm64 + Docker Desktop (amd64 emulation)"]
-claude  = "2.1.296"
+claude  = "2.1.303"                                    # PA3 3.30.7 needs 2.1.292 or newer. Local tiers 0-3 of 2026-10-24
+                                                       # ran on 2.1.310, whose `plugin validate` warns: no icon
 python  = ["3.14"]

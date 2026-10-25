@@ -16,7 +16,7 @@ is a repository ready for its first planning phase, and it keeps working without
 > [!IMPORTANT]
 > **AI policy:** LLMs produce negligible decompilation results without good guidance. Investigate and familiarize yourself with the console's architecture and the game you are decompiling, and always use your own judgment. Humans drive the decisions. AI reads and writes the code.
 
-PlayStation 1 only, at version 0.6.4. Other consoles are planned as profiles ([docs/PROFILES.md](docs/PROFILES.md)).
+PlayStation 1 only, at version 0.7.0. Other consoles are planned as profiles ([docs/PROFILES.md](docs/PROFILES.md)).
 
 ## Games
 
@@ -62,8 +62,8 @@ flowchart TD
     end
 
     subgraph plan["Part 2: Plan (Project Architect)"]
-        p1["The planner drafts the roadmap: phases and milestones"]
-        p2["The planner drafts the tasks of one phase"]
+        p1["Claude drafts the roadmap: phases and milestones"]
+        p2["Claude drafts the tasks of one phase"]
         p3{{"You approve the plan"}}
         p1 --> p2 --> p3
     end
@@ -71,7 +71,7 @@ flowchart TD
     subgraph work["Part 3: Work (one phase)"]
         w1["One expert agent does each task"]
         w2["Coder agents edit, build and test"]
-        w3{{"A check proves the milestone"}}
+        w3{{"A task proves the milestone; you say yes"}}
         w1 --> w2 --> w3
     end
 
@@ -142,13 +142,13 @@ and then `/plugin install psxdecomp`.
 | Session | Command | Stages |
 |---|---|---|
 | 1 | `/psxdecomp:new` in an empty folder | interview, identification, research, your confirmation, repository, Project Architect |
-| 2 | `claude --agent plain`, then `/psxdecomp:new --resume` | intake, kit, reference library, handoff |
-| 3 | `claude` | Project Architect's planner drafts the roadmap |
+| 2 | `claude`, then `/psxdecomp:new --resume` | intake, kit, reference library, handoff |
+| 3 | `claude`, then say go | Claude drafts the roadmap with Project Architect's planner |
 
-The restart between sessions 1 and 2 loads Project Architect's hooks; when session 2 opens, psxdecomp's own hook
-prints the resume line. A bare `claude` opens Project Architect's router (`agent: pa-session` in
-`.claude/settings.json`); `claude --agent plain` is the way around it. `--answers FILE` replaces the interview with a
-prepared file; `--deep` widens the research.
+The restart between sessions 1 and 2 loads Project Architect's agents. When session 2 opens, psxdecomp's own hook
+prints the resume line. Project Architect's mod runs the plan's tasks. It stays off from S6 to S10 (`"mod": "off"` in
+`.claude/pa.json`), so session 2 is an ordinary session. S10 turns it on for session 3.
+`--answers FILE` replaces the interview with a prepared file; `--deep` widens the research.
 
 ### Other commands
 

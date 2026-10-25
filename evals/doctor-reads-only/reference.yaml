@@ -1,0 +1,7 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "4 FAIL rows. `ignore`: the kit's firewall block is missing from .gitignore; fix: append the kit's templates/gitignore.decomp to .gitignore and commit it before any game file. `deny` and `guard`: /psxdecomp:upgrade apply adds them. `audit`: no tools/audit_public.py. I changed nothing."
+bad:
+  - "I added the firewall block to .gitignore and committed it."
+  - "The firewall block is missing from .gitignore. Run /psxdecomp:upgrade to fix it."
+  - "All rows are OK."

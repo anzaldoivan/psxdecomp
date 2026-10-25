@@ -187,7 +187,8 @@ def s6_pa3(c: Ctx) -> str:
     pa = c.p(".claude/pa.json")
     if pa.is_file():
         ver = json.loads(common.read(pa)).get("pa_version")
-        return "PA3 %s already installed here%s. %s" % (ver, upgrade_ask(c), RESTART)
+        keys = INTAKE_KEYS if not c.p(RECORD).is_file() else (("upgrade", "ask"),)   # past S10: the mod stays as it is
+        return "PA3 %s already installed here%s. %s" % (ver, pa_keys(c, keys), RESTART)
     conf = pathlib.Path(c.a.config_dir or os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"))
     pa3_dir = pathlib.Path(c.a.pa3_dir) if c.a.pa3_dir else conf / "pa3"
     py = c.python()
@@ -223,7 +224,7 @@ def s6_pa3(c: Ctx) -> str:
     got = json.loads(common.read(pa)).get("pa_version")
     if got != common.compat()["pa3"]["version"] and not c.a.force_untested:
         raise common.Fail("PA3 installed version %s, compat.toml pins %s" % (got, common.compat()["pa3"]["version"]))
-    up = upgrade_ask(c)
+    up = pa_keys(c)
     dirty = c.git("status", "--porcelain").stdout.strip()
     if dirty:
         # PA3 commits its own install; anything left is its intentionally-uncommitted local state
@@ -232,42 +233,56 @@ def s6_pa3(c: Ctx) -> str:
     return "PA3 %s installed (%s)%s. %s" % (got, name, up, RESTART)
 
 
-RESTART = "Exit, then run `claude --agent plain` here and type `/psxdecomp:new --resume`."
-UPGRADE_RE = re.compile(r'("pa_version"\s*:\s*"[^"]*",)')
+RESTART = "Exit, then run `claude` here and type `/psxdecomp:new --resume`."
+KEY_AFTER_RE = re.compile(r'("pa_version"\s*:\s*"[^"]*",)')
+# S6 holds PA3's mod off until the handoff: the intake (S7-S10) runs in a bare `claude` with no plan task, no planner
+# and no session hold; S10 turns it on, and the developer's next bare `claude` is the governed one.
+INTAKE_KEYS = (("upgrade", "ask"), ("mod", "off"))
 
 
-def with_upgrade_ask(text: str) -> str:
-    """pa.json text with `"upgrade": "ask"` (after pa_version, PA3's layout kept); unchanged when already ask."""
-    if json.loads(text).get("upgrade") == "ask":
+def with_pa_key(text: str, key: str, value: str) -> str:
+    """pa.json text with top-level `key` set to the string `value` (a new key goes after pa_version, PA3's layout kept);
+    unchanged when it already holds it."""
+    if json.loads(text).get(key) == value:
         return text
-    if '"upgrade"' in text:
-        new = re.sub(r'("upgrade"\s*:\s*)("[^"]*"|null)', r'\1"ask"', text, count=1)
+    if re.search(r'"%s"\s*:' % re.escape(key), text):
+        new = re.sub(r'("%s"\s*:\s*)("[^"]*"|null|true|false)' % re.escape(key), lambda m: m.group(1) + json.dumps(value),
+                     text, count=1)
     else:
-        new = UPGRADE_RE.sub(lambda m: m.group(1) + '\n  "upgrade": "ask",', text, count=1)
-    if json.loads(new).get("upgrade") != "ask":
-        raise common.Fail(".claude/pa.json: could not set \"upgrade\": \"ask\" (no pa_version line)")
+        new = KEY_AFTER_RE.sub(lambda m: m.group(1) + '\n  "%s": %s,' % (key, json.dumps(value)), text, count=1)
+    if json.loads(new).get(key) != value:
+        raise common.Fail('.claude/pa.json: could not set "%s": "%s" (no pa_version line)' % (key, value))
     return new
 
 
-def upgrade_ask(c: Ctx) -> str:
-    """`"upgrade": "ask"` in .claude/pa.json, committed. PA3 reads a missing key as auto: its router would upgrade
-    before the first task, off the pin. Text-level, so PA3's own layout stays; returns a note for the DONE line."""
+def with_upgrade_ask(text: str) -> str:
+    return with_pa_key(text, "upgrade", "ask")
+
+
+def pa_keys(c: Ctx, keys=INTAKE_KEYS) -> str:
+    """`"upgrade": "ask"` and `"mod": "off"` in .claude/pa.json, committed. PA3 reads a missing upgrade key as auto: it
+    would install a newer release at a session start, off the pin. PA3's installer writes `"mod": "on"`; the mod would
+    then hold the intake session and offer to draft a plan, so it stays off until S10. Text-level, so PA3's own layout
+    stays; returns a note for the DONE line."""
     pa = c.p(".claude/pa.json")
     if c.dry or not pa.is_file():
         return ""
     text = common.read(pa)
-    new = with_upgrade_ask(text)
+    new = text
+    for key, value in keys:
+        new = with_pa_key(new, key, value)
     if new == text:
         return ""
     common.write(pa, new)
-    sha = c.commit([".claude/pa.json"], "PA3 upgrades ask first: .claude/pa.json \"upgrade\": \"ask\" (psxdecomp pins PA3 "
-                                        "%s)" % common.compat()["pa3"]["version"])
-    return "; pa.json upgrade: ask (commit %s)" % sha
+    said = ", ".join('"%s": "%s"' % kv for kv in keys)
+    sha = c.commit([".claude/pa.json"], "PA3 keys for the bootstrap: .claude/pa.json %s (psxdecomp pins PA3 %s)"
+                                        % (said, common.compat()["pa3"]["version"]))
+    return "; pa.json %s (commit %s)" % (said, sha)
 
 
 def settle_pa_json(c: Ctx) -> str:
-    """PA3's session-start hook writes keys of its own into .claude/pa.json (a `preset` line, PA3 3.14.2) after S6
-    committed that file, and the kit's installer refuses a tree that is not clean. When that file is the only change,
+    """PA3's session-start hook writes keys of its own into .claude/pa.json (a `preset` line; 3.28.8 and later only
+    with the mod on) after S6 committed that file, and the kit's installer refuses a tree that is not clean. When that file is the only change,
     commit it. Any other change stays the developer's: the kit's dry run names it. Returns a note for the DONE line."""
     if c.dry or c.git("status", "--porcelain", check=False).stdout.splitlines() != [" M .claude/pa.json"]:
         return ""
@@ -303,13 +318,13 @@ def pa3_block_first(text: str) -> str:
     return "\n".join(block + [""] + rest)
 
 
-# ---- S7 intake (fixture only; the real intake is the skill's, in a plain session) -------------------------------
+# ---- S7 intake (fixture only; the real intake is the skill's, in a bare `claude` with the mod off) -------------------------------
 
 def s7_intake(c: Ctx) -> str:
     if c.p("PROJECT_CONTEXT.md").is_file():
         return "PROJECT_CONTEXT.md present (the intake ran)"
     if not c.a.intake_fixture:
-        raise common.Fail("the intake is a model stage: open `claude --agent plain` in this repository and run "
+        raise common.Fail("the intake is a model stage: open `claude` in this repository and run "
                           "`/psxdecomp:new --resume` (it hands PA3's intake the kit's intake.decomp.md)")
     ans = c.answers()
     text = common.read(common.PLUGIN_ROOT / "fixtures" / "PROJECT_CONTEXT.fixture.md").replace(
@@ -711,6 +726,10 @@ def s10_handoff(c: Ctx) -> str:
     if not c.p(floor.BASELINE).exists():          # the debt of the source at the handoff: none, a mode for each kind
         c.write(floor.BASELINE, "" if c.dry else floor.first_baseline(c.target))
     paths.append(floor.BASELINE)
+    pa = c.p(".claude/pa.json")                   # the intake is over: PA3's mod runs the plan from the next start
+    if pa.is_file():
+        c.write(".claude/pa.json", with_pa_key(common.read(pa), "mod", "on"))
+        paths.append(".claude/pa.json")
     if c.dry:                                     # every write of the stage is listed above; a dry run counts nothing
         return ("would write the record (with the oracle-build table and a supplied build), the tools, the settings, the rules, the ledgers "
                 "and the two baselines")
@@ -730,8 +749,9 @@ def s10_handoff(c: Ctx) -> str:
     sha = c.commit(paths, "psxdecomp handoff: the bootstrap record (pins, profile, host recipe), the prior-art table, "
                           "the README standard's lint and its CI, the writing rule of the public files (STE1, "
                           "its hook, the first ratchet), and the floor (its tool, its reference, the guard, the two "
-                          "readability rules, the ledgers, the first debt baseline)")
-    nxt = ("Next: a bare `claude` in this repository; PA3's planner drafts GENERATION_PLAN.md from the ladder. "
+                          "readability rules, the ledgers, the first debt baseline); PA3's mod on")
+    nxt = ("Next: exit, then a bare `claude` in this repository (PA3's mod is on from that start); say go and Claude "
+           "drafts GENERATION_PLAN.md from the ladder. "
            "The steps after it: %s." % upgrade.FLOOR_DOC
            + (" Phase 1.2 leads: %s." % (BOOT + "/seeds.txt") if seeds.is_file() else ""))
     return "record %s, commit %s. %s" % (RECORD, sha, nxt)
@@ -956,12 +976,16 @@ def self_test() -> int:
         scope_line({"GAME_TITLE": "T"}, "4.7", "2026-10-01")
     ok &= pa3_block_first("# fw\n/.run/*\n!/.run/README.md\n\n# Project Architect 3.0\n/.run/*\n__pycache__/\n") == \
         "# Project Architect 3.0\n/.run/*\n__pycache__/\n\n# fw\n/.run/*\n!/.run/README.md\n"
-    pa = '{\n  "pa_version": "3.14.2",\n  "project": "x"\n}\n'
+    pa = '{\n  "pa_version": "3.28.8",\n  "project": "x"\n}\n'
     asked = with_upgrade_ask(pa)
     ok &= json.loads(asked)["upgrade"] == "ask" and with_upgrade_ask(asked) == asked
     ok &= asked.count("\n") == pa.count("\n") + 1
     ok &= json.loads(with_upgrade_ask(pa.replace('"x"', '"x", "upgrade": "auto"')))["upgrade"] == "ask"
-    ok &= "--resume" in RESTART and "--agent plain" in RESTART
+    ok &= "--resume" in RESTART and "--agent" not in RESTART and "`claude`" in RESTART
+    on = '{\n  "pa_version": "3.28.8",\n  "mod": "on",\n  "upgrade": "auto"\n}\n'
+    off = with_pa_key(with_pa_key(on, "upgrade", "ask"), "mod", "off")
+    ok &= json.loads(off) == {"pa_version": "3.28.8", "mod": "off", "upgrade": "ask"} and off.count("\n") == on.count("\n")
+    ok &= json.loads(with_pa_key(pa, "mod", "on"))["mod"] == "on" and with_pa_key(off, "mod", "off") == off
     conv = conventions_line(True)
     ok &= len(conv) <= 120 and "`CONTRIBUTING.md`" in conv and "docs/prior-art.md" not in conventions_line(False)
     card = "# C\n## Conventions\n- a\n\n## Next\n- b\n"

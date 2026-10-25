@@ -5,10 +5,13 @@ tools, a guard for generated files, and a debt count. This file is the reference
 
 ## After the bootstrap
 
-1. Start a bare `claude` session in the repository. Project Architect's planner drafts `GENERATION_PLAN.md`.
+1. Start a bare `claude` session in the repository and say go. Claude drafts `GENERATION_PLAN.md` with Project
+   Architect's planner.
 2. Read the draft against the ladder in "Numbering". Approve it only when each ladder phase has a line.
-3. Run `/psxdecomp:doctor`. Have the planner correct each `FAIL` of the `roadmap` row before the first phase starts.
-4. Let the router run one approved phase at a time. A phase closes when its `verified by:` commands pass.
+3. Run `/psxdecomp:doctor`. Ask Claude to correct each `FAIL` of the `roadmap` row before the first phase starts.
+4. Let Claude run one approved phase at a time. The task before PA3's phase cleanup runs the milestone's commands one at
+   a time. It writes a `Verified:` line for each command. The line holds the command, its exit code, the text it matched
+   and its log. Claude's close question quotes those lines. Say yes only against them.
 5. Run `/psxdecomp:doctor` when a phase closes. A `WAIT` row names the phase that makes it due.
 6. Read `docs/prior-art.md` before phase 1.2. Read `docs/ops/refs.md` before phase 1.4.
 7. Record a game wiki or a manual as a `link` row in `config/refs.toml`. A name needs a source.
@@ -327,6 +330,54 @@ The rule is `rules/NAME1.md`. `python3 tools/psxd_floor.py names` checks two tab
 - The command runs no tool of the game. A path that is not on this machine is `MISSING`, not a failure. A folder of
   the game that is not a checkout of the tool is `MISSING` too.
 - The doctor's `toolchain` row runs the same check. The gate does not run it.
+
+## The PsyQ libraries
+
+Phase 1.2 finds which PsyQ object sits at each library address. Phase 1.9 can link those objects from your own SDK.
+`docs/ops/refs.md` lists the known traps of both steps.
+
+### Which object sits at an address
+
+A signature compares the bytes of an object with its relocated fields masked. Two objects of one release can have
+the same masked bytes, for example LIBCD's `CdGetSector` and LIBDS's `DsGetSector` in PsyQ 4.7 (mmx6, 2026-10-24).
+
+- When one object matches a span, the signature decides.
+- When two or more objects match one span, the relocations decide. The identity is the object whose relocations land
+  on the retail targets.
+- Decode each masked field of the span: a `jal` target, a `lui` and `addiu` pair. Compare each target with the
+  symbol that each candidate's relocation names. Read those from the object of your SDK, or from a dump of it.
+- A span with no relocated field stays open. Choose by the neighbouring objects of the span.
+- Record the candidates that you rejected beside the row.
+
+### The SDK leg
+
+The SDK leg is optional. It links the library code from the objects of your own PsyQ SDK in place of the split
+assembly. It proves that each library function is Sony's object at its address. No byte of the SDK enters the
+repository or the image.
+
+- `SDK` is a build variable, off by default. The build without it does not change.
+- Keep your SDK in `tools/psyq/` or outside the repository. Git ignores `tools/psyq/` and the firewall purges it.
+  The doctor's `sdk` row refuses any other folder of the repository.
+- Your SDK enters the container through a read-only volume: `-v <your SDK>:/sdk:ro`.
+- `config/sdk.psyq<version>.sha256` holds one `<sha256>  <path>` line for each file of the SDK, and no other text.
+  Each path is relative to the SDK folder. `<version>` is the `[psyq]` version of `config/psxdecomp.toml` without
+  its dot, for example `config/sdk.psyq47.sha256`.
+- The build checks the SDK against that file. The doctor's `sdk` row checks it when `$PSXDECOMP_BYO_PSYQ_PATH` names
+  your SDK.
+- The build converts the objects each time, with the pinned tools of the kit. `psyk` splits a `.LIB` into its
+  objects. `psyq-obj-parser` converts each object to ELF.
+- The leg is proven when both builds hash `N of N`.
+- The build prints how many objects had their data words compared, how many differed, and the name of each object
+  that it did not compare.
+
+| Recipe | What comes from each object | Precedent (read 2026-10-24) |
+|---|---|---|
+| Code | `.text`, and the read-only data that it owns. The build compares its data words with the split bytes. | BFM, mmx6 |
+| Every section | `.text`, `.rdata`, `.data` and `.bss`, from one splat `o` row for each section | Silent Hill, Parasite Eve 2, Chrono Cross |
+
+- Start with the code recipe. It needs no change to the layout of the data.
+- The every-section recipe needs the `.comm` order of psylink in each object. When an object does not match, keep its
+  data or its `.bss` as split bytes and link its `.text` only.
 
 ## Other builds of the game
 

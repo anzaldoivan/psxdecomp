@@ -1,6 +1,6 @@
 ---
 name: new
-description: Bootstrap a new PlayStation (PS1) matching-decompilation repository in this empty folder — interview, disc identification, prior-art research, a pinned reference library, then Project Architect 3.14.2 and the decomp-architect kit. Invoked only as /psxdecomp:new.
+description: Bootstrap a new PlayStation (PS1) matching-decompilation repository in this empty folder — interview, disc identification, prior-art research, a pinned reference library, then Project Architect 3.30.7 and the decomp-architect kit. Invoked only as /psxdecomp:new.
 disable-model-invocation: true
 argument-hint: "[--answers FILE|fixture:NAME] [--resume] [--deep] [--until S0..S10]"
 ---
@@ -48,12 +48,12 @@ the whole output.
 | S3 investigate | you + agents | Follow `reference/investigate.md`: one `scout-web` agent per question, in parallel; `scout-repo` to confirm a lead from a clone. Writes `.run/bootstrap/research/*.md`, `prior-art.draft.md`, `refs.draft.toml`. |
 | S4 gate | you | Follow `reference/gate.md`: show the report, the drafted answers and the drafted refs; the developer confirms or edits each, then answers the PsyQ question (worded from S2's version) and the oracle-build question (when S2 or S3 named a build). Writes `.run/bootstrap/answers.txt`, `refs.toml`, `prior-art.md`. |
 | S5 repo | script | `"$PSXD" install stage S5 --target .` — git init, licence, the kit's ROM firewall as the first commit after its negative control. |
-| S6 PA3 | script | `"$PSXD" install stage S6 --target .` — PA3 3.14.2's own unattended per-repo install. If it says PA3 is not installed on this machine, show the one command it prints (`--root --no-clone`: the pinned copy, not PA3's upstream), let the developer run it, then resume. Its `DONE` line ends with the restart line. |
-| — restart | — | PA3's hooks and agents load at session start. Tell the developer, verbatim: **"Exit, then run `claude --agent plain` here and type `/psxdecomp:new --resume`."** Stop: no S7 in this session, even when asked to go on. (The plugin's SessionStart hook repeats the line in the next session.) |
-| S7 intake | you | Follow `reference/intake.md` (PA3's intake in this plain session, handed the kit's `intake.decomp.md` with the S4 answers). Commit what it writes. |
+| S6 PA3 | script | `"$PSXD" install stage S6 --target .` — PA3 3.30.7's own unattended per-repo install, then `"upgrade": "ask"` and `"mod": "off"` in `.claude/pa.json` (the mod stays off through the intake). If it says PA3 is not installed on this machine, show the one command it prints (`--root --no-clone`: the pinned copy, not PA3's upstream), let the developer run it, then resume. Its `DONE` line ends with the restart line. |
+| — restart | — | PA3's agents load at session start. Tell the developer, verbatim: **"Exit, then run `claude` here and type `/psxdecomp:new --resume`."** Stop: no S7 in this session, even when asked to go on. (The plugin's SessionStart hook repeats the line in the next session.) |
+| S7 intake | you | Follow `reference/intake.md` (PA3's intake in this session, PA3's mod off, handed the kit's `intake.decomp.md` with the S4 answers). Commit what it writes. |
 | S8 kit | script | `"$PSXD" install stage S8 --target .` — the pinned decomp-architect installer: its dry run, then the run. |
 | S9 refs | script | `"$PSXD" install stage S9 --target .` — `config/refs.toml`, the core rows fetched into `refs/` at their pins (optional ones are fetched later, when their `when` holds), `docs/ops/refs.md`, the grep rule. |
-| S10 handoff | script | `"$PSXD" install stage S10 --target .` — doctor, `config/psxdecomp.toml`, `docs/prior-art.md`, the agents' deny rules, the vendored README lint and its CI. It also writes the writing rule `rules/STE1.md`, its hook and the first `config/style-ratchet.txt`. It writes the floor: `tools/psxd_floor.py`, its guard and `docs/ops/psxdecomp-floor.md`. Then tell the developer: **"Run a bare `claude` here: PA3's planner drafts GENERATION_PLAN.md. The steps after it are in `docs/ops/psxdecomp-floor.md`."** |
+| S10 handoff | script | `"$PSXD" install stage S10 --target .` — doctor, `config/psxdecomp.toml`, `docs/prior-art.md`, the agents' deny rules, the vendored README lint and its CI. It also writes the writing rule `rules/STE1.md`, its hook and the first `config/style-ratchet.txt`. It writes the floor: `tools/psxd_floor.py`, its guard and `docs/ops/psxdecomp-floor.md`. Last, it turns PA3's mod on. Then tell the developer: **"Exit, then run `claude` here and say go: Claude drafts GENERATION_PLAN.md. The steps after it are in `docs/ops/psxdecomp-floor.md`."** |
 
 `--deep` widens S3 (extended web search, shallow clones of every repository lead). Without it, S3 is one shallow
 search pass per question.
@@ -61,8 +61,8 @@ search pass per question.
 ## Resuming
 
 `--resume`: run `"$PSXD" install plan --target .`; continue at the `NEXT` stage. A `failed` stage is re-run from its
-start (every stage is idempotent). If the current session is not a plain one and the next stage is S7, give the
-restart line above and stop.
+start (every stage is idempotent). If the next stage is S7 and PA3's mod runs this session (`.claude/pa.json` `"mod": "on"` when
+it started), give the restart line above and stop.
 
 ## What the developer sees at the end
 

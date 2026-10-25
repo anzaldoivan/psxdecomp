@@ -9,7 +9,7 @@ bootstrap should start with. They come back here only as **reviewed pull request
 | A probe fact a real disc contradicted | `docs/prior-art.md` corrections | a probe fix plus a tier-1 fixture case that reproduces it |
 | A reference source agents kept needing | web-retriever reports | a `refs.toml` row (licence read and dated) |
 | A host arrangement that worked | `docs/ops/*hosts*` | a `profiles/<id>/hosts/<recipe>.md` |
-| A byo SDK a project verified (deferred until one is in hand) | its file list and checksums | a per-version sha256 manifest the doctor's `sdk` row checks, and stamp scanning of the SDK's LIB files |
+| A byo SDK a project verified (mmx6, PsyQ 4.7, phase 1.9 T2 `d5cd466c`, 2026-10-24) | its hash list, `sha256  path` lines with names and hashes only (mmx6 `config/sdk.psyq47.sha256`) | a hash-only manifest per SDK version, which the doctor's `sdk` row checks, and stamp scanning of the SDK's LIB files. No SDK byte |
 | A research lead class S3 missed | a backtest miss | a search seed in `[research]` and, when it generalises, a backtest eval |
 | A debt class that a game's scanner proved | mmx5 `tools/readability/scan.py` (commits `198d2e2`, `077fc91`, read 2026-10-12) | a kind of `scripts/floor.py debt`, written fresh, with a planted file in its self-test |
 | A tool of its own that does a delivery's work | one of the paths below | an `OWN_DETECT` entry in `scripts/upgrade.py` |

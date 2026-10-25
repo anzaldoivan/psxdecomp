@@ -93,12 +93,12 @@ ref      = "2bcbea9dc79a4cac81892c5979fee97458905985"
 licence  = "GPL-2.0"
 class    = "copyleft"
 tier     = "optional"
-when     = "you supplied PsyQ libraries (byo) and need to convert their objects"
-covers   = "the PsyQ .OBJ/.LIB format as this parser reads it"
-topics   = ["psyq-obj", "lnk-format", "relocations", "library-conversion"]
+when     = "you supplied PsyQ libraries (byo) and need to convert their .OBJ files to ELF"
+covers   = "the PsyQ .OBJ format as this parser reads it at this commit; it converts no crt0 (see the traps). Its .comm and relocation handling changed in Sep-Oct 2025 (43b8eee, 7194546, e12d98b, 919c597): a game pins the binary it runs by sha256. The kit's image/Dockerfile builds it from this commit. Against the prebuilt binary of Xeeynamo/psyz's `requirements` release, 2125 of the 2133 objects of PsyQ 4.7 convert the same up to symbol and section order, and 8 differ in the .bss layout of their .comm symbols (psxdecomp, 2026-10-24)"
+topics   = ["psyq-obj", "lnk-format", "relocations", "library-conversion", "obj-to-elf", "sdk-leg"]
 paths    = ["LICENSE", "tools/psyq-obj-parser"]
-used_by  = "BFM: vendor library conversion (20 files)"
-checked  = "2026-10-01"
+used_by  = "BFM: vendor library conversion (tools/psyq_build_libs.sh, 20 files); mmx6 phase 1.9 T4 (cee67b0d, 2026-10-24): the SDK leg, with psyz's prebuilt binary; silent-hill-decomp and parasite-eve-2-decomp: a one-time conversion whose objects they commit; chrono-cross-decomp: tools/scripts/extract_psyq_objs.sh (read 2026-10-24)"
+checked  = "2026-10-24"
 
 [[ref]]
 name     = "sotn-decomp"
@@ -181,6 +181,19 @@ covers   = "the PsyQ MND symbol format as this Go parser reads it at this commit
 topics   = ["psyq-sym", "symbol-file", "types", "declarations", "oracle-build"]
 used_by  = "FedericoMilesi/soul-re docs/CONTRIBUTING.MD at 59d1ee8 (read 2026-10-13): a declarations header from its prototype's symbol file, through a fork of this parser; no psxdecomp game yet"
 checked  = "2026-10-13"
+
+[[ref]]
+name     = "psy-k"
+url      = "https://github.com/ttkb-oss/psy-k"
+ref      = "e25c309c48cf5a1ae133e092f661fb874cc0f47f"
+licence  = "BSD-3-Clause (LICENSE.TXT through GitHub's licence API, and crates.io; read 2026-10-24)"
+class    = "adapt"
+tier     = "optional"
+when     = "you supplied PsyQ libraries (byo) and need the .OBJ members of a .LIB"
+covers   = "psy-k 0.4.0 (tag v0.4.0 = this commit; the kit's image/Dockerfile pins the crate by sha256): `psyk extract <LIB>` splits a PsyQ .LIB into its .OBJ members; it converts nothing to ELF (psyq-obj-parser does)"
+topics   = ["psyq-lib", "lib-extract", "lnk-format", "library-conversion", "sdk-leg"]
+used_by  = "mipsmatch (psy-k's README L14, read 2026-10-24); mmx6 phase 1.9 T4 (cee67b0d, 2026-10-24): psyk in its image, built from the sha256-pinned crate"
+checked  = "2026-10-24"
 
 # ---- byo: never fetched -------------------------------------------------------------------------------------------
 
@@ -282,7 +295,7 @@ used_by  = "BFM docs/matching-cookbook.md 28a (GCC patterns, PS1-applicable subs
 name     = "parasite-eve-decomp"
 url      = "https://github.com/khasinski/parasite-eve-decomp"
 class    = "link"
-licence  = "none selected (its LICENSE.md, licence read 2026-10-12 at commit a357ac0c and 2026-10-14 at c578deb): ideas only, no text and no code"
+licence  = "none selected (its LICENSE.md, licence read 2026-10-12 at commit a357ac0c, 2026-10-14 at c578deb and 2026-10-16 at 2f2359b): ideas only, no text and no code"
 topics   = ["exemplar", "debt-baseline", "verify-gate", "asm-evidence", "pinned-toolchain", "finished-file", "objdiff-complete", "file-names"]
 covers   = "practice on a PS1 project (seen 2026-10-12 and 2026-10-14): debt baselines that must equal the tree, one verify gate, an evidence record for each assembly function, a toolchain that refuses a patched checkout, a definition of a finished file apart from a matched one, a `complete` mark for a fully matched C unit, file names that start with a placeholder"
 used_by  = "psxdecomp 0.6.0 (2026-10-12): the equal-baseline rule of the debt check, the `make verify` convention, the dirty-checkout check of the toolchain pins, the idea of the finished-file rule (rules/FIN1.md, its text written fresh); psxdecomp 0.6.0 (2026-10-14): a `complete` mark on decomp.dev for a fully matched C unit, a file name that starts with a placeholder counted as kind filename, also with a suffix"
@@ -345,7 +358,7 @@ rule  = "a sibling project's flags are a lead for the ladder, never the pin"
 [[authority]]
 topic = "which PsyQ library function sits at an address"
 order = ["ghidra-psx-ldr", "psyq-sdk"]
-rule  = "signatures of the version matching the game's stamps; byte-verify against byo libraries when supplied"
+rule  = "signatures of the version matching the game's stamps; byte-verify against byo libraries when supplied. When two or more objects match one span, the relocations decide (docs/ops/psxdecomp-floor.md, The PsyQ libraries; mmx6 1.9 T4 corrected 8 LIBCD objects so, 2026-10-24)"
 
 [[authority]]
 topic = "which PsyQ version the game links"
@@ -422,7 +435,7 @@ do       = "treat config/psxdecomp.toml [psyq] as a lead for the compiler phase;
 
 [[trap]]
 what     = "a PsyQ release need not ship a compiler: 4.2 is library-only and psyq47.zip holds no .EXE (decomp.me has no psyq4.2/4.7 id)"
-evidence = "BFM docs/SETUP.md 5.2; ygofm-decomp docs/DECISIONS.md (2026-08-31); decomp.me compilers.py (seen 2026-10-01)"
+evidence = "BFM docs/SETUP.md 5.2; ygofm-decomp docs/DECISIONS.md (2026-08-31); decomp.me cromper/cromper/compilers.py (read 2026-10-24): its PsyQ ids are psyq_263_221, psyq3.3, 3.5, 3.6, 4.0, 4.1, 4.3, 4.4, 4.5 and 4.6"
 do       = "for a 4.2 or 4.7 game, take compiler candidates from other releases and from sibling repos, never from 'the SDK's cc1'"
 
 [[trap]]
@@ -449,3 +462,28 @@ do       = "let the bytes (prologue idioms, library signatures) pick the compile
 what     = "decomp.me's gcc2.7.2-psx is not a repo's toolchain: old-gcc release 0.13 vs BFM's 0.17, another maspsx commit, and gas pads .text to 16 bytes"
 evidence = "BFM tools/decompme_replica.sh header (P33 E1, 2026-09-07)"
 do       = "prove a preset through the kit's decompme_replica before saving it; read the verdict, not the .text size"
+
+[[trap]]
+what     = "psylink orders an object's .comm variables by a name hash ((length + byte sum) mod 512, ascending), not in record order: an ELF link in record order misplaces weak .bss"
+evidence = "parasite-eve-2-decomp tools/patches/README.md L102, L138-154 and lib/versions.txt; silent-hill-decomp issue #142 (a LIEF script) (both read 2026-10-24); mmx6 cookbook C0241 (1.9 T4, 2026-10-24)"
+do       = "give each .bss global of a converted object its own address (a hard ld assignment), or keep that object's .bss as split bytes; never take the converter's .bss order as psylink's"
+
+[[trap]]
+what     = "psyq-obj-parser converts no crt0: snmain and 2MBYTE.OBJ carry relocations it refuses (sectstart/sectend, expression type 12)"
+evidence = "silent-hill-decomp src/main/libsn/snmain.s L7; parasite-eve-2-decomp configs/USA/main.yaml L157 (both read 2026-10-24); mmx6 1.9 T4, 2MBYTE.OBJ (cookbook C0241 and tools/mmx6/sdk.py lnk_symbolize, 2026-10-24)"
+do       = "keep crt0 as assembly, or rewrite its sectstart/sectend nodes into symbol references in a scratch copy of the object before conversion"
+
+[[trap]]
+what     = "GNU ld takes an object from a .a archive only for a reference it has seen: an object that only overlays reference is dropped"
+evidence = "silent-hill-decomp issue #142 (read 2026-10-24)"
+do       = "name each converted object in the linker script (an `o` segment, or a splat `lib` segment `<lib>.a:<obj>.o`); never rely on an archive search"
+
+[[trap]]
+what     = "splat's `lib` segment names `<lib>.a:<obj>.o` (src/splat/segtypes/common/lib.py L81): it reads a GNU ar archive of ELF objects, never a PsyQ .LIB"
+evidence = "splat lib.py L81 and docs/Segments.md L276, L299 (read 2026-10-24)"
+do       = "convert a .LIB and pack it with ar before a `lib` segment names it, or name each converted object in an `o` segment (o_path)"
+
+[[trap]]
+what     = "a byo SDK object's data can differ from retail where its .text matches: mmx6's LIBCD_BIOS_1 holds 1 at 0x8007CCE4, retail 0"
+evidence = "mmx6 1.9 T4 summary (cee67b0d, 2026-10-24): 232 objects' data equal, 1 differs, 9 not compared (no relocation reaches their initialized sections: LIBCARD_INIT, LIBCD_CDROM, seven LIBCD_C_*)"
+do       = "compare an object's data with retail before you link that data from the object; otherwise link its .text only and keep the split data"

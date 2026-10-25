@@ -86,6 +86,48 @@ def tree_digest(root) -> str:
     return "sha256:" + hashlib.sha256("".join(lines).encode()).hexdigest()
 
 
+# The PA3 names that 3.24 (PA 3.2: one session, the mod runs the plan) and 3.25 (no closing agent, no milestone
+# verifier, one agent per role) removed. Text that names one tells an agent to use what is gone. One home: the doctor's
+# pa3-retired row, the game test (tier 1), the static test over psxdecomp's delivered texts (tier 0). Tokens only, never plain words: `router`
+# stays off the list, since 3.28.8 itself writes `--by router` and commits as `router`. (regex, retired in)
+PA3_RETIRED = (
+    (r"(?<![\w-])pa-session\b", "3.24"),
+    (r"--agent plain\b", "3.24"),
+    (r"\bexpert-opus55\b", "3.25"),
+    (r"\bcoder-opus55\b", "3.25"),
+    (r"\bdiscuss-high\b", "3.24"),
+    (r"\bdiscuss-max\b", "3.24"),
+    (r"(?<![\w.-])/discuss\b", "3.24"),
+    (r"(?<![\w.-])/plangen\b", "3.24"),
+    (r"(?<![\w.-])/planphase\b", "3.24"),
+    (r"(?<![\w.-])/proceed\b", "3.24"),
+    (r"(?<![\w.-])/thoughts\b", "3.24"),
+    (r"\bplanner-gen\b", "3.24"),
+    (r"\bplanner-phase\b", "3.24"),
+    (r"phaseend_index\.py verify\b", "3.25"),
+    (r"launch\.py --seed-only\b", "3.24"),
+    (r"(?<![\w-])seed\.md\b", "3.24"),
+    (r"PA3's closer\b", "3.25"),
+)
+
+
+def retired_hits(root, rels) -> list[tuple[str, int, str]]:
+    """[(rel, line number, the retired pattern)] for each line of the text files `rels` under `root` that names a
+    PA3_RETIRED token. Binary and unreadable files are skipped."""
+    root = pathlib.Path(root)
+    rxs = [(re.compile(pat), pat) for pat, _ in PA3_RETIRED]
+    hits = []
+    for rel in rels:
+        try:
+            data = (root / rel).read_bytes()
+            text = data.decode("utf-8") if b"\0" not in data else None
+        except (OSError, UnicodeDecodeError):
+            text = None
+        for n, line in enumerate((text or "").splitlines(), 1):
+            hits += [(rel, n, pat) for rx, pat in rxs if rx.search(line)]
+    return hits
+
+
 def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 

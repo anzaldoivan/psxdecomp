@@ -1,14 +1,14 @@
 1 .github/PULL_REQUEST_TEMPLATE.md
 10 AGENTS.md
 3 CONTRIBUTING.md
-16 README.md
+14 README.md
 1 SECURITY.md
 4 agents/scout-repo.md
 4 docs/ARCHITECTURE.md
-105 docs/ECOSYSTEM.md
+100 docs/ECOSYSTEM.md
 5 docs/PROFILES.md
 134 docs/PUBLISHING.md
-15 docs/REFS.md
+14 docs/REFS.md
 5 docs/RELEASING.md
 3 docs/assets/README.md
 10 profiles/SCHEMA.md
@@ -20,4 +20,4 @@
 7 skills/new/reference/investigate.md
 4 skills/new/reference/report-template.md
 13 skills/new/reference/stages.md
-3 skills/upgrade/SKILL.md
+2 skills/upgrade/SKILL.md

@@ -27,8 +27,9 @@ tracked docs and its own `tools/reference/` clones.
 | decompals/old-gcc | R1.4-001; 20 files | 4 docs | **core** (its Dockerfiles + patches say how each cc1 is built) |
 | ghidra_psx_ldr | R1.2-001; its PsyQ signatures identified the libraries (1.2) | 4 docs | **core** |
 | vanilla gcc source of the pinned compiler | — (pin is 2.95.2) | **292 citations** (`tools/reference/gcc-2.7.2`) | **added**, optional per pin: `gcc-2.7.2-src`, `gcc-2.95.2-src` |
-| pcsx-redux | R1.2-001 (the docs site, 4 pages) | psyq-obj-parser, 20 files | parser **optional** (with a byo SDK); docs site a **link** |
+| pcsx-redux | R1.2-001 (the docs site, 4 pages), and psyq-obj-parser in 1.9 T4 (2026-10-24) | psyq-obj-parser, 20 files | parser **optional** (with a byo SDK); docs site a **link** |
 | sotn-decomp | R1.3-002 (overlay configs) | P36 (style, GTE header) | **optional**, with a trap |
+| psy-k | 1.9 T4, the SDK leg (2026-10-24) | 0 | **optional** (with a byo SDK) |
 | psy-q-decomp | 0 | 0 | **optional** (the only open per-version source when no SDK is supplied) |
 | psx-spx | 0 | 1 (hardware reference) | **optional** |
 | PsyQ SDK (byo) | — | runtime library 4.2, 4.6 libs, 4.0 sample source | **byo**, version-matched to the stamps |
@@ -39,8 +40,8 @@ tracked docs and its own `tools/reference/` clones.
 | decomp.me · decomp.dev · TCRF · Redump | — · — · L8 · dump check | 7 · 3 · 3 · 1 | **links** |
 | psxdev.net | 0 | 0 | **dropped** |
 
-Result: **4 core sources (13 MB, about 9 s)**, 9 optional, 2 byo, 13 links (counted 2026-10-13). Four of the links are exemplar projects. The optional ones take up to 109 MB if
-all are fetched (measured 2026-10-12, before `psx-mnd-sym`). Most of that is the two gcc sources, and a project needs only its pin's.
+Result: **4 core sources (13 MB, about 9 s)**, 10 optional, 2 byo, 13 links (counted 2026-10-24). Four of the links are exemplar projects. The optional ones take up to 109 MB if
+all are fetched (measured 2026-10-12, before `psx-mnd-sym` and `psy-k`). Most of that is the two gcc sources, and a project needs only its pin's.
 
 decomp.dev is a research source too, not a fetched row. `scripts/decompdev.py lookup --title T [--serial S]` lists
 its matching projects from the read API: repository, version, measures, last commit. Each is dated like any S3 lead.
@@ -62,12 +63,17 @@ a game repo's phase 1.2 check.
 ## Sourcing PsyQ (policy, 2026-10-01; not legal advice)
 
 - **Instructions only.** PsyQ is Sony's and never distributed. The game repo names the release (`config/psxdecomp.toml
-  [psyq]`, from [`psyq.toml`](../profiles/psx/psyq.toml)); the developer supplies a copy outside the repository
-  (`PSXDECOMP_BYO_PSYQ_PATH`, checked by the doctor's `sdk` row).
+  [psyq]`, from [`psyq.toml`](../profiles/psx/psyq.toml)). The developer supplies a copy in `tools/psyq/` or
+  outside the repository (`PSXDECOMP_BYO_PSYQ_PATH`, checked by the doctor's `sdk` row). Git ignores `tools/psyq/`
+  and the firewall purges it.
 - **No PsyQ URL and no downloader** in any file. **Never a source:** mkst/esa releases, FoxdieTeam/psyq_sdk,
-  persona-psx `lib/psyq`, psx.arthus.net.
+  persona-psx `lib/psyq`, psx.arthus.net, fuerchter/psyq-3.0-converted, the PsyQ archives of Xeeynamo/psyz's
+  `requirements` release, and the prebuilt objects that chrono-cross-decomp downloads.
 - **The default path needs no PsyQ binary:** decompals/old-gcc plus maspsx, as sotn-decomp does.
-- Deferred until a real SDK is in hand: per-version sha256 manifests ([HARVEST](HARVEST.md)).
+- **A hash-only manifest pins the SDK version** (since 2026-10-24). Its format and its check are in
+  [floor.md](../profiles/psx/floor.md), The SDK leg.
+- **The firewall is unchanged.** Only the build uses the SDK. An SDK leg converts it in the build
+  ([ECOSYSTEM.md](ECOSYSTEM.md), K39), and no SDK byte enters git.
 
 ## Oracle builds (policy, 2026-10-13, not legal advice)
 

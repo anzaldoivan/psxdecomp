@@ -1,0 +1,43 @@
+schema_version: "1.0"
+name: upgrade-dry-run
+description: "`/psxdecomp:upgrade --dry-run` shows the exact writes and stops: no apply, no question."
+tags: [flow, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "/psxdecomp:upgrade --dry-run"
+  max_turns: 10
+  timeout_seconds: 300
+  allowed_tools: [Skill, Bash, Read, Glob, Grep, AskUserQuestion]
+runs: 1
+graders:
+  - name: shows-the-writes
+    type: regex
+    target: last_message
+    pattern: "psxd_floor\\.py|psxd_publish\\.py|config/refs\\.toml|config/guard\\.tsv"
+  - name: says-nothing-written
+    type: regex
+    target: last_message
+    pattern: "(nothing|no file|none)[^\\n]{0,40}(written|applied|changed)|dry run|would"
+    flags: "i"
+  - name: ran-the-dry-run
+    type: tool_used
+    tool: Bash
+    input_match: "upgrade apply.*--dry-run"
+    min: 1
+  - name: no-apply
+    type: tool_used
+    tool: Bash
+    input_match: "upgrade apply(?!.*--dry-run)"
+    min: 0
+    max: 0
+  - name: no-question
+    type: tool_used
+    tool: AskUserQuestion
+    min: 0
+    max: 0
+  - name: no-floor-written
+    type: file_exists
+    path: tools/psxd_floor.py
+    exists: false
+expected_outcome: "audit, plan, `upgrade apply --dry-run`; the answer lists what would be written (tools/psxd_floor.py, config/refs.toml, ...) and stops without asking."

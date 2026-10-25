@@ -34,6 +34,10 @@ def folder_state(target: pathlib.Path, resume: bool) -> tuple[str, str]:
     if (target / ".claude" / "pa.json").is_file():
         return "FAIL", "PA3 is already installed here (.claude/pa.json); use /psxdecomp:upgrade for an existing repo"
     entries = [p.name for p in target.iterdir() if p.name not in (".DS_Store", ".claude")]
+    # PA3's machine mod writes its state into .run/mod/ of any folder a session opens (3.30.7): that alone is empty too
+    run = target / ".run"
+    if entries == [".run"] and run.is_dir() and [p.name for p in run.iterdir()] == ["mod"]:
+        entries = []
     if not entries:
         return "OK", "empty"
     if resume:
@@ -160,6 +164,15 @@ def self_test() -> int:
         (t / ".claude").mkdir()
         (t / ".claude" / "settings.local.json").write_text("{}")
         ok &= folder_state(t, False)[0] == "OK"             # Claude Code's own local settings are allowed
+        (t / ".run" / "mod").mkdir(parents=True)
+        (t / ".run" / "mod" / "run-review.json").write_text("{}")
+        ok &= folder_state(t, False) == ("OK", "empty")     # PA3's machine mod state alone
+        (t / ".run" / "stray").write_text("x")
+        ok &= folder_state(t, False)[0] == "FAIL"           # anything else under .run/ is not
+        (t / ".run" / "stray").unlink()
+        (t / ".run" / "mod" / "run-review.json").unlink()
+        (t / ".run" / "mod").rmdir()
+        (t / ".run").rmdir()
         (t / ".claude" / "pa.json").write_text("{}")
         ok &= folder_state(t, False)[0] == "FAIL"           # an existing PA3 repo is not a new project
         (t / ".claude" / "pa.json").unlink()

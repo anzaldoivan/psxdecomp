@@ -1,0 +1,29 @@
+schema_version: "1.0"
+name: doctor-offline-skip
+description: "`/psxdecomp:doctor --offline` reports the network rows as not run (SKIP), never as OK or as passed."
+tags: [flow, tier2]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: "/psxdecomp:doctor --offline"
+  max_turns: 8
+  timeout_seconds: 300
+  allowed_tools: [Skill, Bash, Read, Glob, Grep]
+runs: 1
+graders:
+  - name: skip-is-not-run
+    type: regex
+    target: last_message
+    pattern: "(github|dev-ci|network)[^\\n]{0,160}(not run|did not run|didn't run|not checked|skipped|SKIP)"
+    flags: "i"
+  - name: skip-never-ok
+    type: regex
+    target: last_message
+    pattern: "(github|dev-ci)`?[^\\n]{0,12}\\b(OK|pass(ed)?)\\b"
+    match: not_contains
+  - name: ran-offline
+    type: tool_used
+    tool: Bash
+    input_match: "doctor.*--offline"
+    min: 1
+expected_outcome: "The FAIL and WARN rows with their fixes; `github` and `dev-ci` are SKIP: not checked offline, counted as not run."

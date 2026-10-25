@@ -1,8 +1,8 @@
 # {{GAME_TITLE}} — Project Context (TEST FIXTURE)
 
 > **This is psxdecomp's canned constitution for tier-1 test installs (`install.py --intake-fixture`).** A real project's
-> constitution is written by PA3's intake in a `claude --agent plain` session, handed the kit's `intake.decomp.md`
-> (stage S7). Never use this file for a real game.
+> constitution is written by PA3's intake in a session with PA3's mod off (S6 sets it off), handed the kit's
+> `intake.decomp.md` (stage S7). Never use this file for a real game.
 
 ## Roadmap (the kit's ladder, abbreviated for the fixture)
 

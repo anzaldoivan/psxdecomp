@@ -1,12 +1,13 @@
 #!/bin/sh
-# A bootstrap paused at the restart: S0-S6 done, PA3's pa.json present, no intake yet. The eval child is a default
-# session (not `claude --agent plain`), so /psxdecomp:new --resume must give the restart line and stop before S7.
+# A bootstrap paused at the restart: S0-S6 done, PA3's pa.json present with the mod on (as PA3's own installer leaves
+# it, not as S6 does), no intake yet. /psxdecomp:new --resume must give the fix and the restart line and stop before S7.
 set -e
 git init --quiet -b main .
 mkdir -p .run/bootstrap .claude
 cat > .claude/pa.json <<'JSON'
 {
-  "pa_version": "3.14.2",
+  "pa_version": "3.30.7",
+  "mod": "on",
   "upgrade": "ask",
   "project": "homebrew-decomp"
 }

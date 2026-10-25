@@ -143,7 +143,7 @@ ARTIFACT = re.compile(r"^[A-Za-z0-9._-]+_report$")
 
 # ---- what psxdecomp writes into a game repository from this standard (S10, /psxdecomp:upgrade) -------------------
 VENDORED = "tools/psxd_publish.py"                        # this file, byte for byte
-VERSION = "0.6.4"                                         # psxdecomp's version: a game's tool changes only to a later one
+VERSION = "0.7.0"                                         # psxdecomp's version: a game's tool changes only to a later one
 WORKFLOW = ".github/workflows/psxdecomp-readme.yml"       # profiles/psx/psxdecomp-readme.yml: lint + the freeze
 
 # ---- the category list ------------------------------------------------------------------------------------------
@@ -2005,21 +2005,10 @@ def cmd_import(repo=".", accept_governance=False, skip=()) -> int:
 
 # ---- land: the import chain onto dev, only when the gate is idle -------------------------------------------------
 
-def _alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def inbox_pending(text: str) -> list[str]:
-    """The bullets the router has yet to consume, by PA3's own rule (tools/status.py `inbox_pending`, 3.14.2):
-    top-level `- ` lines outside HTML comments, indented lines joined, the template's `<...>` placeholder left out."""
+    """The bullets PA3 has yet to consume, by its own rule (tools/status.py `inbox_pending`, 3.28.8): top-level `- `
+    lines outside HTML comments, indented lines joined (an indented `- ` line neither joins nor ends the bullet), the
+    template's `<...>` placeholder left out."""
     out, cur = [], None
     for raw in re.sub(r"<!--.*?-->", "", text, flags=re.S).split("\n"):
         line = raw.rstrip("\r")
@@ -2029,7 +2018,7 @@ def inbox_pending(text: str) -> list[str]:
             cur = line[2:].strip()
         elif cur is not None and line[:1] in (" ", "\t") and line.strip() and not line.strip().startswith("- "):
             cur += " " + line.strip()
-        elif cur is not None:
+        elif cur is not None and (not line.strip() or line[:1] not in (" ", "\t")):
             out.append(cur)
             cur = None
     if cur is not None:
@@ -2037,13 +2026,52 @@ def inbox_pending(text: str) -> list[str]:
     return [b for b in out if b and not re.match(r"^<.*>$", b)]
 
 
-def land_blockers(dev, cfg, cache, tip) -> list[str]:
-    import fcntl
+LOOP_REL = ".run/mod/loop.json"                 # PA3 3.2's loop state (the mod's loop.ts LOOP_FILE)
+LOOP_STALE_S = 45                                # the mod's OWNER_STALE_MS: an older heartbeat has no live session
+
+
+def loop_blockers(dev, now=None, owner=True) -> list[str]:
+    """PA3 3.2's mod, from its own files: a loop not `off` or with a task, a live owner session (heartbeat younger than
+    the mod's stale bound), or a background shell of that session still running (`.run/mod/<sid>/shells.json`, an
+    entry with no `exit`). A loop.json that is not a JSON object refuses; an absent or unreadable one is a repository the
+    mod never ran.
+    owner=False reads the loop's state and task alone: a caller that runs inside the owner session itself."""
+    dev = pathlib.Path(dev)
+    raw = _read(dev / LOOP_REL)
+    if raw is None:
+        return []
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        d = None
+    if not isinstance(d, dict):
+        return ["%s is not a JSON object" % LOOP_REL]
+    out = []
+    task = d.get("task") if isinstance(d.get("task"), dict) else None
+    if d.get("state", "off") != "off" or task:
+        out.append("%s: the loop is %s%s (a PA3 task is in flight)"
+                   % (LOOP_REL, d.get("state", "off"), ", task %s" % task.get("id", "?") if task else ""))
+    sid, beat = d.get("ownerSid") or "", d.get("heartbeatAt")
+    now = time.time() if now is None else now
+    if owner and sid and isinstance(beat, (int, float)) and now - beat / 1000.0 < LOOP_STALE_S:
+        out.append("%s: session %s owns the loop (heartbeat %ds ago): end it first" % (LOOP_REL, sid, now - beat / 1000.0))
+        try:
+            shells = json.loads(_read(dev / ".run/mod" / sid / "shells.json") or "{}")
+        except ValueError:
+            shells = {}
+        live = [s.get("name") or s.get("id") for v in (shells.values() if isinstance(shells, dict) else [])
+                for s in (v if isinstance(v, list) else []) if isinstance(s, dict) and "exit" not in s]
+        if live:
+            out.append("a background shell is running (%s)" % ", ".join(str(x) for x in live))
+    return out
+
+
+def task_in_flight(dev, owner=True) -> list[str]:
+    """A PA3 task in flight in dev, by both PA3 generations' files: before 3.24 `.run/status.json` (a task, kind or
+    waiting set), from 3.24 the mod's loop (loop_blockers; owner=False leaves out its live-session lines). [] when
+    none. land and upgrade apply refuse on any line; upgrade runs inside a session that may own the loop."""
     dev, out = pathlib.Path(dev), []
-    if os.environ.get("CLAUDECODE"):
-        out.append("CLAUDECODE is set: land is for the developer, not an agent session")
     st = _read(dev / ".run/status.json")
-    d = {}
     if st is not None:
         try:
             d = json.loads(st)
@@ -2051,17 +2079,17 @@ def land_blockers(dev, cfg, cache, tip) -> list[str]:
             d = None
         if not isinstance(d, dict):
             out.append(".run/status.json is not a JSON object")
-            d = {}
         elif any(d.get(k) is not None for k in ("task", "kind", "waiting")):
-            out.append(".run/status.json: a task, kind or waiting is set (the router is busy)")
-    sess = d.get("router_session")
-    pidf = dev / ".run/warmer" / ("%s.pid" % sess) if sess else None
-    if pidf and pidf.is_file():
-        try:
-            if _alive(int((_read(pidf) or "").strip())):
-                out.append("warmer %s is alive (%s)" % (sess, pidf.relative_to(dev)))
-        except ValueError:
-            pass
+            out.append(".run/status.json: a task, kind or waiting is set (a PA3 task is in flight)")
+    return out + loop_blockers(dev, owner=owner)
+
+
+def land_blockers(dev, cfg, cache, tip) -> list[str]:
+    import fcntl
+    dev, out = pathlib.Path(dev), []
+    if os.environ.get("CLAUDECODE"):
+        out.append("CLAUDECODE is set: land is for the developer, not an agent session")
+    out += task_in_flight(dev)
     for f in sorted(glob.glob(str(dev / ".run/gate/locks/*.lock"))) + [str(dev / ".run/gate/apply.lock")]:
         if not os.path.exists(f):
             continue
@@ -4280,9 +4308,19 @@ def _public_self_test(check, td: str):
         run = M.dev / ".run"
         no_land("status task set refuses", "status.json", lambda: put(run, {"status.json": json.dumps(
             {"task": "fixture-task", "kind": None, "waiting": None})}), lambda: shutil.rmtree(run))
-        no_land("live warmer refuses", "warmer r1", lambda: put(run, {
-            "status.json": json.dumps({"task": None, "kind": None, "waiting": None, "router_session": "r1"}),
-            "warmer/r1.pid": str(os.getpid())}), lambda: shutil.rmtree(run))
+        beat = int(time.time() * 1000)
+        no_land("a running loop refuses", "the loop is running", lambda: put(run, {"mod/loop.json": json.dumps(
+            {"state": "running", "task": {"id": "fixture-task"}, "ownerSid": "s1", "heartbeatAt": 0})}), lambda: shutil.rmtree(run))
+        no_land("a live mod session refuses", "session s1 owns", lambda: put(run, {"mod/loop.json": json.dumps(
+            {"state": "off", "task": None, "ownerSid": "s1", "heartbeatAt": beat})}), lambda: shutil.rmtree(run))
+        put(run, {"mod/loop.json": json.dumps({"state": "off", "task": None, "ownerSid": "s1", "heartbeatAt": beat}),
+                  "mod/s1/shells.json": json.dumps({"a1": [{"id": "b1", "name": "fleet"}, {"id": "b0", "exit": 1}]})})
+        got = loop_blockers(M.dev)
+        check("a live shell of the owner refuses; an ended one does not", any("(fleet)" in x for x in got) and
+              not any("b0" in x for x in got), got)
+        stale = loop_blockers(M.dev, now=beat / 1000.0 + LOOP_STALE_S + 1)
+        shutil.rmtree(run)
+        check("an idle loop with a stale heartbeat (no session) lets land go", stale == [], stale)
         import fcntl
         put(run, {"gate/locks/a.lock": ""})
         fd = os.open(str(run / "gate/locks/a.lock"), os.O_RDONLY)
@@ -4293,7 +4331,8 @@ def _public_self_test(check, td: str):
                 lambda: shutil.rmtree(cur))
         tmpl = "# INBOX\n\n<!-- Freeform bullets.\n- an example inside the comment -->\n\n- <note, or question>\n"
         check("INBOX: the template's placeholder and commented bullets are not pending (PA3's rule)",
-              inbox_pending(tmpl) == [] and inbox_pending(tmpl + "- fix X\n  and Y\n") == ["fix X and Y"],
+              inbox_pending(tmpl) == [] and inbox_pending(tmpl + "- fix X\n  and Y\n") == ["fix X and Y"] and
+              inbox_pending("- a\n  - nested\n  more\n") == ["a more"],
               inbox_pending(tmpl))
         no_land("REVIEW.md refuses", "REVIEW.md", lambda: put(cur, {"REVIEW.md": "r\n"}), lambda: shutil.rmtree(cur))
         row = ["W1", "x", "x", "-", "x", "d", "x", "x", "x", "x", "x", "f", "done"]

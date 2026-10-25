@@ -2,8 +2,8 @@
 
 ## A bootstrapper, not a runtime
 
-Claude Code ignores `hooks`, `permissionMode` and `mcpServers` in plugin agents. PA3's agents depend on project
-hooks, `tools/launch.py`, `plan_edit.py` and `.claude/pa.json`. So PA3's own installer installs PA3 **into each
+Claude Code ignores `hooks`, `permissionMode` and `mcpServers` in plugin agents. PA3's agents depend on its own
+plugin (the mod), its user-level hooks, `tools/launch.py`, `plan_edit.py` and `.claude/pa.json`. So PA3's own installer installs PA3 **into each
 repository**, unchanged. The plugin runs only the interview, the investigation, the reference library and the two
 pinned installers. After S10 the repository needs nothing from the plugin.
 
@@ -12,14 +12,14 @@ pinned installers. After S10 the repository needs nothing from the plugin.
   ├─ S0 preflight.py ─ S2 identify.py ─ profiles/psx/probes/psx.py      (scripts: deterministic, --self-test each)
   ├─ S1 interview ─ S3 decompdev.py + ghsearch.py → scout-web × 8 + scout-repo ─ S4 gate   (the model: AskUserQuestion, agents)
   ├─ S5 install.py: firewall pack (from the pinned kit's templates) → first commit
-  ├─ S6 install.py → PA3's pa_install.py --project --yes  (pinned tag, sha-checked); pa.json "upgrade": "ask"
-  ├─ restart → claude --agent plain → /psxdecomp:new --resume       (hooks/hooks.json repeats it at session start)
+  ├─ S6 install.py → PA3's pa_install.py --project --yes  (pinned tag, sha-checked); pa.json "upgrade": "ask", "mod": "off"
+  ├─ restart → claude → /psxdecomp:new --resume                     (hooks/hooks.json repeats it at session start)
   ├─ S7 PA3's intake handed the kit's intake.decomp.md                 (PA3's tested path, unchanged)
   ├─ S8 install.py → the kit's install.py --answers (dry run, then run; digest-checked) + the README standard
   ├─ S9 fetch_refs.py → refs/ (git-ignored, searchable via .ignore) + docs/ops/refs.md (committed)
   └─ S10 doctor.py + oracle.py (the oracle-build record) + config/psxdecomp.toml + tools/psxd_publish.py (the README lint, vendored; its CI)
          + tools/psxd_floor.py (the floor, vendored: debt baseline, gate, guard hook) + docs/ops/psxdecomp-floor.md
-         + tools/psxd_img.py (the map of another build, vendored)
+         + tools/psxd_img.py (the map of another build, vendored); pa.json "mod": "on"
 ```
 
 A game may also run in split mode: a public trunk, a private `-dev` workspace and a private `-private` store for the
@@ -28,15 +28,17 @@ game files. It is opt-in through `[public]` and `config/public-paths.txt`, which
 
 ## Why the restart between S6 and S7
 
-PA3's hooks, agents and settings load at session start, and its intake is tested in a `claude --agent plain`
-session. Running the intake in the session that installed PA3 would be an untested path. The restart is one line for
+PA3's agents, settings and mod load at session start, and its intake is tested in a session the mod does not drive.
+Running the intake in the session that installed PA3 would be an untested path. The restart is one line for
 the developer, and it keeps "don't deviate from the tested PA3 framework" literal.
 
 The line is not left to the model. S6's `DONE` line carries all of it. The plugin's `SessionStart` hook
-(`scripts/resume_hint.py`) prints it whenever a session opens on a bootstrap whose next stage is S7. A bare `claude`
-opens PA3's router, because PA3's installer merges `"agent": "pa-session"` into `.claude/settings.json`. There is no
-flag for "no agent", so `claude --agent plain` is the way past it. A per-project opt-out is proposed upstream: P1 in
-[ECOSYSTEM.md](ECOSYSTEM.md#proposed-to-upstreams).
+(`scripts/resume_hint.py`) prints it whenever a session opens on a bootstrap whose next stage is S7.
+
+PA3 3.2 has no router agent: a bare `claude` is the governed session, and its mod (a Claude Code plugin) runs the
+plan. PA3's installer writes `"mod": "on"`. At its first tick the mod holds a fresh project for the developer and
+offers to draft a plan. So S6 writes `"mod": "off"` (PA3's own switch, read at each session start), and the intake
+session is an ordinary one. S10 writes `"on"` last, in its handoff commit. The next bare `claude` is the governed one.
 
 ## Why the PA3 pin holds after the install
 
@@ -44,10 +46,10 @@ flag for "no agent", so `claude --agent plain` is the way past it. A per-project
 
 - A `--root` install without `--no-clone` clones PA3's upstream default branch and follows it. S6's `--root` hint
   carries `--no-clone`.
-- A `.claude/pa.json` without `"upgrade"` means auto, so the router upgrades before its first task. S6 writes
+- A `.claude/pa.json` without `"upgrade"` means auto, so PA3 installs a newer release at a session start. S6 writes
   `"upgrade": "ask"` (recorded in `config/psxdecomp.toml [pa3]`).
 
-The doctor's `pa3-drift` row WARNs on either drift.
+The doctor's `pa3-drift` row WARNs on either drift, and on a mod left off after the handoff.
 
 ## Why S5 writes the kit's firewall before PA3
 

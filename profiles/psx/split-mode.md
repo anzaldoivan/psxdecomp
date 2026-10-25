@@ -9,14 +9,14 @@ Run everything here in your own terminal, outside Claude Code. In an agent sessi
 
 ## The cadence
 
-1. A phase ends. PA3's recap ends with `Push: git push`.
+1. A phase ends. Claude's close line ends with `Push when ready.`
 2. You push: `git push`. The pre-push hook builds the public projection of the commit you push, offline, and reports:
    - `PRE-PUSH FAIL …`: a leak. A denied or agent path is listed, a symlink or gitlink is listed, or the audit
      failed. The push stops. Unlist the path or remove the bytes, commit, push again.
    - `PRE-PUSH WARN …`: a README lint failure, new public paths, or nothing new to release. The push goes through.
    - `PRE-PUSH release-ready: N files, M new`: nothing to fix.
 3. You ship: `python3 tools/psxd_publish.py ship --summary "one line, in your words"`.
-4. You resume the router.
+4. You tell Claude to go on.
 
 `git push --no-verify` skips the hook. It is yours alone, for a broken hook. The agents' deny list refuses it.
 

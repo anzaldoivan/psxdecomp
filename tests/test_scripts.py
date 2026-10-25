@@ -1,4 +1,5 @@
 """Every script's --self-test (each carries its own negative controls)."""
+import os
 import subprocess
 import sys
 
@@ -79,9 +80,18 @@ def test_resume_hook(tmp_path):
     assert r.returncode == 0 and r.stdout == ""
     for sid in ("S0", "S1", "S2", "S3", "S4", "S5", "S6"):
         run([PY, ROOT / "scripts/install.py", "mark", sid, "--target", tmp_path])
-    r = subprocess.run([str(ROOT / "scripts/psxd"), "resume_hint"], input=feed(None), capture_output=True, text=True)
+    env = {k: v for k, v in os.environ.items() if k != "PA_MOD_OFF"}
+    (tmp_path / ".claude").mkdir(exist_ok=True)
+    (tmp_path / ".claude/pa.json").write_text('{"pa_version": "3.30.7", "mod": "off"}')      # as S6 leaves it
+    r = subprocess.run([str(ROOT / "scripts/psxd"), "resume_hint"], input=feed(None), capture_output=True, text=True,
+                       env=env)
     out = json.loads(r.stdout)
-    assert "`claude --agent plain`" in out["systemMessage"] and "`/psxdecomp:new --resume`" in out["systemMessage"]
+    assert "`/psxdecomp:new --resume`" in out["systemMessage"] and "Exit" not in out["systemMessage"], out
+    (tmp_path / ".claude/pa.json").write_text('{"pa_version": "3.30.7", "mod": "on"}')       # PA3's installer again
+    r = subprocess.run([str(ROOT / "scripts/psxd"), "resume_hint"], input=feed(None), capture_output=True, text=True,
+                       env=env)
+    out = json.loads(r.stdout)
+    assert "`claude`" in out["systemMessage"] and '"off"' in out["systemMessage"] and "--agent" not in out["systemMessage"]
     r = subprocess.run([str(ROOT / "scripts/psxd"), "resume_hint"], input="not json", capture_output=True, text=True)
     assert r.returncode == 0 and r.stdout == ""                        # a bad payload: no hint, never a failure
 

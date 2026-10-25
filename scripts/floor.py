@@ -118,7 +118,7 @@ ASM_EVIDENCE = "config/asm-evidence.tsv"
 TOOLCHAIN = "config/toolchain.tsv"
 GUARD = "config/guard.tsv"
 VENDORED = "tools/psxd_floor.py"
-VERSION = "0.6.4"                                    # psxdecomp's version: a game's tool changes only to a later one
+VERSION = "0.7.0"                                    # psxdecomp's version: a game's tool changes only to a later one
 
 
 class Fail(Exception):

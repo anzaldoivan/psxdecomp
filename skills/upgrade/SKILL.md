@@ -20,10 +20,12 @@ psxrecomp's migrate shape: **audit → plan → apply --dry-run → apply**. `PS
    Three actions cover the other builds of a game. `firewall-debug` is the script's. `record-oracle` and
    `oracle-public` are `[manual]`: give the command of the plan line.
 3. `"$PSXD" upgrade apply --dry-run --repo <repo>` — the exact writes.
-4. Stop here when `--dry-run` was given. Otherwise ask (AskUserQuestion: `Apply` recommended / `Stop`), then
-   `"$PSXD" upgrade apply --repo <repo>` (add `--fetch` to clone `refs/` too).
+4. Stop here when `--dry-run` was given, or when the plan printed `PLAN BUSY`: a PA3 task is in flight. The
+   script refuses to apply under it (`APPLY FAIL a PA3 task is in flight: ...`). Say why, with the file and the task
+   that the line names, and that the upgrade waits for the task. Otherwise ask (AskUserQuestion: `Apply` recommended
+   / `Stop`), then `"$PSXD" upgrade apply --repo <repo>` (add `--fetch` to clone `refs/` too).
 5. The script never commits. Its last line, `COMMIT ...`, is the command that commits the paths it wrote.
-   Run that command on the developer's word. If a router session is running in that repository, do not apply; say so.
+   Run that command on the developer's word.
 
 Tell the developer what each plan line does, in one line each. Two plan lines and what to say:
 
@@ -31,10 +33,11 @@ Tell the developer what each plan line does, in one line each. Two plan lines an
 
 ```
 PLAN 3 [psxdecomp] floor: write tools/psxd_floor.py and docs/ops/psxdecomp-floor.md (…) — missing or older …
-PLAN 7 [manual] PA3: the repository is at 3.14.1, psxdecomp is tested on 3.14.2; update with PA3's own installer …
+PLAN 7 [manual] PA3: the repository is at 3.14.2, psxdecomp is tested on 3.30.7; update with PA3's own installer …
 
 3. I can apply this one: it adds the floor's tool and its reference file. Nothing of yours changes.
-7. This one is yours: run PA3's installer yourself, then `/psxdecomp:doctor`. I do not run it.
+7. This one is yours: run PA3's installer yourself, then `/psxdecomp:upgrade` again and `/psxdecomp:doctor`. I do not
+   run it.
 ```
 
 </example>

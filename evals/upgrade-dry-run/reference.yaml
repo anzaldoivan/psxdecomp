@@ -1,0 +1,6 @@
+# Final answers for the grader negative controls (tests/test_static.py::test_eval_references); never read by a run.
+good:
+  - "Dry run: 16 files would be written, among them tools/psxd_floor.py, tools/psxd_publish.py and config/refs.toml. Nothing was written. Run `/psxdecomp:upgrade` without --dry-run to apply."
+bad:
+  - "The plan has 20 lines. Shall I apply them?"
+  - "Applied: tools/psxd_floor.py and config/refs.toml are written."

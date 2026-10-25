@@ -20,7 +20,9 @@ older one WARNs); publish-tool (WARN only: tools/psxd_publish.py and its workflo
 the public repository, the pre-push hook is in place, every workflow action is pinned to a full commit SHA); the
 interpreter pa.json names exists on this machine; the firewall (ignore block, audit passes on the tree, the
 planted-fixture hash present); the reference library (lint, pins, index current); refs/ ignored; the SDK (the
-PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: never inside the repository);
+PsyQ release the game links, from the record's [psyq], and $PSXDECOMP_BYO_PSYQ_PATH: outside the repository or in
+tools/psyq/, which git ignores and the firewall purges,
+and each file of config/sdk.psyq<version>.sha256 under it with its sha256);
 oracle (the disc scan in the record's [oracle] and the builds of config/oracle.toml: `oracle_row`);
 gate, toolchain, names and debt (the tooling and readability floor, each WAIT until its phase: one gate command and
 the hash files once 1.3 is closed, FAIL without them once 1.9 is closed; docs/ops/compiler-pin.md and
@@ -29,7 +31,9 @@ baseline equal to the tree from the first C file, FAIL on a rise or a stale row;
 guard (the profile's hook groups are in .claude/settings.json and config/guard.tsv parses: FAIL when psxdecomp could
 add a group or a rules line is no rule, WARN when it cannot edit the settings or the rules file is absent);
 hygiene (WARN only: unscoped version or game claims and sentences copied between the tracked docs; it also counts the
-writing findings, publish.lint_style); card (WARN only: HOW_WE_WORK.md over PA3's cap); progress (when a workflow
+writing findings, publish.lint_style); card (WARN only: HOW_WE_WORK.md over PA3's cap); pa3-retired (tracked text that
+names a PA3 name 3.24 or 3.25 removed, common.PA3_RETIRED: WAIT before PA3 3.24, WARN after, never FAIL; PA3's files,
+history and the frozen PROJECT_CONTEXT.md are not counted); progress (when a workflow
 builds a decomp.dev report: its safety lint, and whether decomp.dev lists the repo, in split mode the public
 [public].repo, WARN only; with no such workflow: WAIT until phase 1.9 opens, WARN while it is open, FAIL once it is
 closed); github (WARN only, through `gh api`, skipped offline or logged out: the repository's security
@@ -66,7 +70,7 @@ NETWORK_ROWS = ("progress", "github", "dev-ci", "private-repo", "public-standard
 SPLIT_ROWS = ("private-repo", "public-standard")
 ROWS = ("record", "sdk", "oracle", "pa3", "pa3-drift", "python", "kit", "roadmap", "gate", "toolchain", "names", "debt", "cpp",
         "readme", "publish-tool", "deny", "guard", "git-hooks", "split-guard",
-        "categories", "ignore", "audit", "fixture", "refs", "refs-ignored", "hygiene", "card") + NETWORK_ROWS
+        "categories", "ignore", "audit", "fixture", "refs", "refs-ignored", "hygiene", "card", "pa3-retired") + NETWORK_ROWS
 WIDTH = max(map(len, ROWS))                     # the name column of every printed row (doctor, upgrade audit, S10)
 
 
@@ -168,7 +172,9 @@ def base_rows(repo: pathlib.Path, add):
     gi = repo / ".gitignore"
     gtext = common.read(gi) if gi.is_file() else ""
     add("ignore", "OK" if "# ROM firewall — in force from the FIRST commit" in gtext else "FAIL",
-        "the kit's firewall block %s" % ("present" if "ROM firewall" in gtext else "missing from .gitignore"))
+        "the kit's firewall block %s" % ("present" if "ROM firewall" in gtext else "missing from .gitignore — fix: "
+                                         "append the kit's templates/gitignore.decomp to .gitignore (the block the "
+                                         "kit's S2 writes) and commit it before any game file"))
     audit = repo / "tools" / "audit_public.py"
     if audit.is_file():
         py = common.find_python() or sys.executable
@@ -199,6 +205,9 @@ def base_rows(repo: pathlib.Path, add):
     card = card_row(repo)
     if card:
         add("card", *card)
+    retired = pa3_retired_row(repo)
+    if retired:
+        add("pa3-retired", *retired)
 
 
 def _table(rec: dict, name: str) -> dict:
@@ -421,8 +430,9 @@ def machine_pa3_version() -> str | None:
 
 
 def pa3_drift_row(conf: dict, machine: str | None, pin: str) -> tuple[str, str]:
-    """WARN when the machine's PA3 left the pin (an upstream clone it follows, or an upgrade) or when pa.json lets the
-    router upgrade unasked (a missing `upgrade` key is PA3's auto). Never FAIL: the repo still builds."""
+    """WARN when the machine's PA3 left the pin (an upstream clone it follows, or an upgrade), when pa.json lets PA3
+    upgrade unasked (a missing `upgrade` key is PA3's auto: a newer release installs at a session start), or when PA3's
+    mod is off (S6 turns it off for the intake, S10 on; off, no plan task runs). Never FAIL: the repo still builds."""
     warns = []
     if machine and machine != pin:
         warns.append("this machine runs PA3 %s, psxdecomp pins %s — fix: re-run the pinned installer with `--root "
@@ -430,9 +440,12 @@ def pa3_drift_row(conf: dict, machine: str | None, pin: str) -> tuple[str, str]:
     if conf.get("upgrade") != "ask":
         warns.append('.claude/pa.json "upgrade" is %s (PA3 auto-upgrades off the pin) — fix: set "upgrade": "ask" '
                      "and commit it" % json.dumps(conf.get("upgrade", "absent")))
+    if conf.get("mod") != "on":
+        warns.append('.claude/pa.json "mod" is %s (no plan task runs) — fix: set "mod": "on" once the bootstrap is '
+                     "past S10, commit it, restart claude" % json.dumps(conf.get("mod", "absent")))
     if warns:
         return "WARN", "; ".join(warns)
-    return "OK", "PA3 %s on this machine; upgrades ask first" % (machine or "not installed")
+    return "OK", "PA3 %s on this machine; upgrades ask first; the mod is on" % (machine or "not installed")
 
 
 def readme_row(text: str | None, repo: pathlib.Path | None = None) -> tuple[str, str]:
@@ -653,8 +666,86 @@ def card_row(repo: pathlib.Path) -> tuple[str, str] | None:
                    "`tools/card.py check` refuses a card write until then" % (CARD, n, cap, n - cap)
 
 
+RETIRED_SKIP = ("phase-ends/", "research/", ".claude/pa3-upgrade/")   # history: a record of what ran, never rewritten
+RETIRED_FROZEN = ("PROJECT_CONTEXT.md",)                              # the constitution: named apart, never counted
+RETIRED_FROM = (3, 24)                                                # the first PA3 without the names (common.PA3_RETIRED)
+
+
+def pa3_retired_row(repo: pathlib.Path) -> tuple[str, str] | None:
+    """The game's tracked text that names a PA3 name 3.24 or 3.25 removed (common.PA3_RETIRED): an agent that reads
+    it uses what is gone. PA3's own files (.claude/pa3-managed.json and what it lists) are PA3's to refresh; history
+    (RETIRED_SKIP) is never rewritten; the frozen constitution is named apart. WAIT before PA3 3.24, where the names
+    still work; WARN after; never FAIL. No .claude/pa.json: no row."""
+    pa = repo / ".claude" / "pa.json"
+    if not pa.is_file():
+        return None
+    conf = json.loads(common.read(pa))
+    ver = str(conf.get("pa_version") or "")
+    r = common.git(repo, "ls-files", "-z", check=False)
+    rels = [p for p in r.stdout.split("\0") if p] if r.returncode == 0 else []
+    pa3 = repo / publish.PA3_REL
+    theirs = set(publish._pa3_files(common.read(pa3)) if pa3.is_file() else ()) | {publish.PA3_REL}
+    hist = tuple(dict.fromkeys(RETIRED_SKIP + (str(conf.get("phase_ends_dir") or "phase-ends").rstrip("/") + "/",)))
+    rels = [p for p in rels if p not in theirs and not p.startswith(hist)]
+    per: dict[str, int] = {}
+    for rel, _ in {(r, n) for r, n, _ in common.retired_hits(repo, rels)}:     # a line, once
+        per[rel] = per.get(rel, 0) + 1
+    frozen = {f: per.pop(f) for f in RETIRED_FROZEN if f in per}
+    note = "; %s (frozen, no action)" % ", ".join("%s %d" % kv for kv in frozen.items()) if frozen else ""
+    n = sum(per.values())
+    if not n:
+        return "OK", "no tracked text names a PA3 name that 3.24 or 3.25 removed%s" % note
+    files = ", ".join("%s (%d)" % kv for kv in sorted(per.items(), key=lambda kv: (-kv[1], kv[0])))
+    if tuple(int(x) for x in re.findall(r"\d+", ver)[:2]) < RETIRED_FROM:
+        return "WAIT", "PA3 %s still has these names. After PA3's update to 3.24 or later, rewrite %d line(s) in %d " \
+                       "file(s): %s%s" % (ver or "?", n, len(per), files, note)
+    return "WARN", "%d line(s) in %d file(s) name a PA3 name that 3.24 or 3.25 removed: %s — fix: rewrite each line " \
+                   "to what PA3 %s names (`grep -nE` the patterns of psxdecomp's common.PA3_RETIRED)%s" % (
+                       n, len(per), files, ver, note)
+
+
+SDK_HASHES = "config/sdk.psyq%s.sha256"      # [psyq] version 4.7: `<sha256>  <path in the SDK>` per byo SDK file
+SDK_HOME = "tools/psyq"                       # the one folder of the repository that may hold a byo SDK
+SDK_LINE = re.compile(r"^([0-9a-fA-F]{64}) [ *](.+)$")
+
+
+def sdk_check(hashes: pathlib.Path, sdk: pathlib.Path) -> tuple[int, list[str]]:
+    """(lines of the checksum file, each listed file of `sdk` that is missing or differs). It hashes and writes
+    nothing else, and it prints no SDK byte."""
+    lines = [l for l in common.read(hashes).splitlines() if l.strip()]
+    bad = []
+    for line in lines:
+        m = SDK_LINE.match(line)
+        if not m:
+            bad.append("%r (not `<sha256>  <path>`)" % line[:40])
+        elif sdk.resolve() not in (sdk / m[2]).resolve().parents:
+            bad.append(m[2] + " (outside the SDK folder)")
+        elif not (sdk / m[2]).is_file():
+            bad.append(m[2] + " (missing)")
+        elif common.sha256_file(sdk / m[2]) != m[1].lower():
+            bad.append(m[2] + " (differs)")
+    return len(lines), bad
+
+
+def sdk_home_problem(repo: pathlib.Path, path: pathlib.Path) -> str | None:
+    """Why a byo SDK path inside the repository is refused, or None: it lies in SDK_HOME, which the firewall purges
+    and git ignores (the rule of an oracle build's home, oracle.py)."""
+    rel = path.relative_to(repo).as_posix()
+    if rel != SDK_HOME and not rel.startswith(SDK_HOME + "/"):
+        return "is inside the repository and not in %s/ (firewall): move it there or outside" % SDK_HOME
+    fw = repo / common.FIREWALL
+    if not [p for p in (common.firewall_lines(common.read(fw), "purge") if fw.is_file() else ())
+            if (rel + "/").startswith(p.rstrip("/") + "/")]:
+        return "is in %s/, which %s does not purge: add `purge: %s/`" % (SDK_HOME, common.FIREWALL, SDK_HOME)
+    if common.git(repo, "check-ignore", "-q", "--", rel + "/x", check=False).returncode != 0:
+        return "is in %s/, which git does not ignore: add `/%s/` to .gitignore" % (SDK_HOME, SDK_HOME)
+    return None
+
+
 def sdk_row(psyq: dict | None, repo: pathlib.Path, byo: str | None) -> tuple[str, str] | None:
-    """The PsyQ release the game links and what a byo SDK must be; a byo path inside the repo is a firewall FAIL."""
+    """The PsyQ release the game links and what a byo SDK must be; a byo path inside the repo and out of SDK_HOME is a
+    firewall FAIL. With
+    the checksum file of that release (SDK_HASHES), each file it lists must be under the byo path with its sha256."""
     if not psyq and not byo:
         return None
     v = (psyq or {}).get("version", "unknown")
@@ -668,11 +759,21 @@ def sdk_row(psyq: dict | None, repo: pathlib.Path, byo: str | None) -> tuple[str
     if not byo:
         return "OK", what
     path = pathlib.Path(byo).expanduser().resolve()
-    if path == repo or repo in path.parents:
-        return "FAIL", what + "; $PSXDECOMP_BYO_PSYQ_PATH is inside the repository (firewall): move it outside"
+    problem = sdk_home_problem(repo, path) if path == repo or repo in path.parents else None
+    if problem:
+        return "FAIL", what + "; $PSXDECOMP_BYO_PSYQ_PATH " + problem
     if not path.is_dir():
         return "WARN", what + "; $PSXDECOMP_BYO_PSYQ_PATH %s does not exist" % path
-    return "OK", what + "; byo path given"
+    hashes = SDK_HASHES % str(v).replace(".", "")
+    if not psyq or not (repo / hashes).is_file():
+        return "OK", what + "; byo path given"
+    n, bad = sdk_check(repo / hashes, path)
+    if not n:
+        return "FAIL", what + "; %s lists no file" % hashes
+    if bad:
+        return "FAIL", what + "; byo differs from %s in %d of %d files: %s%s" % (
+            hashes, len(bad), n, ", ".join(bad[:3]), ", ..." if len(bad) > 3 else "")
+    return "OK", what + "; byo matches %s (%d files)" % (hashes, n)
 
 
 def oracle_row(table: dict | None, repo: pathlib.Path) -> tuple[str, str]:
@@ -1231,6 +1332,41 @@ def self_test() -> int:
         for got, want in cases:
             ok &= (got[0] if got else None) == want
         print("  sdk row: %s" % cases[0][0][1])
+        # tools/psyq/ once the firewall purges it and git ignores it; another folder of the repository stays refused
+        (repo / "refs" / "sdk").mkdir(parents=True)
+        common.git(repo, "init", "--quiet")
+        common.write(repo / common.FIREWALL, "purge: tools/psyq/\n")
+        ok &= "which git does not ignore" in sdk_row(q, repo, str(repo / "tools" / "psyq"))[1]
+        common.write(repo / ".gitignore", "/tools/psyq/\n/refs/\n")
+        ok &= sdk_row(q, repo, str(repo / "tools" / "psyq"))[0] == "OK"
+        ok &= sdk_row(q, repo, str(repo / "refs" / "sdk"))[1].endswith("is inside the repository and not in tools/psyq/ "
+                                                                      "(firewall): move it there or outside")
+        # the checksum file: no file leaves the row as it was, then matching files, a changed file, a missing file, a
+        # path out of the SDK folder, an empty file
+        with tempfile.TemporaryDirectory() as bd:
+            byo = pathlib.Path(bd)
+            common.write(byo / "LIB" / "A.LIB", "synthetic a")
+            common.write(byo / "DOCS" / "B C.TXT", "synthetic b")
+            ok &= sdk_row(q, repo, bd) == ("OK", sdk_row(q, repo, None)[1] + "; byo path given")
+            common.write(repo / (SDK_HASHES % "47"), "".join("%s  %s\n" % (common.sha256_file(byo / r), r)
+                                                            for r in ("LIB/A.LIB", "DOCS/B C.TXT")))
+            cases = [(sdk_row(q, repo, bd), "OK")]
+            ok &= cases[-1][0][1].endswith("; byo matches config/sdk.psyq47.sha256 (2 files)")
+            common.write(byo / "LIB" / "A.LIB", "synthetic a!")
+            cases += [(sdk_row(q, repo, bd), "FAIL")]
+            ok &= cases[-1][0][1].endswith("; byo differs from config/sdk.psyq47.sha256 in 1 of 2 files: LIB/A.LIB (differs)")
+            (byo / "DOCS" / "B C.TXT").unlink()
+            cases += [(sdk_row(q, repo, bd), "FAIL")]
+            ok &= cases[-1][0][1].endswith(" in 2 of 2 files: LIB/A.LIB (differs), DOCS/B C.TXT (missing)")
+            common.write(repo / (SDK_HASHES % "47"), "%s  ../x\n" % ("0" * 64))      # a path out of the SDK folder
+            cases += [(sdk_row(q, repo, bd), "FAIL")]
+            ok &= cases[-1][0][1].endswith(" in 1 of 1 files: ../x (outside the SDK folder)")
+            common.write(repo / (SDK_HASHES % "47"), "\n")
+            cases += [(sdk_row(q, repo, bd), "FAIL")]
+            ok &= cases[-1][0][1].endswith("; config/sdk.psyq47.sha256 lists no file")
+            ok &= [got[0] for got, _ in cases] == [want for _, want in cases]
+            (repo / (SDK_HASHES % "47")).unlink()
+        print("  sdk row: %s" % cases[-3][0][1].rsplit("; ", 1)[1])
         # the oracle row: no table, no scan, a checksum file the firewall does not read, a build without its file, then
         # the record as `oracle add` leaves it: a copy on this machine, its image by size, a path that is gone, a path
         # that the firewall refuses, no copy
@@ -1305,11 +1441,12 @@ def self_test() -> int:
         ok &= full == ("OK", "HOW_WE_WORK.md 7000 of 7000 characters (0 free)") and over[0] == "WARN" and \
             "free 1 " in over[1] and raised[0] == "OK" and "7001 of 8000" in raised[1]
         ok &= not list((repo / ".run").glob("**/*")) if (repo / ".run").exists() else True   # doctor wrote nothing
-    pin = "3.14.2"
-    drift = [pa3_drift_row({"upgrade": "ask"}, pin, pin), pa3_drift_row({"upgrade": "ask"}, None, pin),
-             pa3_drift_row({}, pin, pin), pa3_drift_row({"upgrade": "ask"}, "3.15.2", pin)]
+    pin, on = common.compat()["pa3"]["version"], {"upgrade": "ask", "mod": "on"}
+    drift = [pa3_drift_row(on, pin, pin), pa3_drift_row(on, None, pin), pa3_drift_row({"mod": "on"}, pin, pin),
+             pa3_drift_row(on, "3.14.2", pin), pa3_drift_row({"upgrade": "ask", "mod": "off"}, pin, pin)]
     print("  pa3-drift: %s" % "; ".join(d[0] for d in drift))
-    ok &= [d[0] for d in drift] == ["OK", "OK", "WARN", "WARN"] and "--no-clone" in drift[3][1]
+    ok &= [d[0] for d in drift] == ["OK", "OK", "WARN", "WARN", "WARN"] and "--no-clone" in drift[3][1]
+    ok &= '"mod" is "off"' in drift[4][1] and "mod" not in drift[2][1]
     good = "# G\n\nLead.\n\n%s\n## A\n" % common.ai_policy_block()
     rm = [readme_row(None), readme_row("# G\n\nLead.\n"), readme_row(good),
           readme_row(good + "\n%s; a person reviews each phase gate.\n" % common.OLD_DISCLOSURE)]
@@ -1344,6 +1481,7 @@ def self_test() -> int:
         "; ".join(r[0] for r in rm), tool[0], cats[0], cats_gone[0]))
     ok &= [r[0] for r in rm] == ["WARN", "FAIL", "WARN", "WARN", "OK", "FAIL"] and "predates" in rm[2][1]
     ok &= tool[0] == "WARN" and cats[0] == "OK" and cats_gone[0] == "FAIL" and "'ovl.stage1'" in cats_gone[1]
+    ok &= self_test_retired()
     ok &= self_test_roadmap()
     ok &= self_test_floor()
     ok &= self_test_deny()
@@ -1352,6 +1490,37 @@ def self_test() -> int:
     ok &= self_test_split()
     ok &= self_test_summary()
     return common.self_test_banner("doctor", ok)
+
+
+def self_test_retired() -> bool:
+    """pa3-retired: a planted card line WARNs on 3.28.8; hits in the constitution only are OK with the frozen note;
+    PA3's own files and history are never counted; on 3.14.2 the same line WAITs."""
+    with tempfile.TemporaryDirectory() as td:
+        repo = pathlib.Path(td).resolve()
+        common.git(repo, "init", "--quiet")
+        ok = pa3_retired_row(repo) is None                              # not a PA3 project: no row
+        (repo / ".claude").mkdir()
+        pa = lambda v: (repo / ".claude/pa.json").write_text(json.dumps({"pa_version": v}))  # noqa: E731
+        pa("3.28.8")
+        (repo / "PROJECT_CONTEXT.md").write_text("Open a thought with /discuss.\n")
+        (repo / "phase-ends").mkdir()
+        (repo / "phase-ends/T1.md").write_text("spawned expert-opus55\n")
+        (repo / "tools").mkdir()
+        (repo / "tools/pa3.py").write_text("# pa-session\n")
+        (repo / publish.PA3_REL).write_text(json.dumps({"files": {"tools/pa3.py": "h"}, "note": "/plangen"}))
+        common.git(repo, "add", "-A")
+        frozen = pa3_retired_row(repo)
+        (repo / CARD).write_text("# card\n- Think it through with /discuss first.\n")
+        common.git(repo, "add", "-A")
+        warn = pa3_retired_row(repo)
+        pa("3.14.2")
+        wait = pa3_retired_row(repo)
+    print("  pa3-retired: frozen only %s; a card line %s; on 3.14.2 %s" % (frozen[0], warn[0], wait[0]))
+    ok &= frozen == ("OK", "no tracked text names a PA3 name that 3.24 or 3.25 removed; PROJECT_CONTEXT.md 1 (frozen, "
+                           "no action)")
+    ok &= warn[0] == "WARN" and "1 line(s) in 1 file(s)" in warn[1] and "HOW_WE_WORK.md (1)" in warn[1]
+    ok &= wait[0] == "WAIT" and "PA3 3.14.2" in wait[1] and "HOW_WE_WORK.md (1)" in wait[1]
+    return ok
 
 
 def self_test_roadmap() -> bool:
