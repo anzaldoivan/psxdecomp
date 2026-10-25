@@ -23,5 +23,6 @@ default_path = ""
 [tested_on]
 date    = "2026-10-24"
 hosts   = ["macOS 27 arm64 + Docker Desktop (amd64 emulation)"]
-claude  = "2.1.310"                                    # PA3 3.30.7 needs 2.1.292 or newer
+claude  = "2.1.303"                                    # PA3 3.30.7 needs 2.1.292 or newer. Local tiers 0-3 of 2026-10-24
+                                                       # ran on 2.1.310, whose `plugin validate` warns: no icon
 python  = ["3.14"]
