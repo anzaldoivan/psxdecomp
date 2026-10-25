@@ -688,7 +688,7 @@ def pa3_retired_row(repo: pathlib.Path) -> tuple[str, str] | None:
     hist = tuple(dict.fromkeys(RETIRED_SKIP + (str(conf.get("phase_ends_dir") or "phase-ends").rstrip("/") + "/",)))
     rels = [p for p in rels if p not in theirs and not p.startswith(hist)]
     per: dict[str, int] = {}
-    for rel, _, _ in common.retired_hits(repo, rels):
+    for rel, _ in {(r, n) for r, n, _ in common.retired_hits(repo, rels)}:     # a line, once
         per[rel] = per.get(rel, 0) + 1
     frozen = {f: per.pop(f) for f in RETIRED_FROZEN if f in per}
     note = "; %s (frozen, no action)" % ", ".join("%s %d" % kv for kv in frozen.items()) if frozen else ""

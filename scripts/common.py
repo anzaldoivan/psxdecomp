@@ -87,8 +87,8 @@ def tree_digest(root) -> str:
 
 
 # The PA3 names that 3.24 (PA 3.2: one session, the mod runs the plan) and 3.25 (no closing agent, no milestone
-# verifier, one agent per role) removed. Text that names one tells an agent to use what is gone. One home: the game
-# test (tier 1), the static test over psxdecomp's delivered texts (tier 0). Tokens only, never plain words: `router`
+# verifier, one agent per role) removed. Text that names one tells an agent to use what is gone. One home: the doctor's
+# pa3-retired row, the game test (tier 1), the static test over psxdecomp's delivered texts (tier 0). Tokens only, never plain words: `router`
 # stays off the list, since 3.28.8 itself writes `--by router` and commits as `router`. (regex, retired in)
 PA3_RETIRED = (
     (r"(?<![\w-])pa-session\b", "3.24"),

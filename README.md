@@ -71,7 +71,7 @@ flowchart TD
     subgraph work["Part 3: Work (one phase)"]
         w1["One expert agent does each task"]
         w2["Coder agents edit, build and test"]
-        w3{{"The last task proves the milestone; you say yes"}}
+        w3{{"A task proves the milestone; you say yes"}}
         w1 --> w2 --> w3
     end
 

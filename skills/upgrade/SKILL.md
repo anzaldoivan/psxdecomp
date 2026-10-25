@@ -20,7 +20,7 @@ psxrecomp's migrate shape: **audit → plan → apply --dry-run → apply**. `PS
    Three actions cover the other builds of a game. `firewall-debug` is the script's. `record-oracle` and
    `oracle-public` are `[manual]`: give the command of the plan line.
 3. `"$PSXD" upgrade apply --dry-run --repo <repo>` — the exact writes.
-4. Stop here when `--dry-run` was given, or when the plan printed `PLAN BUSY`: a PA3 task is in flight, and the
+4. Stop here when `--dry-run` was given, or when the plan printed `PLAN BUSY`: a PA3 task is in flight. The
    script refuses to apply under it (`APPLY FAIL a PA3 task is in flight: ...`). Say why, with the file and the task
    that the line names, and that the upgrade waits for the task. Otherwise ask (AskUserQuestion: `Apply` recommended
    / `Stop`), then `"$PSXD" upgrade apply --repo <repo>` (add `--fetch` to clone `refs/` too).

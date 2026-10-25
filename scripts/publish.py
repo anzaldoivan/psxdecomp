@@ -2033,7 +2033,8 @@ LOOP_STALE_S = 45                                # the mod's OWNER_STALE_MS: an 
 def loop_blockers(dev, now=None, owner=True) -> list[str]:
     """PA3 3.2's mod, from its own files: a loop not `off` or with a task, a live owner session (heartbeat younger than
     the mod's stale bound), or a background shell of that session still running (`.run/mod/<sid>/shells.json`, an
-    entry with no `exit`). An unreadable loop.json refuses; an absent one is a repository the mod never ran.
+    entry with no `exit`). A loop.json that is not a JSON object refuses; an absent or unreadable one is a repository the
+    mod never ran.
     owner=False reads the loop's state and task alone: a caller that runs inside the owner session itself."""
     dev = pathlib.Path(dev)
     raw = _read(dev / LOOP_REL)

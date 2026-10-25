@@ -82,12 +82,12 @@ def test_resume_hook(tmp_path):
         run([PY, ROOT / "scripts/install.py", "mark", sid, "--target", tmp_path])
     env = {k: v for k, v in os.environ.items() if k != "PA_MOD_OFF"}
     (tmp_path / ".claude").mkdir(exist_ok=True)
-    (tmp_path / ".claude/pa.json").write_text('{"pa_version": "3.28.8", "mod": "off"}')      # as S6 leaves it
+    (tmp_path / ".claude/pa.json").write_text('{"pa_version": "3.30.7", "mod": "off"}')      # as S6 leaves it
     r = subprocess.run([str(ROOT / "scripts/psxd"), "resume_hint"], input=feed(None), capture_output=True, text=True,
                        env=env)
     out = json.loads(r.stdout)
     assert "`/psxdecomp:new --resume`" in out["systemMessage"] and "Exit" not in out["systemMessage"], out
-    (tmp_path / ".claude/pa.json").write_text('{"pa_version": "3.28.8", "mod": "on"}')       # PA3's installer again
+    (tmp_path / ".claude/pa.json").write_text('{"pa_version": "3.30.7", "mod": "on"}')       # PA3's installer again
     r = subprocess.run([str(ROOT / "scripts/psxd"), "resume_hint"], input=feed(None), capture_output=True, text=True,
                        env=env)
     out = json.loads(r.stdout)

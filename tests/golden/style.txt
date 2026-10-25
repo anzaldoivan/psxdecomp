@@ -5,7 +5,7 @@
 1 SECURITY.md
 4 agents/scout-repo.md
 4 docs/ARCHITECTURE.md
-101 docs/ECOSYSTEM.md
+100 docs/ECOSYSTEM.md
 5 docs/PROFILES.md
 134 docs/PUBLISHING.md
 14 docs/REFS.md
@@ -20,4 +20,4 @@
 7 skills/new/reference/investigate.md
 4 skills/new/reference/report-template.md
 13 skills/new/reference/stages.md
-3 skills/upgrade/SKILL.md
+2 skills/upgrade/SKILL.md

@@ -536,7 +536,7 @@ runs `style --hook`. The hook reports the findings in the public text that the a
   vendored lint or its workflow differ from the plugin's; the `categories` row checks the list and its freeze.
 - **`/psxdecomp:upgrade`:** writes the vendored lint and the workflow (psxdecomp owns both), and lists the README's
   lint failures as a manual action; the prose is the developer's.
-- **Phase 1.9:** a suggested milestone command for the Publish phase (its last task's `Verified:` line):
+- **Phase 1.9:** a suggested milestone command for the Publish phase (its gate task's `Verified:` line):
   `python3 tools/psxd_publish.py lint README.md --release && python3 tools/psxd_publish.py categories --history`
   and a validated report uploaded as `<EXE>_report`.
 

@@ -6,7 +6,7 @@ git init --quiet -b main .
 mkdir -p .run/bootstrap .claude
 cat > .claude/pa.json <<'JSON'
 {
-  "pa_version": "3.28.8",
+  "pa_version": "3.30.7",
   "mod": "on",
   "upgrade": "ask",
   "project": "homebrew-decomp"
