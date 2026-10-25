@@ -4,6 +4,6 @@
     ".github/workflows/psxdecomp-readme.yml": "e9d3f804fafd86930432b25af7c83f54f21fb81929750f5e84cec680585dfb35",
     "tools/psxd_floor.py": "917628634786462d34b17f4c3f4f6b4d1240dc344a143b011dda7439c947ea12",
     "tools/psxd_img.py": "fb7cda5a7b31c9cd2bd6d9ca57b9120979dfb15fe0fe3149e3baf60b385a22b6",
-    "tools/psxd_publish.py": "fbc6132a745a6b6983d16a756c00f462f8b62891939c5cda4f7d74d0473e46ed"
+    "tools/psxd_publish.py": "f9d9b2b7977565c43f41013934b5f646744cdc3a82910cb06be7838c1fab3325"
   }
 }
