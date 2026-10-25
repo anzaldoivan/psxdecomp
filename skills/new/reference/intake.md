@@ -1,6 +1,6 @@
 # S7 — PA3's intake (in a bare `claude`, PA3's mod off)
 
-This is PA3 3.28.8's tested path, unchanged. A session the mod does not drive hands PA3's Mode 1 intake the kit's
+This is PA3 3.30.7's tested path, unchanged. A session the mod does not drive hands PA3's Mode 1 intake the kit's
 pre-answered intake.
 psxdecomp supplies only the answers it already has. The intake then asks the developer only what is still open.
 

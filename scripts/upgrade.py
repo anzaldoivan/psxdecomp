@@ -623,8 +623,9 @@ def plan(repo: pathlib.Path) -> list[dict]:
         if conf.get("pa_version") != comp["pa3"]["version"]:
             add("manual", "PA3: the repository is at %s, psxdecomp is tested on %s; update with PA3's own installer "
                 "(`<python> <pa3>/pa_install.py --project %s`), then /psxdecomp:upgrade again (it re-asserts the deny "
-                "rules and hooks of .claude/settings.json after PA3's merge) and /psxdecomp:doctor"
-                % (conf.get("pa_version"), comp["pa3"]["version"], repo), "PA3 version", "pa3")
+                "rules and hooks of .claude/settings.json after PA3's merge) and /psxdecomp:doctor. At PA3's one-time "
+                "offer to clean .run/ (3.29 and later), answer Not now: .run/ also holds psxdecomp's and the kit's "
+                "folders" % (conf.get("pa_version"), comp["pa3"]["version"], repo), "PA3 version", "pa3")
         if conf.get("python") and not os.path.exists(conf["python"]):
             add("manual", "python: pa.json names %s, missing on this machine; re-run PA3's --project install here"
                 % conf["python"], "portability", "python")

@@ -1,6 +1,6 @@
 ---
 name: new
-description: Bootstrap a new PlayStation (PS1) matching-decompilation repository in this empty folder — interview, disc identification, prior-art research, a pinned reference library, then Project Architect 3.28.8 and the decomp-architect kit. Invoked only as /psxdecomp:new.
+description: Bootstrap a new PlayStation (PS1) matching-decompilation repository in this empty folder — interview, disc identification, prior-art research, a pinned reference library, then Project Architect 3.30.7 and the decomp-architect kit. Invoked only as /psxdecomp:new.
 disable-model-invocation: true
 argument-hint: "[--answers FILE|fixture:NAME] [--resume] [--deep] [--until S0..S10]"
 ---
@@ -48,7 +48,7 @@ the whole output.
 | S3 investigate | you + agents | Follow `reference/investigate.md`: one `scout-web` agent per question, in parallel; `scout-repo` to confirm a lead from a clone. Writes `.run/bootstrap/research/*.md`, `prior-art.draft.md`, `refs.draft.toml`. |
 | S4 gate | you | Follow `reference/gate.md`: show the report, the drafted answers and the drafted refs; the developer confirms or edits each, then answers the PsyQ question (worded from S2's version) and the oracle-build question (when S2 or S3 named a build). Writes `.run/bootstrap/answers.txt`, `refs.toml`, `prior-art.md`. |
 | S5 repo | script | `"$PSXD" install stage S5 --target .` — git init, licence, the kit's ROM firewall as the first commit after its negative control. |
-| S6 PA3 | script | `"$PSXD" install stage S6 --target .` — PA3 3.28.8's own unattended per-repo install, then `"upgrade": "ask"` and `"mod": "off"` in `.claude/pa.json` (the mod stays off through the intake). If it says PA3 is not installed on this machine, show the one command it prints (`--root --no-clone`: the pinned copy, not PA3's upstream), let the developer run it, then resume. Its `DONE` line ends with the restart line. |
+| S6 PA3 | script | `"$PSXD" install stage S6 --target .` — PA3 3.30.7's own unattended per-repo install, then `"upgrade": "ask"` and `"mod": "off"` in `.claude/pa.json` (the mod stays off through the intake). If it says PA3 is not installed on this machine, show the one command it prints (`--root --no-clone`: the pinned copy, not PA3's upstream), let the developer run it, then resume. Its `DONE` line ends with the restart line. |
 | — restart | — | PA3's agents load at session start. Tell the developer, verbatim: **"Exit, then run `claude` here and type `/psxdecomp:new --resume`."** Stop: no S7 in this session, even when asked to go on. (The plugin's SessionStart hook repeats the line in the next session.) |
 | S7 intake | you | Follow `reference/intake.md` (PA3's intake in this session, PA3's mod off, handed the kit's `intake.decomp.md` with the S4 answers). Commit what it writes. |
 | S8 kit | script | `"$PSXD" install stage S8 --target .` — the pinned decomp-architect installer: its dry run, then the run. |

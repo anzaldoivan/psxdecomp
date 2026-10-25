@@ -281,7 +281,7 @@ def pa_keys(c: Ctx, keys=INTAKE_KEYS) -> str:
 
 
 def settle_pa_json(c: Ctx) -> str:
-    """PA3's session-start hook writes keys of its own into .claude/pa.json (a `preset` line; 3.28.8 only with the mod on) after S6
+    """PA3's session-start hook writes keys of its own into .claude/pa.json (a `preset` line; 3.28.8 and later only with the mod on) after S6
     committed that file, and the kit's installer refuses a tree that is not clean. When that file is the only change,
     commit it. Any other change stays the developer's: the kit's dry run names it. Returns a note for the DONE line."""
     if c.dry or c.git("status", "--porcelain", check=False).stdout.splitlines() != [" M .claude/pa.json"]:

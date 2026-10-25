@@ -15,6 +15,7 @@
 .claude/pa.json
 .claude/pa3-managed.json
 .claude/settings.json
+.claude/skills/pa-external-agents/SKILL.md
 .claude/skills/pa-planning/SKILL.md
 .claude/skills/project-architect/SKILL.md
 .github/workflows/no-rom.yml
@@ -215,6 +216,7 @@ tools/launch.py
 tools/managed.py
 tools/outline.py
 tools/pa3_update.py
+tools/pa_ext.py
 tools/phaseend_index.py
 tools/plan_edit.py
 tools/psxd_floor.py
@@ -224,6 +226,7 @@ tools/research_add.py
 tools/rules_add.py
 tools/run.ps1
 tools/run.sh
+tools/run_cleanup.py
 tools/skill_add.py
 tools/status.py
 tools/task_log.py

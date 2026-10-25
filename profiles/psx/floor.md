@@ -9,7 +9,8 @@ tools, a guard for generated files, and a debt count. This file is the reference
    Architect's planner.
 2. Read the draft against the ladder in "Numbering". Approve it only when each ladder phase has a line.
 3. Run `/psxdecomp:doctor`. Ask Claude to correct each `FAIL` of the `roadmap` row before the first phase starts.
-4. Let Claude run one approved phase at a time. The last task of a phase runs the milestone's commands one at a time.
+4. Let Claude run one approved phase at a time. The task before PA3's phase cleanup runs the milestone's commands one
+   at a time.
    It writes a `Verified:` line for each command. The line holds the command, its exit code, the text it matched and
    its log. Claude's close question quotes those lines. Say yes only against them.
 5. Run `/psxdecomp:doctor` when a phase closes. A `WAIT` row names the phase that makes it due.

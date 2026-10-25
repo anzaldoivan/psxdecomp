@@ -10,7 +10,7 @@
     {
       "name": "psxdecomp",
       "source": "./",
-      "description": "Bootstrap a PS1 matching-decompilation repository on Project Architect 3.28.8."
+      "description": "Bootstrap a PS1 matching-decompilation repository on Project Architect 3.30.7."
     }
   ]
 }

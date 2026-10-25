@@ -1,8 +1,8 @@
-6423 .claude/agents/auditor.md
+8965 .claude/agents/auditor.md
 5979 .claude/agents/memory-curator.md
-19782 .claude/agents/pa-claude.md
-4166 .claude/agents/pa-coder.md
-9278 .claude/agents/pa-expert.md
+24076 .claude/agents/pa-claude.md
+4174 .claude/agents/pa-coder.md
+13324 .claude/agents/pa-expert.md
 3850 .claude/agents/pa-planner.md
 1777 .claude/agents/pa-thinker.md
 1109 .claude/agents/retriever-code.md
@@ -10,8 +10,9 @@
 1122 .claude/agents/retriever-web.md
 3037 .claude/commands/bench.md
 2499 .claude/settings.json
-6789 .claude/skills/pa-planning/SKILL.md
-13049 .claude/skills/project-architect/SKILL.md
+11012 .claude/skills/pa-external-agents/SKILL.md
+7623 .claude/skills/pa-planning/SKILL.md
+13365 .claude/skills/project-architect/SKILL.md
 1164 CLAUDE.md
-5839 HOW_WE_WORK.md
+6162 HOW_WE_WORK.md
 0 hook:SessionStart
