@@ -1000,7 +1000,7 @@ def self_test() -> int:
     own = readme.replace(common.OLD_DISCLOSURE, "We disclose AI use per pull request.")
     ok &= "We disclose AI use" in common.with_ai_policy(own, replace="We disclose AI use per pull request.")
     aged = "# G\n\n%s\n## Status\n\nOurs; kept.\n"                # an older text of the policy: the block alone changes
-    ok &= common.with_ai_policy(aged % common.ai_policy_block().replace("decisions. AI", "decisions; AI")) == \
+    ok &= common.with_ai_policy(aged % common.ai_policy_block().replace("decisions.", "decisions. AI reads and writes the code.")) == \
         aged % common.ai_policy_block() == common.with_ai_policy(aged % common.ai_policy_block())
     skel = "# {{PROJECT_NAME}}\n\n{{GAME_TITLE}} ({{GAME_SERIAL}}).\n\n## Made\n\n{{AI_DISCLOSURE}}\n\n*{{GAME_TITLE}}*\n"
     filled = skel.replace("{{PROJECT_NAME}}", "g").replace("{{GAME_TITLE}}", "Game X").replace(

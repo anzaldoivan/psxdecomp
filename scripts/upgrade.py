@@ -1345,7 +1345,7 @@ def self_test_style(repo: pathlib.Path) -> bool:
     ok &= not {"ste-rule", "ste-rule-edited", "delivered"} & set(acts())
     # ai-policy: the block's three lines, the rest byte for byte; the ratchet is written after it, once
     readme, block, aged = repo / "README.md", common.ai_policy_block(), "# G\n\nLead.\n\n%s\n## Status\n\nOurs; kept.\n"
-    old = block.replace("decisions. AI reads", "decisions; AI reads")
+    old = block.replace("decisions.", "decisions; AI reads and writes the code.")
     readme.write_text(aged % old)
     rat.unlink()
     for rel in ("docs/a.md", common.KIT_PROSE[0]):
