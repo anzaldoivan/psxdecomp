@@ -93,7 +93,7 @@ import urllib.parse
 # ---- the AI policy (its one home; scripts/common.py re-exports it, the plugin's README carries it verbatim) -------
 AI_POLICY = ("LLMs produce negligible decompilation results without good guidance. Investigate and familiarize "
              "yourself with the console's architecture and the game you are decompiling, and always use your own "
-             "judgment. Humans drive the decisions. AI reads and writes the code.")
+             "judgment. Humans drive the decisions.")
 AI_POLICY_MARK = "<!-- psxdecomp: ai-policy -->"
 # The start of the disclosure sentence the interview offered before AI_POLICY (the canned answers still carry it).
 OLD_DISCLOSURE = "This project is developed with substantial AI assistance"
@@ -143,7 +143,7 @@ ARTIFACT = re.compile(r"^[A-Za-z0-9._-]+_report$")
 
 # ---- what psxdecomp writes into a game repository from this standard (S10, /psxdecomp:upgrade) -------------------
 VENDORED = "tools/psxd_publish.py"                        # this file, byte for byte
-VERSION = "0.7.0"                                         # psxdecomp's version: a game's tool changes only to a later one
+VERSION = "0.7.1"                                         # psxdecomp's version: a game's tool changes only to a later one
 WORKFLOW = ".github/workflows/psxdecomp-readme.yml"       # profiles/psx/psxdecomp-readme.yml: lint + the freeze
 
 # ---- the category list ------------------------------------------------------------------------------------------
