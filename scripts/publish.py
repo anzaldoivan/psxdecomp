@@ -143,7 +143,7 @@ ARTIFACT = re.compile(r"^[A-Za-z0-9._-]+_report$")
 
 # ---- what psxdecomp writes into a game repository from this standard (S10, /psxdecomp:upgrade) -------------------
 VENDORED = "tools/psxd_publish.py"                        # this file, byte for byte
-VERSION = "0.7.1"                                         # psxdecomp's version: a game's tool changes only to a later one
+VERSION = "0.7.2"                                         # psxdecomp's version: a game's tool changes only to a later one
 WORKFLOW = ".github/workflows/psxdecomp-readme.yml"       # profiles/psx/psxdecomp-readme.yml: lint + the freeze
 
 # ---- the category list ------------------------------------------------------------------------------------------
@@ -440,7 +440,7 @@ def progress_row(slug: str, r: dict) -> str:
 # The one published number, said once under the table (generated: the README's prose never types a number).
 PROGRESS_NOTE = ("The published number is the matched code of the `game` category, in bytes. The `sdk` row counts "
                  "the SDK libraries apart. A complete unit is a C file whose code and data all match. It is not a "
-                 "finished file (`rules/FIN1.md`).")
+                 "finished file, which also holds no readability debt.")
 NUMBER_RE = re.compile(r"(?<![\w.])(?!100(?:\.0+)?\s?%)\d[\d,]*(?:\.\d+)?\s?%|(?<![\w.])\d[\d,]*\s+of\s+\d[\d,]*(?![\w])")
 # `phase 1 of 3`, `disc 1 of 2`: a place in a series, not a count of the work
 SERIES_RE = re.compile(r"\b(?:phase|step|part|page|disc|disk|stage|chapter|volume|track|day|week)\s+\d+\s+of\s+\d+\b", re.I)
@@ -549,7 +549,7 @@ def render_finished(ctx: Ctx) -> list[str]:
     n, done, matched, stubs = (int(x) for x in m.groups())
     if not n:
         return ["*No C source file yet.* The count of finished files appears here with the first one."]
-    return ["**%d of %d** C files are finished: matched, with no readability debt left (`rules/FIN1.md`). %d more %s "
+    return ["**%d of %d** C files are finished: matched, with no readability debt left. %d more %s "
             "matched and still hold%s debt, and %d still hold%s a function in assembly." % (
                 done, n, matched, "is" if matched == 1 else "are", "s" if matched == 1 else "", stubs, "s" if stubs == 1 else "")]
 
